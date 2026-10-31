@@ -32,5 +32,5 @@ jobs:
           test -f dist/assets/app.js
           test -f dist/assets/app.css
           grep -q 'ldw-interview-facilitator' src/storage.ts
-          grep -q 'Saved on this device' src/main.ts
+          grep -q 'Saved on this device' src/indicators.ts
           grep -q 'Share-safe view' src/main.ts
