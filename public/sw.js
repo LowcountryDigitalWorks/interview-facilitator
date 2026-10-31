@@ -14,10 +14,14 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
+
   event.respondWith(
     caches.match(request).then((cached) => cached || fetch(request).then((response) => {
-      if (response.ok) caches.open(CACHE).then((cache) => cache.put(request, response.clone()));
+      if (response.ok) event.waitUntil(caches.open(CACHE).then((cache) => cache.put(request, response.clone())));
       return response;
-    }).catch(() => request.mode === 'navigate' ? caches.match('/index.html') : undefined))
+    }).catch(async () => {
+      if (request.mode === 'navigate') return (await caches.match('/index.html')) ?? Response.error();
+      return Response.error();
+    }))
   );
 });
