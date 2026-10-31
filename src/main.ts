@@ -1,6 +1,6 @@
 import './styles.css';
 import type { AnswerStatus, InterviewSession, Question } from './domain';
-import { coverage, createSession, nextVisibleQuestion, relevantKnownFacts, touch, validateSessionShape, visibleQuestions } from './domain';
+import { coverage, createSession, nextVisibleQuestion, relevantKnownFacts, touch, validateSessionForPack, validateSessionShape, visibleQuestions } from './domain';
 import { generalDiscoveryPack as pack } from './pack';
 import { deleteSession, listSessions, loadSession, requestPersistentStorage, saveSession } from './storage';
 import { serializeSession, sessionToMarkdown } from './markdown';
@@ -117,7 +117,7 @@ async function renderHome(): Promise<void> {
     if (!file) return;
     try {
       const imported = validateSessionShape(JSON.parse(await file.text()));
-      if (imported.interviewPackId !== pack.packId || imported.interviewPackVersion !== pack.packVersion) throw new Error('This prototype only supports the included pack/version.');
+      validateSessionForPack(imported, pack);
       session = imported;
       await refreshPersistenceState();
       await saveSession(session);
@@ -305,9 +305,9 @@ window.addEventListener('online', () => render());
 window.addEventListener('offline', () => render());
 
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').then(async (registration) => {
-    await navigator.serviceWorker.ready;
-    offlineReady = Boolean(registration.active ?? registration.waiting ?? registration.installing);
+  navigator.serviceWorker.register('/sw.js').then(async () => {
+    const readyRegistration = await navigator.serviceWorker.ready;
+    offlineReady = Boolean(readyRegistration.active);
     render();
   }).catch(() => { offlineReady = false; });
 }
