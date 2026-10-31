@@ -135,12 +135,22 @@ describe('SessionAutosaveCoordinator', () => {
   });
 
   it('suppresses stale completion callbacks when a newer save exists', async () => {
-    const releases: Array<() => void> = [];
+    let releaseFirst: (() => void) | undefined;
+    let releaseSecond: (() => void) | undefined;
+    let markSecondStarted: (() => void) | undefined;
+    const secondStarted = new Promise<void>((resolve) => { markSecondStarted = resolve; });
     const persisted: InterviewSession[] = [];
     const savedLabels: string[] = [];
+    let callCount = 0;
+
     const coordinator = new SessionAutosaveCoordinator((value) => new Promise<void>((resolve) => {
+      callCount += 1;
       persisted.push(structuredClone(value));
-      releases.push(resolve);
+      if (callCount === 1) releaseFirst = resolve;
+      else {
+        releaseSecond = resolve;
+        markSecondStarted?.();
+      }
     }));
     const active = makeSession('session-a');
 
@@ -153,16 +163,14 @@ describe('SessionAutosaveCoordinator', () => {
     await vi.advanceTimersByTimeAsync(180);
 
     expect(persisted.map((value) => value.runningNotes)).toEqual(['first']);
-    releases[0]?.();
-    await Promise.resolve();
-    await Promise.resolve();
+    releaseFirst?.();
+    await secondStarted;
 
     expect(persisted.map((value) => value.runningNotes)).toEqual(['first', 'second']);
     expect(savedLabels).toEqual([]);
 
-    releases[1]?.();
-    await Promise.resolve();
-    await Promise.resolve();
+    releaseSecond?.();
+    await coordinator.flushAndWait(active.sessionId);
 
     expect(savedLabels).toEqual(['second']);
   });
