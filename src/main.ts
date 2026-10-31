@@ -6,6 +6,7 @@ import { deleteSession, listSessions, loadSession, requestPersistentStorage, sav
 import { serializeSession, sessionToMarkdown } from './markdown';
 import { formatConnectivityLabel, formatSaveLabel, type PersistenceState, type SaveState } from './indicators';
 import { SessionAutosaveCoordinator } from './autosave';
+import { readSessionList } from './session-list';
 
 const appElement = document.querySelector<HTMLDivElement>('#app');
 if (!appElement) throw new Error('App root not found.');
@@ -19,6 +20,7 @@ let saveState: SaveState = 'saved';
 let persistenceState: PersistenceState = 'unknown';
 let offlineReady = false;
 let shareSafe = false;
+let homeNotice: string | null = null;
 
 const autosave = new SessionAutosaveCoordinator(saveSession);
 
@@ -116,7 +118,11 @@ function refreshConnectivityIndicators(): void {
 }
 
 async function renderHome(): Promise<void> {
-  const recent = await listSessions().catch(() => []);
+  const listState = await readSessionList(listSessions);
+  const storageError = listState.kind === 'error';
+  const recent = listState.kind === 'ready' ? listState.sessions : [];
+  if (storageError) console.error('Unable to read local interviews.', listState.error);
+
   app.innerHTML = `
     <header class="app-header"><div><strong>Interview Facilitator</strong><span>Local-first discovery cockpit</span></div><span class="state-pill" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span></header>
     <main id="main" class="home-shell">
@@ -125,23 +131,41 @@ async function renderHome(): Promise<void> {
         <h1>Keep the conversation natural. Keep the coverage visible.</h1>
         <p>Run a guided interview without turning the call into form filling. Sessions save locally and remain usable without a network after the app is cached.</p>
         <div class="known-preview"><strong>Local data stays local to this browser/app context.</strong><p>Installing later or switching browsers may not carry an in-progress interview with you. Use Export backup before changing devices, browsers, or install context.</p></div>
-        <div class="button-row"><button class="primary" data-action="new">New interview</button><button class="secondary" data-action="import">Import session JSON</button></div>
+        <div class="button-row"><button class="primary" data-action="new" ${storageError ? 'disabled aria-describedby="storage-read-error"' : ''}>New interview</button><button class="secondary" data-action="import" ${storageError ? 'disabled aria-describedby="storage-read-error"' : ''}>Import session JSON</button></div>
         <input id="import-file" type="file" accept="application/json,.json" hidden />
       </section>
       <section class="section-block">
-        <div class="section-heading"><div><p class="eyebrow">On this device</p><h2>Recent interviews</h2></div><span>${recent.length} local</span></div>
+        <div class="section-heading"><div><p class="eyebrow">On this device</p><h2>Recent interviews</h2></div><span>${storageError ? 'Storage unavailable' : `${recent.length} local`}</span></div>
         <div class="session-list">
-          ${recent.length ? recent.map((item) => `
-            <button class="session-card" data-session-id="${escapeHtml(item.sessionId)}">
-              <span><strong>${escapeHtml(item.clientLabel)}</strong><small>${escapeHtml(item.interviewMode)} · updated ${escapeHtml(new Date(item.updatedAt).toLocaleString())}</small></span>
-              <span aria-hidden="true">→</span>
-            </button>`).join('') : '<div class="empty-card">No saved interviews yet.</div>'}
+          ${storageError ? `
+            <div id="storage-read-error" class="known-preview" role="alert" aria-live="assertive">
+              <strong>Local interviews could not be read.</strong>
+              <p>Your browser's local interview storage is currently unavailable. This does not mean your interviews were deleted. Retry before creating or importing another local interview.</p>
+              <div class="button-row"><button class="secondary" data-action="retry-storage">Retry local storage</button>${session ? '<button class="secondary" data-action="return-active">Return to active interview</button><button class="secondary" data-action="export-active">Export active backup</button>' : ''}</div>
+            </div>` : `
+            ${homeNotice ? `<div class="known-preview" role="status" aria-live="polite"><strong>Local interview could not be opened.</strong><p>${escapeHtml(homeNotice)}</p><div class="button-row"><button class="secondary" data-action="dismiss-home-notice">Dismiss</button></div></div>` : ''}
+            ${recent.length ? recent.map((item) => `
+              <button class="session-card" data-session-id="${escapeHtml(item.sessionId)}">
+                <span><strong>${escapeHtml(item.clientLabel)}</strong><small>${escapeHtml(item.interviewMode)} · updated ${escapeHtml(new Date(item.updatedAt).toLocaleString())}</small></span>
+                <span aria-hidden="true">→</span>
+              </button>`).join('') : '<div class="empty-card">No saved interviews yet.</div>'}`}
         </div>
       </section>
     </main>`;
 
-  app.querySelector('[data-action="new"]')?.addEventListener('click', () => { view = 'new'; render(); });
-  app.querySelector('[data-action="import"]')?.addEventListener('click', () => (app.querySelector<HTMLInputElement>('#import-file')?.click()));
+  app.querySelector('[data-action="retry-storage"]')?.addEventListener('click', () => { homeNotice = null; void renderHome(); });
+  app.querySelector('[data-action="dismiss-home-notice"]')?.addEventListener('click', () => { homeNotice = null; void renderHome(); });
+  app.querySelector('[data-action="return-active"]')?.addEventListener('click', () => { if (!session) return; homeNotice = null; view = 'interview'; render(); });
+  app.querySelector('[data-action="export-active"]')?.addEventListener('click', () => {
+    if (!session) return;
+    download(`${session.clientLabel.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-interview.json`, serializeSession(session), 'application/json');
+  });
+
+  if (!storageError) {
+    app.querySelector('[data-action="new"]')?.addEventListener('click', () => { homeNotice = null; view = 'new'; render(); });
+    app.querySelector('[data-action="import"]')?.addEventListener('click', () => (app.querySelector<HTMLInputElement>('#import-file')?.click()));
+  }
+
   app.querySelector<HTMLInputElement>('#import-file')?.addEventListener('change', async (event) => {
     const file = (event.currentTarget as HTMLInputElement).files?.[0];
     if (!file) return;
@@ -152,6 +176,7 @@ async function renderHome(): Promise<void> {
       await refreshPersistenceState();
       await saveSession(imported);
       session = imported;
+      homeNotice = null;
       saveState = 'saved';
       shareSafe = false;
       view = 'interview';
@@ -165,15 +190,22 @@ async function renderHome(): Promise<void> {
     try {
       await autosave.flushAndWait(sessionId);
       const loaded = await loadSession(sessionId);
-      if (!loaded) return;
+      if (!loaded) {
+        homeNotice = 'The selected interview is no longer available in local storage. No other local interviews were changed.';
+        await renderHome();
+        return;
+      }
       session = loaded;
+      homeNotice = null;
       saveState = 'saved';
       await refreshPersistenceState();
       shareSafe = false;
       view = 'interview';
       render();
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Unable to open local interview.');
+      console.error('Unable to open local interview.', error);
+      homeNotice = 'The selected interview could not be read. No other local interviews were changed. Retry from the list when local storage is available.';
+      await renderHome();
     }
   }));
 }
@@ -205,6 +237,7 @@ function renderNew(): void {
     try {
       await refreshPersistenceState();
       await saveSession(session);
+      homeNotice = null;
       saveState = 'saved';
       shareSafe = false;
       view = 'interview';
