@@ -1,0 +1,13 @@
+{
+  "name": "Interview Facilitator",
+  "short_name": "Facilitator",
+  "description": "Offline-first human-led interview cockpit",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f8f6",
+  "theme_color": "#102a3a",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
