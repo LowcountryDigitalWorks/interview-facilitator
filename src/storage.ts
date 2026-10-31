@@ -16,15 +16,38 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
+function writeTransaction(db: IDBDatabase): IDBTransaction {
+  try {
+    return db.transaction(STORE, 'readwrite', { durability: 'strict' });
+  } catch {
+    return db.transaction(STORE, 'readwrite');
+  }
+}
+
 export async function saveSession(session: InterviewSession): Promise<void> {
   const db = await openDb();
   try {
     await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE, 'readwrite', { durability: 'strict' });
+      const tx = writeTransaction(db);
       tx.objectStore(STORE).put(session);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error ?? new Error('Unable to save session.'));
       tx.onabort = () => reject(tx.error ?? new Error('Local save was aborted.'));
+    });
+  } finally {
+    db.close();
+  }
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  const db = await openDb();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const tx = writeTransaction(db);
+      tx.objectStore(STORE).delete(sessionId);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error('Unable to delete local session.'));
+      tx.onabort = () => reject(tx.error ?? new Error('Local delete was aborted.'));
     });
   } finally {
     db.close();
