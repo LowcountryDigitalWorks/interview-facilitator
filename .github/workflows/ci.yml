@@ -18,6 +18,11 @@ jobs:
         with:
           node-version: '24'
       - run: npm install --package-lock-only --ignore-scripts
+      - name: Bootstrap lockfile evidence
+        run: |
+          echo 'LOCKFILE_BEGIN'
+          cat package-lock.json
+          echo 'LOCKFILE_END'
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
