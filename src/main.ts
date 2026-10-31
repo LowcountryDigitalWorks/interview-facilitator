@@ -7,7 +7,7 @@ import { serializeSession, sessionToMarkdown } from './markdown';
 import { formatConnectivityLabel, formatSaveLabel, type PersistenceState, type SaveState } from './indicators';
 import { SessionAutosaveCoordinator } from './autosave';
 import { readSessionList } from './session-list';
-import { beginSessionSwitch, importSessionReplacement, openStoredSession, shouldFlushActiveSession } from './session-durability';
+import { beginSessionSwitch, importSessionReplacement, openStoredSession, SessionSwitchGate, shouldFlushActiveSession } from './session-durability';
 
 const appElement = document.querySelector<HTMLDivElement>('#app');
 if (!appElement) throw new Error('App root not found.');
@@ -27,6 +27,7 @@ type HomeNotice =
   | { kind: 'save'; message: string; sessionId: string };
 
 let homeNotice: HomeNotice = null;
+const sessionSwitchGate = new SessionSwitchGate();
 
 const autosave = new SessionAutosaveCoordinator(saveSession);
 
@@ -186,101 +187,107 @@ async function renderHome(): Promise<void> {
       return;
     }
 
-    const outcome = await beginSessionSwitch({
-      active: session,
-      nextSessionId: imported.sessionId,
-      flush: (sessionId) => autosave.flushAndWait(sessionId),
-      proceed: () => importSessionReplacement({
-        imported,
+    const gated = await sessionSwitchGate.run(async () => {
+      const outcome = await beginSessionSwitch({
+        active: session,
+        nextSessionId: imported.sessionId,
         flush: (sessionId) => autosave.flushAndWait(sessionId),
-        load: loadSession,
-        confirmReplace: () => confirm('A local interview with this session ID already exists. Replace it with the imported file? Cancel keeps the local interview unchanged.'),
-        save: async (value) => {
-          await refreshPersistenceState();
-          await saveSession(value);
-        },
-      }),
-    });
-    if (outcome.kind === 'save-failure') {
-      await showOutgoingSaveFailure(outcome.error);
-      return;
-    }
-    const result = outcome.value;
+        proceed: () => importSessionReplacement({
+          imported,
+          flush: (sessionId) => autosave.flushAndWait(sessionId),
+          load: loadSession,
+          confirmReplace: () => confirm('A local interview with this session ID already exists. Replace it with the imported file? Cancel keeps the local interview unchanged.'),
+          save: async (value) => {
+            await refreshPersistenceState();
+            await saveSession(value);
+          },
+        }),
+      });
+      if (outcome.kind === 'save-failure') {
+        await showOutgoingSaveFailure(outcome.error);
+        return;
+      }
+      const result = outcome.value;
 
-    if (result.kind === 'replaced') {
-      session = result.session;
-      homeNotice = null;
-      saveState = 'saved';
-      shareSafe = false;
-      view = 'interview';
-      render();
-      return;
-    }
-    if (result.kind === 'aborted-cancelled') return;
-    if (result.kind === 'aborted-read') {
-      console.error('Unable to check the local interview before import.', result.error);
-      homeNotice = { kind: 'read', message: 'The local interview could not be read, so the imported file was not saved. No local interviews were changed.' };
-      await renderHome();
-      return;
-    }
+      if (result.kind === 'replaced') {
+        session = result.session;
+        homeNotice = null;
+        saveState = 'saved';
+        shareSafe = false;
+        view = 'interview';
+        render();
+        return;
+      }
+      if (result.kind === 'aborted-cancelled') return;
+      if (result.kind === 'aborted-read') {
+        console.error('Unable to check the local interview before import.', result.error);
+        homeNotice = { kind: 'read', message: 'The local interview could not be read, so the imported file was not saved. No local interviews were changed.' };
+        await renderHome();
+        return;
+      }
 
-    console.error('Local import did not replace the saved interview.', result.error);
-    saveState = 'error';
-    homeNotice = {
-      kind: 'save',
-      sessionId: imported.sessionId,
-      message: result.kind === 'aborted-flush'
-        ? 'Pending local edits could not be saved, so the imported file was not written. The in-memory interview is unchanged.'
-        : 'The imported file could not be saved. The previously saved local interview was left in place.',
-    };
-    await renderHome();
-  });
-  app.querySelectorAll<HTMLElement>('[data-session-id]').forEach((button) => button.addEventListener('click', async () => {
-    const sessionId = button.dataset.sessionId ?? '';
-    const outcome = await beginSessionSwitch({
-      active: session,
-      nextSessionId: sessionId,
-      flush: (id) => autosave.flushAndWait(id),
-      proceed: () => openStoredSession({
-        sessionId,
-        flush: (id) => autosave.flushAndWait(id),
-        load: loadSession,
-      }),
-    });
-    if (outcome.kind === 'save-failure') {
-      await showOutgoingSaveFailure(outcome.error);
-      return;
-    }
-    const result = outcome.value;
-    if (result.kind === 'opened') {
-      session = result.session;
-      homeNotice = null;
-      saveState = 'saved';
-      await refreshPersistenceState();
-      shareSafe = false;
-      view = 'interview';
-      render();
-      return;
-    }
-    if (result.kind === 'missing') {
-      homeNotice = { kind: 'read', message: 'The selected interview is no longer available in local storage. No other local interviews were changed.' };
-      await renderHome();
-      return;
-    }
-    if (result.kind === 'save-failure') {
-      console.error('Unable to save local interview before opening.', result.error);
+      console.error('Local import did not replace the saved interview.', result.error);
       saveState = 'error';
       homeNotice = {
         kind: 'save',
-        sessionId,
-        message: 'The latest edits could not be saved on this device. Opening was stopped so an older saved copy would not hide those edits. No other local interviews were changed.',
+        sessionId: imported.sessionId,
+        message: result.kind === 'aborted-flush'
+          ? 'Pending local edits could not be saved, so the imported file was not written. The in-memory interview is unchanged.'
+          : 'The imported file could not be saved. The previously saved local interview was left in place.',
       };
       await renderHome();
-      return;
-    }
-    console.error('Unable to open local interview.', result.error);
-    homeNotice = { kind: 'read', message: 'The selected interview could not be read. No other local interviews were changed. Retry from the list when local storage is available.' };
-    await renderHome();
+    });
+    if (gated.kind === 'busy') return;
+  });
+  app.querySelectorAll<HTMLElement>('[data-session-id]').forEach((button) => button.addEventListener('click', async () => {
+    const sessionId = button.dataset.sessionId ?? '';
+    const gated = await sessionSwitchGate.run(async () => {
+      const outcome = await beginSessionSwitch({
+        active: session,
+        nextSessionId: sessionId,
+        flush: (id) => autosave.flushAndWait(id),
+        proceed: () => openStoredSession({
+          sessionId,
+          flush: (id) => autosave.flushAndWait(id),
+          load: loadSession,
+        }),
+      });
+      if (outcome.kind === 'save-failure') {
+        await showOutgoingSaveFailure(outcome.error);
+        return;
+      }
+      const result = outcome.value;
+      if (result.kind === 'opened') {
+        session = result.session;
+        homeNotice = null;
+        saveState = 'saved';
+        await refreshPersistenceState();
+        shareSafe = false;
+        view = 'interview';
+        render();
+        return;
+      }
+      if (result.kind === 'missing') {
+        homeNotice = { kind: 'read', message: 'The selected interview is no longer available in local storage. No other local interviews were changed.' };
+        await renderHome();
+        return;
+      }
+      if (result.kind === 'save-failure') {
+        console.error('Unable to save local interview before opening.', result.error);
+        saveState = 'error';
+        homeNotice = {
+          kind: 'save',
+          sessionId,
+          message: 'The latest edits could not be saved on this device. Opening was stopped so an older saved copy would not hide those edits. No other local interviews were changed.',
+        };
+        await renderHome();
+        return;
+      }
+      console.error('Unable to open local interview.', result.error);
+      homeNotice = { kind: 'read', message: 'The selected interview could not be read. No other local interviews were changed. Retry from the list when local storage is available.' };
+      await renderHome();
+    });
+    if (gated.kind === 'busy') return;
   }));
 }
 
@@ -324,36 +331,39 @@ function renderNew(): void {
     event.preventDefault();
     const form = event.currentTarget as HTMLFormElement;
     const data = new FormData(form);
-    const next = createSession(pack, {
-      clientLabel: String(data.get('clientLabel') ?? ''),
-      interviewerLabel: String(data.get('interviewerLabel') ?? ''),
-      interviewMode: String(data.get('interviewMode') ?? '')
-    });
-    try {
-      const outcome = await beginSessionSwitch({
-        active: session,
-        nextSessionId: next.sessionId,
-        flush: (id) => autosave.flushAndWait(id),
-        proceed: async () => {
-          await refreshPersistenceState();
-          await saveSession(next);
-          return next;
-        },
+    const gated = await sessionSwitchGate.run(async () => {
+      const next = createSession(pack, {
+        clientLabel: String(data.get('clientLabel') ?? ''),
+        interviewerLabel: String(data.get('interviewerLabel') ?? ''),
+        interviewMode: String(data.get('interviewMode') ?? '')
       });
-      if (outcome.kind === 'save-failure') {
-        await showOutgoingSaveFailure(outcome.error);
-        return;
+      try {
+        const outcome = await beginSessionSwitch({
+          active: session,
+          nextSessionId: next.sessionId,
+          flush: (id) => autosave.flushAndWait(id),
+          proceed: async () => {
+            await refreshPersistenceState();
+            await saveSession(next);
+            return next;
+          },
+        });
+        if (outcome.kind === 'save-failure') {
+          await showOutgoingSaveFailure(outcome.error);
+          return;
+        }
+        session = outcome.value;
+        homeNotice = null;
+        saveState = 'saved';
+        shareSafe = false;
+        view = 'interview';
+        render();
+      } catch (error) {
+        saveState = 'error';
+        alert(error instanceof Error ? error.message : 'Unable to create local interview.');
       }
-      session = outcome.value;
-      homeNotice = null;
-      saveState = 'saved';
-      shareSafe = false;
-      view = 'interview';
-      render();
-    } catch (error) {
-      saveState = 'error';
-      alert(error instanceof Error ? error.message : 'Unable to create local interview.');
-    }
+    });
+    if (gated.kind === 'busy') return;
   });
 }
 

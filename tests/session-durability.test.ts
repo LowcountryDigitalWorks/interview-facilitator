@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { InterviewSession } from '../src/domain';
 import { SessionAutosaveCoordinator } from '../src/autosave';
-import { beginSessionSwitch, importSessionReplacement, openStoredSession, shouldFlushActiveSession } from '../src/session-durability';
+import { beginSessionSwitch, importSessionReplacement, openStoredSession, SessionSwitchGate, shouldFlushActiveSession } from '../src/session-durability';
 
 function makeSession(sessionId: string, notes: string): InterviewSession {
   return {
@@ -225,5 +225,94 @@ describe('session durability', () => {
     expect(load).toHaveBeenCalledTimes(1);
     expect(persisted).toContain('session-a:dirty local');
     expect(persisted.filter((value) => value === 'session-a:dirty local').length).toBeGreaterThan(1);
+  });
+
+  it('ignores an overlapping replacement and runs a later one after release', async () => {
+    const gate = new SessionSwitchGate();
+    let releaseFirst: () => void = () => undefined;
+    const firstHold = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const calls: string[] = [];
+
+    const first = gate.run(async () => {
+      calls.push('first');
+      await firstHold;
+      return 'first-done';
+    });
+    const second = gate.run(async () => {
+      calls.push('second');
+      return 'second-done';
+    });
+
+    expect(await second).toEqual({ kind: 'busy' });
+    expect(calls).toEqual(['first']);
+    releaseFirst();
+    await expect(first).resolves.toEqual({ kind: 'completed', value: 'first-done' });
+
+    const third = await gate.run(async () => {
+      calls.push('third');
+      return 'third-done';
+    });
+    expect(third).toEqual({ kind: 'completed', value: 'third-done' });
+    expect(calls).toEqual(['first', 'third']);
+  });
+
+  it('releases the gate when the active replacement throws', async () => {
+    const gate = new SessionSwitchGate();
+    await expect(gate.run(async () => {
+      throw new Error('synthetic replacement failure');
+    })).rejects.toThrow('synthetic replacement failure');
+
+    await expect(gate.run(async () => 'after')).resolves.toEqual({ kind: 'completed', value: 'after' });
+  });
+
+  it('lets only the first of two concurrent session switches proceed', async () => {
+    const gate = new SessionSwitchGate();
+    let releaseFlush: () => void = () => undefined;
+    const flushHold = new Promise<void>((resolve) => {
+      releaseFlush = resolve;
+    });
+    const load = vi.fn(async (sessionId: string) => makeSession(sessionId, 'stored'));
+    const save = vi.fn(async () => undefined);
+    const assigned: string[] = [];
+
+    const first = gate.run(async () => {
+      const outcome = await beginSessionSwitch({
+        active: makeSession('session-a', 'active'),
+        nextSessionId: 'session-b',
+        flush: async () => {
+          await flushHold;
+        },
+        proceed: () => openStoredSession({
+          sessionId: 'session-b',
+          flush: async () => undefined,
+          load,
+        }),
+      });
+      if (outcome.kind === 'proceeded' && outcome.value.kind === 'opened') assigned.push(outcome.value.session.sessionId);
+      return outcome;
+    });
+    const second = gate.run(async () => {
+      const outcome = await beginSessionSwitch({
+        active: makeSession('session-a', 'active'),
+        nextSessionId: 'session-c',
+        flush: async () => undefined,
+        proceed: async () => {
+          await save();
+          return makeSession('session-c', 'created');
+        },
+      });
+      if (outcome.kind === 'proceeded') assigned.push('session-c');
+      return outcome;
+    });
+
+    expect(await second).toEqual({ kind: 'busy' });
+    releaseFlush();
+    const completed = await first;
+    expect(completed.kind).toBe('completed');
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(save).not.toHaveBeenCalled();
+    expect(assigned).toEqual(['session-b']);
   });
 });

@@ -40,6 +40,24 @@ export async function flushOutgoingSession(input: {
   }
 }
 
+export type SessionSwitchGateResult<T> =
+  | { kind: 'completed'; value: T }
+  | { kind: 'busy' };
+
+export class SessionSwitchGate {
+  private busy = false;
+
+  async run<T>(operation: () => Promise<T>): Promise<SessionSwitchGateResult<T>> {
+    if (this.busy) return { kind: 'busy' };
+    this.busy = true;
+    try {
+      return { kind: 'completed', value: await operation() };
+    } finally {
+      this.busy = false;
+    }
+  }
+}
+
 export async function beginSessionSwitch<T>(input: {
   active: InterviewSession | null;
   nextSessionId: string;
