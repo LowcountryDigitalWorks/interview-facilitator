@@ -4,18 +4,18 @@ import { coverage, createSession, nextVisibleQuestion, relevantKnownFacts, touch
 import { generalDiscoveryPack as pack } from './pack';
 import { deleteSession, listSessions, loadSession, requestPersistentStorage, saveSession } from './storage';
 import { serializeSession, sessionToMarkdown } from './markdown';
+import { formatConnectivityLabel, formatSaveLabel, type PersistenceState, type SaveState } from './indicators';
 
 const appElement = document.querySelector<HTMLDivElement>('#app');
 if (!appElement) throw new Error('App root not found.');
 const app: HTMLDivElement = appElement;
 
 type View = 'home' | 'new' | 'interview' | 'review';
-type PersistenceState = 'unknown' | 'persistent' | 'best-effort';
 
 let view: View = 'home';
 let session: InterviewSession | null = null;
 let saveTimer: number | undefined;
-let saveState: 'saved' | 'saving' | 'error' = 'saved';
+let saveState: SaveState = 'saved';
 let persistenceState: PersistenceState = 'unknown';
 let offlineReady = false;
 let shareSafe = false;
@@ -70,6 +70,7 @@ async function isShellCacheReady(): Promise<boolean> {
 function scheduleSave(): void {
   if (!session) return;
   saveState = 'saving';
+  updateStateIndicators();
   window.clearTimeout(saveTimer);
   saveTimer = window.setTimeout(async () => {
     if (!session) return;
@@ -81,26 +82,37 @@ function scheduleSave(): void {
       console.error('Local save failed.', error);
       saveState = 'error';
     }
-    render();
+    updateStateIndicators();
   }, 180);
 }
 
 function saveLabel(): string {
-  if (saveState === 'saving') return 'Saving locally…';
-  if (saveState === 'error') return 'Local save failed';
-  if (persistenceState === 'best-effort') return 'Saved locally · backup recommended';
-  if (persistenceState === 'persistent') return 'Saved on this device';
-  return 'Saved locally';
+  return formatSaveLabel(saveState, persistenceState);
 }
 
 function connectivityLabel(): string {
-  return navigator.onLine ? (offlineReady ? 'Online · offline ready' : 'Online') : 'Offline';
+  return formatConnectivityLabel(navigator.onLine, offlineReady);
+}
+
+function updateStateIndicators(): void {
+  app.querySelectorAll<HTMLElement>('[data-save-indicator]').forEach((element) => {
+    element.textContent = saveLabel();
+    element.classList.toggle('danger', saveState === 'error');
+  });
+  app.querySelectorAll<HTMLElement>('[data-connectivity-indicator]').forEach((element) => {
+    element.textContent = connectivityLabel();
+  });
+}
+
+function refreshConnectivityIndicators(): void {
+  if (view === 'new') return;
+  updateStateIndicators();
 }
 
 async function renderHome(): Promise<void> {
   const recent = await listSessions().catch(() => []);
   app.innerHTML = `
-    <header class="app-header"><div><strong>Interview Facilitator</strong><span>Local-first discovery cockpit</span></div><span class="state-pill">${escapeHtml(connectivityLabel())}</span></header>
+    <header class="app-header"><div><strong>Interview Facilitator</strong><span>Local-first discovery cockpit</span></div><span class="state-pill" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span></header>
     <main id="main" class="home-shell">
       <section class="hero-card">
         <p class="eyebrow">Human-led discovery</p>
@@ -209,7 +221,7 @@ function renderInterview(): void {
   app.innerHTML = `
     <header class="app-header cockpit-header">
       <div><strong>${escapeHtml(session.clientLabel)}</strong><span>${escapeHtml(pack.title)}</span></div>
-      <div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}">${escapeHtml(saveLabel())}</span><span class="state-pill">${escapeHtml(connectivityLabel())}</span><button class="secondary small" data-action="share">${shareSafe ? 'Private view' : 'Share-safe view'}</button><button class="icon-button" data-action="export" aria-label="Export backup">⇩</button></div>
+      <div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator>${escapeHtml(saveLabel())}</span><span class="state-pill" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span><button class="secondary small" data-action="share">${shareSafe ? 'Private view' : 'Share-safe view'}</button><button class="icon-button" data-action="export" aria-label="Export backup">⇩</button></div>
     </header>
     <main id="main" class="cockpit" ${shareSafe ? 'style="display:block"' : ''}>
       ${shareSafe ? '' : `<aside class="coverage-rail" aria-label="Interview coverage">
@@ -269,7 +281,7 @@ function renderReview(): void {
   const stats = coverage(pack, session);
   const questions = visibleQuestions(pack, session);
   app.innerHTML = `
-    <header class="app-header"><div><strong>${escapeHtml(session.clientLabel)}</strong><span>Client-safe read-back</span></div><span class="state-pill">${escapeHtml(saveLabel())}</span></header>
+    <header class="app-header"><div><strong>${escapeHtml(session.clientLabel)}</strong><span>Client-safe read-back</span></div><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator>${escapeHtml(saveLabel())}</span></header>
     <main id="main" class="review-shell">
       <button class="text-button" data-action="return">← Return to interview</button>
       <p class="eyebrow">Review</p><h1>Read back what matters before ending the conversation.</h1>
@@ -313,14 +325,14 @@ async function render(): Promise<void> {
   return renderInterview();
 }
 
-window.addEventListener('online', () => render());
-window.addEventListener('offline', () => render());
+window.addEventListener('online', () => refreshConnectivityIndicators());
+window.addEventListener('offline', () => refreshConnectivityIndicators());
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').then(async () => {
     const readyRegistration = await navigator.serviceWorker.ready;
     offlineReady = Boolean(readyRegistration.active) && await isShellCacheReady();
-    render();
+    refreshConnectivityIndicators();
   }).catch(() => { offlineReady = false; });
 }
 
