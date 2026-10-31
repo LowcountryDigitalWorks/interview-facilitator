@@ -18,6 +18,7 @@ export class SessionAutosaveCoordinator {
   private readonly timers = new Map<string, PendingTimer>();
   private readonly generations = new Map<string, number>();
   private readonly tails = new Map<string, Promise<void>>();
+  private readonly errors = new Map<string, unknown>();
 
   constructor(
     private readonly persist: (session: InterviewSession) => Promise<void>,
@@ -28,6 +29,7 @@ export class SessionAutosaveCoordinator {
     const sessionId = session.sessionId;
     const generation = (this.generations.get(sessionId) ?? 0) + 1;
     this.generations.set(sessionId, generation);
+    this.errors.delete(sessionId);
 
     const existingTimer = this.timers.get(sessionId);
     if (existingTimer) clearTimeout(existingTimer.handle);
@@ -48,11 +50,13 @@ export class SessionAutosaveCoordinator {
             await this.persist(snapshot);
             if (this.generations.get(sessionId) === generation) {
               this.generations.delete(sessionId);
+              this.errors.delete(sessionId);
               hooks.onSaved?.(sessionId, snapshot);
             }
           } catch (error) {
             if (this.generations.get(sessionId) === generation) {
               this.generations.delete(sessionId);
+              this.errors.set(sessionId, error);
               hooks.onError?.(sessionId, error);
             }
           }
@@ -82,6 +86,8 @@ export class SessionAutosaveCoordinator {
 
     const tail = this.tails.get(sessionId);
     if (tail) await tail.catch(() => undefined);
+
+    if (this.errors.has(sessionId)) throw this.errors.get(sessionId);
   }
 
   async cancelAndWait(sessionId: string): Promise<void> {
@@ -96,5 +102,6 @@ export class SessionAutosaveCoordinator {
 
     const tail = this.tails.get(sessionId);
     if (tail) await tail.catch(() => undefined);
+    this.errors.delete(sessionId);
   }
 }
