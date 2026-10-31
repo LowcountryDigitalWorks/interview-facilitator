@@ -1,5 +1,5 @@
 const CACHE = 'interview-facilitator-shell-v1';
-const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/assets/app.js', '/assets/app.css'];
+const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg', '/assets/app.js', '/assets/app.css'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
