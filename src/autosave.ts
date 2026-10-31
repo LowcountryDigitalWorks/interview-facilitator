@@ -9,8 +9,13 @@ export interface AutosaveHooks {
 
 type TimerHandle = ReturnType<typeof setTimeout>;
 
+interface PendingTimer {
+  handle: TimerHandle;
+  run: () => void;
+}
+
 export class SessionAutosaveCoordinator {
-  private readonly timers = new Map<string, TimerHandle>();
+  private readonly timers = new Map<string, PendingTimer>();
   private readonly generations = new Map<string, number>();
   private readonly tails = new Map<string, Promise<void>>();
 
@@ -25,12 +30,14 @@ export class SessionAutosaveCoordinator {
     this.generations.set(sessionId, generation);
 
     const existingTimer = this.timers.get(sessionId);
-    if (existingTimer !== undefined) clearTimeout(existingTimer);
+    if (existingTimer) clearTimeout(existingTimer.handle);
 
     hooks.onScheduled?.(sessionId);
 
-    const timer = setTimeout(() => {
-      this.timers.delete(sessionId);
+    const run = (): void => {
+      const pending = this.timers.get(sessionId);
+      if (pending?.run === run) this.timers.delete(sessionId);
+
       const snapshot = touch(structuredClone(session));
       const previous = this.tails.get(sessionId) ?? Promise.resolve();
 
@@ -55,19 +62,32 @@ export class SessionAutosaveCoordinator {
       void operation.finally(() => {
         if (this.tails.get(sessionId) === operation) this.tails.delete(sessionId);
       });
-    }, this.delayMs);
+    };
 
-    this.timers.set(sessionId, timer);
+    const handle = setTimeout(run, this.delayMs);
+    this.timers.set(sessionId, { handle, run });
   }
 
   hasPending(sessionId: string): boolean {
     return this.timers.has(sessionId) || this.tails.has(sessionId);
   }
 
+  async flushAndWait(sessionId: string): Promise<void> {
+    const pending = this.timers.get(sessionId);
+    if (pending) {
+      clearTimeout(pending.handle);
+      this.timers.delete(sessionId);
+      pending.run();
+    }
+
+    const tail = this.tails.get(sessionId);
+    if (tail) await tail.catch(() => undefined);
+  }
+
   async cancelAndWait(sessionId: string): Promise<void> {
-    const timer = this.timers.get(sessionId);
-    if (timer !== undefined) {
-      clearTimeout(timer);
+    const pending = this.timers.get(sessionId);
+    if (pending) {
+      clearTimeout(pending.handle);
       this.timers.delete(sessionId);
     }
 
