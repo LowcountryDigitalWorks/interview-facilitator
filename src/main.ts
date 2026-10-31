@@ -5,8 +5,9 @@ import { generalDiscoveryPack as pack } from './pack';
 import { listSessions, loadSession, requestPersistentStorage, saveSession } from './storage';
 import { serializeSession, sessionToMarkdown } from './markdown';
 
-const app = document.querySelector<HTMLDivElement>('#app');
-if (!app) throw new Error('App root not found.');
+const appElement = document.querySelector<HTMLDivElement>('#app');
+if (!appElement) throw new Error('App root not found.');
+const app: HTMLDivElement = appElement;
 
 type View = 'home' | 'new' | 'interview' | 'review';
 let view: View = 'home';
@@ -136,7 +137,8 @@ function renderNew(): void {
   app.querySelector('[data-action="home"]')?.addEventListener('click', () => { view = 'home'; render(); });
   app.querySelector<HTMLFormElement>('#new-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();
-    const data = new FormData(event.currentTarget);
+    const form = event.currentTarget as HTMLFormElement;
+    const data = new FormData(form);
     session = createSession(pack, {
       clientLabel: String(data.get('clientLabel') ?? ''),
       interviewerLabel: String(data.get('interviewerLabel') ?? ''),
