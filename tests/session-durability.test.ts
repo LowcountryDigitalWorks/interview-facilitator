@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { InterviewSession } from '../src/domain';
 import { SessionAutosaveCoordinator } from '../src/autosave';
-import { importSessionReplacement, openStoredSession, shouldFlushActiveSession } from '../src/session-durability';
+import { beginSessionSwitch, importSessionReplacement, openStoredSession, shouldFlushActiveSession } from '../src/session-durability';
 
 function makeSession(sessionId: string, notes: string): InterviewSession {
   return {
@@ -154,5 +154,76 @@ describe('session durability', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('keeps a dirty outgoing session when switching, creating, or importing fails, then retries the save', async () => {
+    let fail = true;
+    const persisted: string[] = [];
+    const coordinator = new SessionAutosaveCoordinator(async (value) => {
+      persisted.push(`${value.sessionId}:${value.runningNotes}`);
+      if (fail && value.sessionId === 'session-a') throw new Error('synthetic outgoing failure');
+    });
+    const active = makeSession('session-a', 'dirty local');
+    coordinator.schedule(active);
+    const load = vi.fn(async () => makeSession('session-b', 'stored b'));
+    const saveImported = vi.fn(async () => undefined);
+    const saveCreated = vi.fn(async () => undefined);
+
+    const opened = await beginSessionSwitch({
+      active,
+      nextSessionId: 'session-b',
+      flush: (sessionId) => coordinator.flushAndWait(sessionId),
+      proceed: () => openStoredSession({
+        sessionId: 'session-b',
+        flush: (sessionId) => coordinator.flushAndWait(sessionId),
+        load,
+      }),
+    });
+    const created = await beginSessionSwitch({
+      active,
+      nextSessionId: 'session-new',
+      flush: (sessionId) => coordinator.flushAndWait(sessionId),
+      proceed: async () => {
+        await saveCreated();
+        return makeSession('session-new', 'created');
+      },
+    });
+    const imported = await beginSessionSwitch({
+      active,
+      nextSessionId: 'session-import',
+      flush: (sessionId) => coordinator.flushAndWait(sessionId),
+      proceed: () => importSessionReplacement({
+        imported: makeSession('session-import', 'imported'),
+        flush: async () => undefined,
+        load: async () => undefined,
+        confirmReplace: () => true,
+        save: saveImported,
+      }),
+    });
+
+    expect(opened.kind).toBe('save-failure');
+    expect(created.kind).toBe('save-failure');
+    expect(imported.kind).toBe('save-failure');
+    expect(load).not.toHaveBeenCalled();
+    expect(saveCreated).not.toHaveBeenCalled();
+    expect(saveImported).not.toHaveBeenCalled();
+    expect(active.runningNotes).toBe('dirty local');
+
+    fail = false;
+    const retried = await beginSessionSwitch({
+      active,
+      nextSessionId: 'session-b',
+      flush: (sessionId) => coordinator.flushAndWait(sessionId),
+      proceed: () => openStoredSession({
+        sessionId: 'session-b',
+        flush: (sessionId) => coordinator.flushAndWait(sessionId),
+        load,
+      }),
+    });
+
+    expect(retried.kind).toBe('proceeded');
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(persisted).toContain('session-a:dirty local');
+    expect(persisted.filter((value) => value === 'session-a:dirty local').length).toBeGreaterThan(1);
   });
 });

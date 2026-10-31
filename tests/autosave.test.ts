@@ -111,6 +111,8 @@ describe('SessionAutosaveCoordinator', () => {
 
     expect(persisted).toEqual([]);
     expect(coordinator.hasPending(active.sessionId)).toBe(false);
+    await coordinator.flushAndWait(active.sessionId);
+    expect(persisted).toEqual([]);
   });
 
   it('waits for an in-flight write before destructive follow-up can continue', async () => {

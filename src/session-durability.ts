@@ -22,6 +22,35 @@ export function shouldFlushActiveSession(event: LifecycleFlushEvent): boolean {
   return event.visibilityState === 'hidden';
 }
 
+export type OutgoingFlushResult =
+  | { kind: 'ready' }
+  | { kind: 'save-failure'; error: unknown; session: InterviewSession };
+
+export async function flushOutgoingSession(input: {
+  active: InterviewSession | null;
+  nextSessionId: string;
+  flush: (sessionId: string) => Promise<void>;
+}): Promise<OutgoingFlushResult> {
+  if (!input.active || input.active.sessionId === input.nextSessionId) return { kind: 'ready' };
+  try {
+    await input.flush(input.active.sessionId);
+    return { kind: 'ready' };
+  } catch (error) {
+    return { kind: 'save-failure', error, session: input.active };
+  }
+}
+
+export async function beginSessionSwitch<T>(input: {
+  active: InterviewSession | null;
+  nextSessionId: string;
+  flush: (sessionId: string) => Promise<void>;
+  proceed: () => Promise<T>;
+}): Promise<{ kind: 'proceeded'; value: T } | OutgoingFlushResult & { kind: 'save-failure' }> {
+  const outgoing = await flushOutgoingSession(input);
+  if (outgoing.kind === 'save-failure') return outgoing;
+  return { kind: 'proceeded', value: await input.proceed() };
+}
+
 export async function openStoredSession(input: {
   sessionId: string;
   flush: (sessionId: string) => Promise<void>;

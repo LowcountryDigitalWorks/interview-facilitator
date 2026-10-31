@@ -7,7 +7,7 @@ import { serializeSession, sessionToMarkdown } from './markdown';
 import { formatConnectivityLabel, formatSaveLabel, type PersistenceState, type SaveState } from './indicators';
 import { SessionAutosaveCoordinator } from './autosave';
 import { readSessionList } from './session-list';
-import { importSessionReplacement, openStoredSession, shouldFlushActiveSession } from './session-durability';
+import { beginSessionSwitch, importSessionReplacement, openStoredSession, shouldFlushActiveSession } from './session-durability';
 
 const appElement = document.querySelector<HTMLDivElement>('#app');
 if (!appElement) throw new Error('App root not found.');
@@ -186,16 +186,26 @@ async function renderHome(): Promise<void> {
       return;
     }
 
-    const result = await importSessionReplacement({
-      imported,
+    const outcome = await beginSessionSwitch({
+      active: session,
+      nextSessionId: imported.sessionId,
       flush: (sessionId) => autosave.flushAndWait(sessionId),
-      load: loadSession,
-      confirmReplace: () => confirm('A local interview with this session ID already exists. Replace it with the imported file? Cancel keeps the local interview unchanged.'),
-      save: async (value) => {
-        await refreshPersistenceState();
-        await saveSession(value);
-      },
+      proceed: () => importSessionReplacement({
+        imported,
+        flush: (sessionId) => autosave.flushAndWait(sessionId),
+        load: loadSession,
+        confirmReplace: () => confirm('A local interview with this session ID already exists. Replace it with the imported file? Cancel keeps the local interview unchanged.'),
+        save: async (value) => {
+          await refreshPersistenceState();
+          await saveSession(value);
+        },
+      }),
     });
+    if (outcome.kind === 'save-failure') {
+      await showOutgoingSaveFailure(outcome.error);
+      return;
+    }
+    const result = outcome.value;
 
     if (result.kind === 'replaced') {
       session = result.session;
@@ -227,11 +237,21 @@ async function renderHome(): Promise<void> {
   });
   app.querySelectorAll<HTMLElement>('[data-session-id]').forEach((button) => button.addEventListener('click', async () => {
     const sessionId = button.dataset.sessionId ?? '';
-    const result = await openStoredSession({
-      sessionId,
+    const outcome = await beginSessionSwitch({
+      active: session,
+      nextSessionId: sessionId,
       flush: (id) => autosave.flushAndWait(id),
-      load: loadSession,
+      proceed: () => openStoredSession({
+        sessionId,
+        flush: (id) => autosave.flushAndWait(id),
+        load: loadSession,
+      }),
     });
+    if (outcome.kind === 'save-failure') {
+      await showOutgoingSaveFailure(outcome.error);
+      return;
+    }
+    const result = outcome.value;
     if (result.kind === 'opened') {
       session = result.session;
       homeNotice = null;
@@ -264,6 +284,19 @@ async function renderHome(): Promise<void> {
   }));
 }
 
+async function showOutgoingSaveFailure(error: unknown): Promise<void> {
+  console.error('Local save failed.', error);
+  if (!session) return;
+  saveState = 'error';
+  homeNotice = {
+    kind: 'save',
+    sessionId: session.sessionId,
+    message: 'The latest edits could not be saved on this device. Switching was stopped so this interview stays available to return to or export. No other local interview was changed.',
+  };
+  view = 'home';
+  await renderHome();
+}
+
 function renderHomeNotice(notice: Exclude<HomeNotice, null>): string {
   if (notice.kind === 'save') {
     const canRecover = session?.sessionId === notice.sessionId;
@@ -291,14 +324,27 @@ function renderNew(): void {
     event.preventDefault();
     const form = event.currentTarget as HTMLFormElement;
     const data = new FormData(form);
-    session = createSession(pack, {
+    const next = createSession(pack, {
       clientLabel: String(data.get('clientLabel') ?? ''),
       interviewerLabel: String(data.get('interviewerLabel') ?? ''),
       interviewMode: String(data.get('interviewMode') ?? '')
     });
     try {
-      await refreshPersistenceState();
-      await saveSession(session);
+      const outcome = await beginSessionSwitch({
+        active: session,
+        nextSessionId: next.sessionId,
+        flush: (id) => autosave.flushAndWait(id),
+        proceed: async () => {
+          await refreshPersistenceState();
+          await saveSession(next);
+          return next;
+        },
+      });
+      if (outcome.kind === 'save-failure') {
+        await showOutgoingSaveFailure(outcome.error);
+        return;
+      }
+      session = outcome.value;
       homeNotice = null;
       saveState = 'saved';
       shareSafe = false;
