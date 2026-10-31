@@ -69,6 +69,23 @@ describe('SessionAutosaveCoordinator', () => {
     expect(persisted[0]?.runningNotes).toBe('second');
   });
 
+  it('flushes a pending write before resume/load reads the record', async () => {
+    const persisted: InterviewSession[] = [];
+    const coordinator = new SessionAutosaveCoordinator(async (value) => {
+      persisted.push(structuredClone(value));
+    });
+    const active = makeSession('session-a');
+    active.runningNotes = 'latest before resume';
+
+    coordinator.schedule(active);
+    await vi.advanceTimersByTimeAsync(50);
+    await coordinator.flushAndWait(active.sessionId);
+
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]?.runningNotes).toBe('latest before resume');
+    expect(coordinator.hasPending(active.sessionId)).toBe(false);
+  });
+
   it('cancels a pending write before delete/import replacement', async () => {
     const persisted: InterviewSession[] = [];
     const coordinator = new SessionAutosaveCoordinator(async (value) => {
