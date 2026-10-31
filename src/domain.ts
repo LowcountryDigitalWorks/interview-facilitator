@@ -69,6 +69,8 @@ export interface Coverage {
   visible: number;
 }
 
+const ANSWER_STATUSES = new Set<AnswerStatus>(['ANSWERED', 'ALREADY_KNOWN', 'SKIP', 'N_A', 'MUST_CONFIRM']);
+
 export function createSession(pack: InterviewPack, input: {clientLabel: string; interviewerLabel?: string; interviewMode?: string}, now = new Date()): InterviewSession {
   const timestamp = now.toISOString();
   const answers = Object.fromEntries(pack.questions.map((question) => [question.id, { value: null, status: null, note: '' }])) as Record<string, QuestionState>;
@@ -127,12 +129,71 @@ export function touch(session: InterviewSession, now = new Date()): InterviewSes
   return { ...session, updatedAt: now.toISOString() };
 }
 
+function requireString(record: Record<string, unknown>, key: string): string {
+  const value = record[key];
+  if (typeof value !== 'string') throw new Error(`Session ${key} must be a string.`);
+  return value;
+}
+
+function validateKnownFact(value: unknown): KnownFact {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Session known fact is invalid.');
+  const record = value as Record<string, unknown>;
+  const fact: KnownFact = {
+    id: requireString(record, 'id'),
+    label: requireString(record, 'label'),
+    value: requireString(record, 'value'),
+    provenance: requireString(record, 'provenance')
+  };
+  if (record.questionId !== undefined) fact.questionId = requireString(record, 'questionId');
+  return fact;
+}
+
+function validateQuestionState(value: unknown): QuestionState {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Session answer state is invalid.');
+  const record = value as Record<string, unknown>;
+  if (record.value !== null && typeof record.value !== 'string') throw new Error('Session answer value must be a string or null.');
+  if (record.status !== null && (typeof record.status !== 'string' || !ANSWER_STATUSES.has(record.status as AnswerStatus))) throw new Error('Session answer status is invalid.');
+  if (typeof record.note !== 'string') throw new Error('Session answer note must be a string.');
+  return { value: record.value as string | null, status: record.status as AnswerStatus | null, note: record.note };
+}
+
 export function validateSessionShape(value: unknown): InterviewSession {
-  if (!value || typeof value !== 'object') throw new Error('Session JSON must be an object.');
-  const candidate = value as Partial<InterviewSession>;
-  if (candidate.sessionSchemaVersion !== '1.0.0') throw new Error('Unsupported session schema version.');
-  if (!candidate.sessionId || !candidate.interviewPackId || !candidate.interviewPackVersion) throw new Error('Session identity is incomplete.');
-  if (!candidate.answers || typeof candidate.answers !== 'object') throw new Error('Session answers are missing.');
-  if (!Array.isArray(candidate.knownFacts)) throw new Error('Session known facts are invalid.');
-  return candidate as InterviewSession;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Session JSON must be an object.');
+  const record = value as Record<string, unknown>;
+  if (record.sessionSchemaVersion !== '1.0.0') throw new Error('Unsupported session schema version.');
+  if (!record.answers || typeof record.answers !== 'object' || Array.isArray(record.answers)) throw new Error('Session answers are missing or invalid.');
+  if (!Array.isArray(record.knownFacts)) throw new Error('Session known facts are invalid.');
+
+  const answers = Object.fromEntries(Object.entries(record.answers as Record<string, unknown>).map(([questionId, state]) => {
+    if (!questionId) throw new Error('Session answer question ID is invalid.');
+    return [questionId, validateQuestionState(state)];
+  }));
+
+  return {
+    sessionSchemaVersion: '1.0.0',
+    sessionId: requireString(record, 'sessionId'),
+    interviewPackId: requireString(record, 'interviewPackId'),
+    interviewPackVersion: requireString(record, 'interviewPackVersion'),
+    clientLabel: requireString(record, 'clientLabel'),
+    interviewerLabel: requireString(record, 'interviewerLabel'),
+    interviewMode: requireString(record, 'interviewMode'),
+    createdAt: requireString(record, 'createdAt'),
+    updatedAt: requireString(record, 'updatedAt'),
+    currentQuestionId: requireString(record, 'currentQuestionId'),
+    knownFacts: record.knownFacts.map(validateKnownFact),
+    answers,
+    runningNotes: requireString(record, 'runningNotes')
+  };
+}
+
+export function validateSessionForPack(session: InterviewSession, pack: InterviewPack): void {
+  if (session.interviewPackId !== pack.packId || session.interviewPackVersion !== pack.packVersion) throw new Error('This session uses a different interview pack or version.');
+  const questionIds = new Set(pack.questions.map((question) => question.id));
+  for (const question of pack.questions) {
+    if (!session.answers[question.id]) throw new Error(`Session is missing answer state for question ${question.id}.`);
+  }
+  for (const questionId of Object.keys(session.answers)) {
+    if (!questionIds.has(questionId)) throw new Error(`Session contains an unknown question ${questionId}.`);
+  }
+  if (!questionIds.has(session.currentQuestionId)) throw new Error('Session current question is not part of this pack.');
 }
