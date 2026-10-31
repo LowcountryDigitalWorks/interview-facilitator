@@ -1,10 +1,11 @@
 import './styles.css';
 import type { AnswerStatus, InterviewSession, Question } from './domain';
-import { coverage, createSession, nextVisibleQuestion, relevantKnownFacts, touch, validateSessionForPack, validateSessionShape, visibleQuestions } from './domain';
+import { coverage, createSession, nextVisibleQuestion, relevantKnownFacts, validateSessionForPack, validateSessionShape, visibleQuestions } from './domain';
 import { generalDiscoveryPack as pack } from './pack';
 import { deleteSession, listSessions, loadSession, requestPersistentStorage, saveSession } from './storage';
 import { serializeSession, sessionToMarkdown } from './markdown';
 import { formatConnectivityLabel, formatSaveLabel, type PersistenceState, type SaveState } from './indicators';
+import { SessionAutosaveCoordinator } from './autosave';
 
 const appElement = document.querySelector<HTMLDivElement>('#app');
 if (!appElement) throw new Error('App root not found.');
@@ -14,11 +15,12 @@ type View = 'home' | 'new' | 'interview' | 'review';
 
 let view: View = 'home';
 let session: InterviewSession | null = null;
-let saveTimer: number | undefined;
 let saveState: SaveState = 'saved';
 let persistenceState: PersistenceState = 'unknown';
 let offlineReady = false;
 let shareSafe = false;
+
+const autosave = new SessionAutosaveCoordinator(saveSession);
 
 const statusOptions: { value: AnswerStatus; label: string }[] = [
   { value: 'ANSWERED', label: 'Answered' },
@@ -69,21 +71,25 @@ async function isShellCacheReady(): Promise<boolean> {
 
 function scheduleSave(): void {
   if (!session) return;
-  saveState = 'saving';
-  updateStateIndicators();
-  window.clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(async () => {
-    if (!session) return;
-    try {
-      session = touch(session);
-      await saveSession(session);
+  autosave.schedule(session, {
+    onScheduled: (sessionId) => {
+      if (session?.sessionId !== sessionId) return;
+      saveState = 'saving';
+      updateStateIndicators();
+    },
+    onSaved: (sessionId, savedSession) => {
+      if (session?.sessionId !== sessionId) return;
+      session.updatedAt = savedSession.updatedAt;
       saveState = 'saved';
-    } catch (error) {
+      updateStateIndicators();
+    },
+    onError: (sessionId, error) => {
       console.error('Local save failed.', error);
+      if (session?.sessionId !== sessionId) return;
       saveState = 'error';
+      updateStateIndicators();
     }
-    updateStateIndicators();
-  }, 180);
+  });
 }
 
 function saveLabel(): string {
@@ -142,9 +148,10 @@ async function renderHome(): Promise<void> {
     try {
       const imported = validateSessionShape(JSON.parse(await file.text()));
       validateSessionForPack(imported, pack);
-      session = imported;
+      await autosave.cancelAndWait(imported.sessionId);
       await refreshPersistenceState();
-      await saveSession(session);
+      await saveSession(imported);
+      session = imported;
       saveState = 'saved';
       shareSafe = false;
       view = 'interview';
@@ -154,13 +161,20 @@ async function renderHome(): Promise<void> {
     }
   });
   app.querySelectorAll<HTMLElement>('[data-session-id]').forEach((button) => button.addEventListener('click', async () => {
-    const loaded = await loadSession(button.dataset.sessionId ?? '');
-    if (!loaded) return;
-    session = loaded;
-    await refreshPersistenceState();
-    shareSafe = false;
-    view = 'interview';
-    render();
+    const sessionId = button.dataset.sessionId ?? '';
+    try {
+      await autosave.flushAndWait(sessionId);
+      const loaded = await loadSession(sessionId);
+      if (!loaded) return;
+      session = loaded;
+      saveState = 'saved';
+      await refreshPersistenceState();
+      shareSafe = false;
+      view = 'interview';
+      render();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Unable to open local interview.');
+    }
   }));
 }
 
@@ -306,9 +320,11 @@ function renderReview(): void {
   app.querySelector('[data-action="delete"]')?.addEventListener('click', async () => {
     if (!session) return;
     if (!confirm('Delete this local interview? Export a backup first if you need one. This cannot be undone.')) return;
+    const sessionId = session.sessionId;
     try {
-      await deleteSession(session.sessionId);
-      session = null;
+      await autosave.cancelAndWait(sessionId);
+      await deleteSession(sessionId);
+      if (session?.sessionId === sessionId) session = null;
       shareSafe = false;
       view = 'home';
       render();
