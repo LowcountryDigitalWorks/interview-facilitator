@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Interview Facilitator icon">
+  <rect width="512" height="512" rx="112" fill="#102a3a"/>
+  <path d="M128 142h256v168c0 35-29 64-64 64H222l-84 64 22-64h-32c-35 0-64-29-64-64V206c0-35 29-64 64-64Z" fill="#f3efe6"/>
+  <circle cx="186" cy="258" r="18" fill="#2f766f"/><circle cx="256" cy="258" r="18" fill="#2f766f"/><circle cx="326" cy="258" r="18" fill="#2f766f"/>
+</svg>
