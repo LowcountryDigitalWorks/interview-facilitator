@@ -86,6 +86,18 @@ describe('SessionAutosaveCoordinator', () => {
     expect(coordinator.hasPending(active.sessionId)).toBe(false);
   });
 
+  it('surfaces a failed flush instead of allowing stale resume data', async () => {
+    const coordinator = new SessionAutosaveCoordinator(async () => {
+      throw new Error('synthetic write failure');
+    });
+    const active = makeSession('session-a');
+
+    coordinator.schedule(active);
+
+    await expect(coordinator.flushAndWait(active.sessionId)).rejects.toThrow('synthetic write failure');
+    expect(coordinator.hasPending(active.sessionId)).toBe(false);
+  });
+
   it('cancels a pending write before delete/import replacement', async () => {
     const persisted: InterviewSession[] = [];
     const coordinator = new SessionAutosaveCoordinator(async (value) => {
