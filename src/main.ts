@@ -28,6 +28,8 @@ const statusOptions: { value: AnswerStatus; label: string }[] = [
   { value: 'MUST_CONFIRM', label: 'Must confirm' }
 ];
 
+const SHELL_CACHE_URLS = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg', '/assets/app.js', '/assets/app.css'] as const;
+
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char] ?? char);
 }
@@ -52,6 +54,16 @@ async function refreshPersistenceState(): Promise<void> {
     persistenceState = (await requestPersistentStorage()) === true ? 'persistent' : 'best-effort';
   } catch {
     persistenceState = 'best-effort';
+  }
+}
+
+async function isShellCacheReady(): Promise<boolean> {
+  if (!('caches' in window)) return false;
+  try {
+    const cached = await Promise.all(SHELL_CACHE_URLS.map((path) => caches.match(path)));
+    return cached.every((response) => response !== undefined);
+  } catch {
+    return false;
   }
 }
 
@@ -271,8 +283,8 @@ function renderReview(): void {
         }).join('')}</section>`;
       }).join('')}
       <section class="review-section unresolved"><h2>Must confirm</h2>${questions.filter((question) => session!.answers[question.id]?.status === 'MUST_CONFIRM').map((question) => `<p>• ${escapeHtml(question.prompt)}</p>`).join('') || '<p>None.</p>'}</section>
-      <section class="internal-notes"><h2>Internal notes</h2><p>These are intentionally separate from the client-safe read-back and should not be shared with the client.</p><pre>${escapeHtml(session.runningNotes || 'No running notes.')}</pre></section>
-      <div class="button-row"><button class="primary" data-action="json">Export JSON backup</button><button class="secondary" data-action="markdown">Export Markdown</button><button class="secondary" data-action="home">Home</button><button class="secondary" data-action="delete">Delete local session</button></div>
+      <div class="known-preview"><strong>Client-safe screen</strong><p>Internal question notes and running notes are intentionally omitted here. Full JSON and Markdown exports remain internal working artifacts.</p></div>
+      <div class="button-row"><button class="primary" data-action="json">Export full JSON backup</button><button class="secondary" data-action="markdown">Export internal Markdown</button><button class="secondary" data-action="home">Home</button><button class="secondary" data-action="delete">Delete local session</button></div>
     </main>`;
   app.querySelector('[data-action="return"]')?.addEventListener('click', () => { shareSafe = false; view = 'interview'; render(); });
   app.querySelectorAll<HTMLElement>('[data-change]').forEach((button) => button.addEventListener('click', () => { if (session) session.currentQuestionId = button.dataset.change ?? session.currentQuestionId; shareSafe = false; view = 'interview'; render(); }));
@@ -307,7 +319,7 @@ window.addEventListener('offline', () => render());
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').then(async () => {
     const readyRegistration = await navigator.serviceWorker.ready;
-    offlineReady = Boolean(readyRegistration.active);
+    offlineReady = Boolean(readyRegistration.active) && await isShellCacheReady();
     render();
   }).catch(() => { offlineReady = false; });
 }
