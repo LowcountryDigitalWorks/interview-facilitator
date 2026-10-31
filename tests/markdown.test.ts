@@ -18,4 +18,12 @@ describe('deterministic exports', () => {
     session.answers['existing-presence']!.status = 'ALREADY_KNOWN';
     expect(sessionToMarkdown(pack, session)).toBe(sessionToMarkdown(pack, session));
   });
+
+  it('makes the full internal Markdown artifact explicit while client-safe read-back remains a separate UI surface', () => {
+    const session = createSession(pack, { clientLabel: 'Synthetic Client' }, new Date('2026-10-31T12:00:00Z'));
+    session.runningNotes = 'Internal follow-up note.';
+    const markdown = sessionToMarkdown(pack, session);
+    expect(markdown).toContain('## Internal running notes');
+    expect(markdown).toContain('Internal follow-up note.');
+  });
 });
