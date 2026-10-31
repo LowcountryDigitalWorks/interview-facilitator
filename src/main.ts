@@ -2,7 +2,7 @@ import './styles.css';
 import type { AnswerStatus, InterviewSession, Question } from './domain';
 import { coverage, createSession, nextVisibleQuestion, relevantKnownFacts, touch, validateSessionShape, visibleQuestions } from './domain';
 import { generalDiscoveryPack as pack } from './pack';
-import { listSessions, loadSession, requestPersistentStorage, saveSession } from './storage';
+import { deleteSession, listSessions, loadSession, requestPersistentStorage, saveSession } from './storage';
 import { serializeSession, sessionToMarkdown } from './markdown';
 
 const appElement = document.querySelector<HTMLDivElement>('#app');
@@ -10,11 +10,15 @@ if (!appElement) throw new Error('App root not found.');
 const app: HTMLDivElement = appElement;
 
 type View = 'home' | 'new' | 'interview' | 'review';
+type PersistenceState = 'unknown' | 'persistent' | 'best-effort';
+
 let view: View = 'home';
 let session: InterviewSession | null = null;
 let saveTimer: number | undefined;
 let saveState: 'saved' | 'saving' | 'error' = 'saved';
+let persistenceState: PersistenceState = 'unknown';
 let offlineReady = false;
+let shareSafe = false;
 
 const statusOptions: { value: AnswerStatus; label: string }[] = [
   { value: 'ANSWERED', label: 'Answered' },
@@ -35,12 +39,20 @@ function download(filename: string, contents: string, type: string): void {
   link.href = url;
   link.download = filename;
   link.click();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function currentQuestion(): Question | undefined {
   if (!session) return undefined;
   return visibleQuestions(pack, session).find((question) => question.id === session?.currentQuestionId) ?? visibleQuestions(pack, session)[0];
+}
+
+async function refreshPersistenceState(): Promise<void> {
+  try {
+    persistenceState = (await requestPersistentStorage()) === true ? 'persistent' : 'best-effort';
+  } catch {
+    persistenceState = 'best-effort';
+  }
 }
 
 function scheduleSave(): void {
@@ -64,7 +76,9 @@ function scheduleSave(): void {
 function saveLabel(): string {
   if (saveState === 'saving') return 'Saving locally…';
   if (saveState === 'error') return 'Local save failed';
-  return 'Saved on this device';
+  if (persistenceState === 'best-effort') return 'Saved locally · backup recommended';
+  if (persistenceState === 'persistent') return 'Saved on this device';
+  return 'Saved locally';
 }
 
 function connectivityLabel(): string {
@@ -80,6 +94,7 @@ async function renderHome(): Promise<void> {
         <p class="eyebrow">Human-led discovery</p>
         <h1>Keep the conversation natural. Keep the coverage visible.</h1>
         <p>Run a guided interview without turning the call into form filling. Sessions save locally and remain usable without a network after the app is cached.</p>
+        <div class="known-preview"><strong>Local data stays local to this browser/app context.</strong><p>Installing later or switching browsers may not carry an in-progress interview with you. Use Export backup before changing devices, browsers, or install context.</p></div>
         <div class="button-row"><button class="primary" data-action="new">New interview</button><button class="secondary" data-action="import">Import session JSON</button></div>
         <input id="import-file" type="file" accept="application/json,.json" hidden />
       </section>
@@ -104,7 +119,10 @@ async function renderHome(): Promise<void> {
       const imported = validateSessionShape(JSON.parse(await file.text()));
       if (imported.interviewPackId !== pack.packId || imported.interviewPackVersion !== pack.packVersion) throw new Error('This prototype only supports the included pack/version.');
       session = imported;
+      await refreshPersistenceState();
       await saveSession(session);
+      saveState = 'saved';
+      shareSafe = false;
       view = 'interview';
       render();
     } catch (error) {
@@ -115,6 +133,8 @@ async function renderHome(): Promise<void> {
     const loaded = await loadSession(button.dataset.sessionId ?? '');
     if (!loaded) return;
     session = loaded;
+    await refreshPersistenceState();
+    shareSafe = false;
     view = 'interview';
     render();
   }));
@@ -145,9 +165,10 @@ function renderNew(): void {
       interviewMode: String(data.get('interviewMode') ?? '')
     });
     try {
-      await requestPersistentStorage();
+      await refreshPersistenceState();
       await saveSession(session);
       saveState = 'saved';
+      shareSafe = false;
       view = 'interview';
       render();
     } catch (error) {
@@ -176,32 +197,32 @@ function renderInterview(): void {
   app.innerHTML = `
     <header class="app-header cockpit-header">
       <div><strong>${escapeHtml(session.clientLabel)}</strong><span>${escapeHtml(pack.title)}</span></div>
-      <div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}">${escapeHtml(saveLabel())}</span><span class="state-pill">${escapeHtml(connectivityLabel())}</span><button class="icon-button" data-action="export" aria-label="Export backup">⇩</button></div>
+      <div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}">${escapeHtml(saveLabel())}</span><span class="state-pill">${escapeHtml(connectivityLabel())}</span><button class="secondary small" data-action="share">${shareSafe ? 'Private view' : 'Share-safe view'}</button><button class="icon-button" data-action="export" aria-label="Export backup">⇩</button></div>
     </header>
-    <main id="main" class="cockpit">
-      <aside class="coverage-rail" aria-label="Interview coverage">
-        <div class="rail-heading"><p class="eyebrow">Coverage</p><strong>${stats.resolved} resolved</strong><span>${stats.remaining} remaining · ${stats.mustConfirm} must confirm</span></div>
+    <main id="main" class="cockpit" ${shareSafe ? 'style="display:block"' : ''}>
+      ${shareSafe ? '' : `<aside class="coverage-rail" aria-label="Interview coverage">
+        <div class="rail-heading"><p class="eyebrow">Coverage</p><strong>${stats.resolved} resolved</strong><span>${stats.remaining} currently remaining · ${stats.mustConfirm} must confirm</span></div>
         ${pack.sections.map((item) => {
           const questions = visibleQuestions(pack, session!).filter((candidate) => candidate.sectionId === item.id);
           if (!questions.length) return '';
           const done = questions.filter((candidate) => session!.answers[candidate.id]?.status && session!.answers[candidate.id]?.status !== 'MUST_CONFIRM').length;
           return `<div class="coverage-section"><span>${escapeHtml(item.title)}</span><small>${done}/${questions.length}</small>${questions.map((candidate) => `<button class="question-dot ${candidate.id === question.id ? 'current' : ''} ${session!.answers[candidate.id]?.status === 'MUST_CONFIRM' ? 'confirm' : ''}" data-question-id="${escapeHtml(candidate.id)}"><span>${escapeHtml(candidate.prompt)}</span></button>`).join('')}</div>`;
         }).join('')}
-      </aside>
+      </aside>`}
       <section class="question-stage">
-        <div class="mobile-tools"><button class="secondary small" data-action="coverage">Coverage ${stats.resolved}/${stats.visible}</button><button class="secondary small" data-action="context">Context ${facts.length}</button></div>
+        ${shareSafe ? '<div class="known-preview"><strong>Share-safe view</strong><p>Internal notes, context, coverage, and status controls are hidden. Use the client-safe read-back for the preferred end-of-call screen share.</p></div>' : `<div class="mobile-tools"><button class="secondary small" data-action="coverage">Coverage ${stats.resolved}/${stats.visible}</button><button class="secondary small" data-action="context">Context ${facts.length}</button></div>`}
         <p class="eyebrow">${escapeHtml(section?.title ?? '')}</p>
         <h1>${escapeHtml(question.prompt)}</h1>
         ${question.help ? `<p class="question-help">${escapeHtml(question.help)}</p>` : ''}
         <div class="answer-block">${answerControl(question, state.value ?? '')}</div>
-        <label class="notes-label">Question notes <span>internal</span><textarea id="question-note" rows="3" placeholder="Optional interviewer note">${escapeHtml(state.note)}</textarea></label>
-        <fieldset class="status-fieldset"><legend>Question status</legend><div class="status-grid">${statusOptions.map((option) => `<label class="status-chip ${state.status === option.value ? 'selected' : ''}"><input type="radio" name="status" value="${option.value}" ${state.status === option.value ? 'checked' : ''}/><span>${escapeHtml(option.label)}</span></label>`).join('')}</div></fieldset>
+        ${shareSafe ? '' : `<label class="notes-label">Question notes <span>internal</span><textarea id="question-note" rows="3" placeholder="Optional interviewer note">${escapeHtml(state.note)}</textarea></label>
+        <fieldset class="status-fieldset"><legend>Question status</legend><div class="status-grid">${statusOptions.map((option) => `<label class="status-chip ${state.status === option.value ? 'selected' : ''}"><input type="radio" name="status" value="${option.value}" ${state.status === option.value ? 'checked' : ''}/><span>${escapeHtml(option.label)}</span></label>`).join('')}</div></fieldset>`}
         <div class="action-dock"><button class="secondary" data-action="back" ${nextVisibleQuestion(pack, session, question.id, -1) ? '' : 'disabled'}>Back</button><button class="primary" data-action="next">${nextVisibleQuestion(pack, session, question.id, 1) ? 'Continue' : 'Review interview'}</button></div>
       </section>
-      <aside class="context-rail">
+      ${shareSafe ? '' : `<aside class="context-rail">
         <section><p class="eyebrow">Known context</p>${facts.length ? facts.map((fact) => `<div class="fact-card"><strong>${escapeHtml(fact.label)}</strong><p>${escapeHtml(fact.value)}</p><small>${escapeHtml(fact.provenance)}</small></div>`).join('') : '<p class="muted">No known facts linked to this question.</p>'}</section>
         <section><label class="notes-label">Running notes <span>internal</span><textarea id="running-notes" rows="10" placeholder="Cross-question notes">${escapeHtml(session.runningNotes)}</textarea></label></section>
-      </aside>
+      </aside>`}
     </main>`;
 
   const applyAnswer = (): void => {
@@ -210,19 +231,22 @@ function renderInterview(): void {
     const textarea = app.querySelector<HTMLTextAreaElement>('#answer');
     const input = app.querySelector<HTMLInputElement>('#answer');
     const radio = app.querySelector<HTMLInputElement>('input[name="answer"]:checked');
-    current.value = textarea?.value ?? input?.value ?? radio?.value ?? null;
-    current.note = app.querySelector<HTMLTextAreaElement>('#question-note')?.value ?? '';
-    current.status = (app.querySelector<HTMLInputElement>('input[name="status"]:checked')?.value as AnswerStatus | undefined) ?? current.status;
+    current.value = textarea?.value ?? input?.value ?? radio?.value ?? current.value;
+    if (!shareSafe) {
+      current.note = app.querySelector<HTMLTextAreaElement>('#question-note')?.value ?? current.note;
+      current.status = (app.querySelector<HTMLInputElement>('input[name="status"]:checked')?.value as AnswerStatus | undefined) ?? current.status;
+      session.runningNotes = app.querySelector<HTMLTextAreaElement>('#running-notes')?.value ?? session.runningNotes;
+    }
     session.answers[question.id] = current;
-    session.runningNotes = app.querySelector<HTMLTextAreaElement>('#running-notes')?.value ?? '';
     scheduleSave();
   };
 
-  app.querySelectorAll<HTMLInputElement>('input[name="answer"], input[name="status"]').forEach((element) => element.addEventListener('change', () => { applyAnswer(); renderInterview(); }));
+  app.querySelectorAll<HTMLInputElement>('input[name="answer"], input[name="status"]').forEach((element) => element.addEventListener('change', () => { applyAnswer(); if (!shareSafe) renderInterview(); }));
   app.querySelectorAll<HTMLTextAreaElement>('#answer, #question-note, #running-notes').forEach((element) => element.addEventListener('input', applyAnswer));
   app.querySelectorAll<HTMLElement>('[data-question-id]').forEach((button) => button.addEventListener('click', () => { applyAnswer(); if (session) session.currentQuestionId = button.dataset.questionId ?? session.currentQuestionId; renderInterview(); }));
   app.querySelector('[data-action="back"]')?.addEventListener('click', () => { applyAnswer(); const previous = session && nextVisibleQuestion(pack, session, question.id, -1); if (previous && session) session.currentQuestionId = previous.id; renderInterview(); });
-  app.querySelector('[data-action="next"]')?.addEventListener('click', () => { applyAnswer(); const next = session && nextVisibleQuestion(pack, session, question.id, 1); if (next && session) { session.currentQuestionId = next.id; renderInterview(); } else { view = 'review'; render(); } });
+  app.querySelector('[data-action="next"]')?.addEventListener('click', () => { applyAnswer(); const next = session && nextVisibleQuestion(pack, session, question.id, 1); if (next && session) { session.currentQuestionId = next.id; renderInterview(); } else { shareSafe = false; view = 'review'; render(); } });
+  app.querySelector('[data-action="share"]')?.addEventListener('click', () => { applyAnswer(); shareSafe = !shareSafe; renderInterview(); });
   app.querySelector('[data-action="export"]')?.addEventListener('click', () => { if (session) download(`${session.clientLabel.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-interview.json`, serializeSession(session), 'application/json'); });
   app.querySelector('[data-action="coverage"]')?.addEventListener('click', () => app.querySelector('.coverage-rail')?.classList.toggle('mobile-open'));
   app.querySelector('[data-action="context"]')?.addEventListener('click', () => app.querySelector('.context-rail')?.classList.toggle('mobile-open'));
@@ -237,7 +261,7 @@ function renderReview(): void {
     <main id="main" class="review-shell">
       <button class="text-button" data-action="return">← Return to interview</button>
       <p class="eyebrow">Review</p><h1>Read back what matters before ending the conversation.</h1>
-      <div class="review-stats"><span>${stats.resolved} resolved</span><span>${stats.remaining} not yet resolved</span><span>${stats.mustConfirm} must confirm</span></div>
+      <div class="review-stats"><span>${stats.resolved} resolved</span><span>${stats.remaining} currently not resolved</span><span>${stats.mustConfirm} must confirm</span></div>
       ${pack.sections.map((section) => {
         const sectionQuestions = questions.filter((question) => question.sectionId === section.id);
         if (!sectionQuestions.length) return '';
@@ -247,14 +271,27 @@ function renderReview(): void {
         }).join('')}</section>`;
       }).join('')}
       <section class="review-section unresolved"><h2>Must confirm</h2>${questions.filter((question) => session!.answers[question.id]?.status === 'MUST_CONFIRM').map((question) => `<p>• ${escapeHtml(question.prompt)}</p>`).join('') || '<p>None.</p>'}</section>
-      <section class="internal-notes"><h2>Internal notes</h2><p>These are intentionally separate from the client-safe read-back.</p><pre>${escapeHtml(session.runningNotes || 'No running notes.')}</pre></section>
-      <div class="button-row"><button class="primary" data-action="json">Export JSON backup</button><button class="secondary" data-action="markdown">Export Markdown</button><button class="secondary" data-action="home">Home</button></div>
+      <section class="internal-notes"><h2>Internal notes</h2><p>These are intentionally separate from the client-safe read-back and should not be shared with the client.</p><pre>${escapeHtml(session.runningNotes || 'No running notes.')}</pre></section>
+      <div class="button-row"><button class="primary" data-action="json">Export JSON backup</button><button class="secondary" data-action="markdown">Export Markdown</button><button class="secondary" data-action="home">Home</button><button class="secondary" data-action="delete">Delete local session</button></div>
     </main>`;
-  app.querySelector('[data-action="return"]')?.addEventListener('click', () => { view = 'interview'; render(); });
-  app.querySelectorAll<HTMLElement>('[data-change]').forEach((button) => button.addEventListener('click', () => { if (session) session.currentQuestionId = button.dataset.change ?? session.currentQuestionId; view = 'interview'; render(); }));
+  app.querySelector('[data-action="return"]')?.addEventListener('click', () => { shareSafe = false; view = 'interview'; render(); });
+  app.querySelectorAll<HTMLElement>('[data-change]').forEach((button) => button.addEventListener('click', () => { if (session) session.currentQuestionId = button.dataset.change ?? session.currentQuestionId; shareSafe = false; view = 'interview'; render(); }));
   app.querySelector('[data-action="json"]')?.addEventListener('click', () => { if (session) download('interview.json', serializeSession(session), 'application/json'); });
   app.querySelector('[data-action="markdown"]')?.addEventListener('click', () => { if (session) download('interview.md', sessionToMarkdown(pack, session), 'text/markdown'); });
   app.querySelector('[data-action="home"]')?.addEventListener('click', () => { view = 'home'; render(); });
+  app.querySelector('[data-action="delete"]')?.addEventListener('click', async () => {
+    if (!session) return;
+    if (!confirm('Delete this local interview? Export a backup first if you need one. This cannot be undone.')) return;
+    try {
+      await deleteSession(session.sessionId);
+      session = null;
+      shareSafe = false;
+      view = 'home';
+      render();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Unable to delete local interview.');
+    }
+  });
 }
 
 async function render(): Promise<void> {
