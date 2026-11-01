@@ -92,6 +92,8 @@ textarea { resize: vertical; line-height: 1.5; }
 .fact-card p { margin: .35rem 0; line-height: 1.4; }
 .fact-card small, .muted { color: var(--muted); }
 .mobile-tools { display: none; }
+.update-slot { display: inline-flex; flex-wrap: wrap; gap: .4rem; align-items: center; max-width: 100%; }
+.update-slot:empty { display: none; }
 .mobile-panel-close { display: none; }
 .review-shell { max-width: 900px; }
 .review-stats { display: flex; gap: .6rem; flex-wrap: wrap; margin: 1rem 0 2rem; }

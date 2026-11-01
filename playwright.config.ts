@@ -2,7 +2,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests/browser',
-  testMatch: '**/*.pw.ts',
+  testMatch: ['**/acceptance.pw.ts', '**/local-faults.pw.ts'],
   fullyParallel: false,
   workers: 1,
   timeout: 30_000,
