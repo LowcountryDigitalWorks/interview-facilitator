@@ -13,6 +13,15 @@ export function partitionStoredSessionRows(rows: unknown[]): StoredSessionList {
   let unreadableCount = 0;
   const sessions: InterviewSession[] = [];
   for (const row of rows) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) {
+      unreadableCount += 1;
+      continue;
+    }
+    const record = row as Record<string, unknown>;
+    if (record.sessionSchemaVersion !== '1.0.0') {
+      unreadableCount += 1;
+      continue;
+    }
     try {
       sessions.push(validateSessionShape(row));
     } catch {

@@ -7,7 +7,7 @@ import { openStoredSession } from '../src/session-durability';
 describe('stored session quarantine', () => {
   it('returns healthy rows and counts malformed records without throwing', () => {
     const good = createSession(pack, { clientLabel: 'Good Client' }, new Date('2026-10-31T12:00:00Z'));
-    const malformed = { sessionId: 'bad-row', updatedAt: '2026-10-31T12:00:00.000Z' };
+    const malformed = { sessionId: 'bad-row', sessionSchemaVersion: '9.9.9', updatedAt: '2026-10-31T12:00:00.000Z' };
     const result = partitionStoredSessionRows([good, malformed]);
     expect(result.unreadableCount).toBe(1);
     expect(result.sessions).toHaveLength(1);

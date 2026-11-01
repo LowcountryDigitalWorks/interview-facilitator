@@ -23,6 +23,9 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium --with-deps
+      - run: npm run test:browser
       - name: PWA shell sanity
         run: |
           test -f dist/index.html
