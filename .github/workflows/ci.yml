@@ -44,6 +44,7 @@ jobs:
           grep -q 'interview-facilitator-shell-' dist/sw.js
           grep -q 'GET_RELEASE' dist/sw.js
           grep -q 'SKIP_WAITING' dist/sw.js
-          grep -q "key.startsWith(CACHE_PREFIX) && key !== CACHE" dist/sw.js
+          grep -q '?release=' dist/sw.js
           grep -q "cache: 'reload'" dist/sw.js
+          grep -q "updateViaCache: 'none'" src/pwa.ts
           node scripts/check-generated-sw.mjs

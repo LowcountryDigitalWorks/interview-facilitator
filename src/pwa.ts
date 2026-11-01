@@ -14,6 +14,8 @@ let applying = false;
 let blocked = false;
 let missingMessage: string | null = null;
 let expectedRelease: string | null = null;
+let controllerListenerAttached = false;
+let reloadScheduled = false;
 
 function askRelease(worker: ServiceWorker): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -126,11 +128,18 @@ async function applyUpdate(): Promise<void> {
     paintUpdateSlot();
     return;
   }
+  ensureControllerListener();
   applying = true;
   blocked = false;
   missingMessage = null;
   paintUpdateSlot();
   waiting.postMessage({ type: 'SKIP_WAITING' });
+}
+
+function reloadOnce(): void {
+  if (reloadScheduled) return;
+  reloadScheduled = true;
+  window.location.reload();
 }
 
 async function onControllerChange(): Promise<void> {
@@ -155,7 +164,7 @@ async function onControllerChange(): Promise<void> {
       paintUpdateSlot();
       return;
     }
-    window.location.reload();
+    reloadOnce();
     return;
   }
   updateReady = false;
@@ -188,11 +197,32 @@ function watchRegistration(registration: ServiceWorkerRegistration): void {
   });
 }
 
+function ensureControllerListener(): void {
+  if (controllerListenerAttached || !('serviceWorker' in navigator)) return;
+  controllerListenerAttached = true;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { void onControllerChange(); });
+  navigator.serviceWorker.addEventListener('message', (event: MessageEvent<{ type?: string; release?: string; claimed?: boolean }>) => {
+    if (event.data?.type !== 'RELEASE_ACTIVATED') return;
+    (window as Window & { __releaseClaimed?: boolean }).__releaseClaimed = event.data.claimed === true;
+    const release = event.data.release ?? '';
+    if (applying && (!expectedRelease || release === expectedRelease)) {
+      reloadOnce();
+      return;
+    }
+    if (release !== __APP_RELEASE__ && navigator.serviceWorker.controller) {
+      staleRelease = true;
+      updateReady = false;
+      missingMessage = null;
+      paintUpdateSlot();
+    }
+  });
+}
+
 export function startControlledUpdates(next: UpdateDependencies): void {
   dependencies = next;
   if (!import.meta.env.PROD || !('serviceWorker' in navigator)) return;
-  navigator.serviceWorker.addEventListener('controllerchange', () => { void onControllerChange(); });
-  void navigator.serviceWorker.register('/sw.js').then(async (registration) => {
+  ensureControllerListener();
+  void navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).then(async (registration) => {
     watchRegistration(registration);
     const controller = navigator.serviceWorker.controller;
     if (!controller) return;
