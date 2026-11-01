@@ -224,12 +224,18 @@ test('failed outgoing save blocks switching and recovery stays available until a
   await expect(page.locator('[data-save-indicator]')).toContainText('Saved', { timeout: 2_000 });
 
   await page.locator('#running-notes').fill('Recovered durable write');
+  await expect(page.locator('[data-save-indicator]')).toContainText('Saving locally');
   await expect(page.locator('[data-save-indicator]')).toContainText('Saved', { timeout: 2_000 });
+
+  await expect.poll(async () => {
+    const rows = await readRawSessions(page);
+    const saved = rows.find((row) => (row as InterviewSession).clientLabel === 'Synthetic Dirty A') as InterviewSession | undefined;
+    return saved?.runningNotes ?? null;
+  }, { timeout: 2_000, intervals: [25, 50, 100] }).toBe('Recovered durable write');
 
   const rows = await readRawSessions(page);
   const saved = rows.find((row) => (row as InterviewSession).clientLabel === 'Synthetic Dirty A') as InterviewSession | undefined;
   expect(saved?.answers['existing-presence']?.value).toBe('Dirty A latest answer');
-  expect(saved?.runningNotes).toBe('Recovered durable write');
 });
 
 test('same-ID import write failure leaves dirty active state recoverable and does not overwrite stored data', async ({ page }) => {
@@ -268,12 +274,18 @@ test('same-ID import write failure leaves dirty active state recoverable and doe
   await expect(page.locator('[data-save-indicator]')).toContainText('Saved', { timeout: 2_000 });
 
   await page.locator('#answer').fill('Dirty in-memory answer recovered');
+  await expect(page.locator('[data-save-indicator]')).toContainText('Saving locally');
   await expect(page.locator('[data-save-indicator]')).toContainText('Saved', { timeout: 2_000 });
+
+  await expect.poll(async () => {
+    const currentRows = await readRawSessions(page);
+    const current = currentRows.find((candidate) => (candidate as InterviewSession).sessionId === stored.sessionId) as InterviewSession | undefined;
+    return current?.answers['existing-presence']?.value ?? null;
+  }, { timeout: 2_000, intervals: [25, 50, 100] }).toBe('Dirty in-memory answer recovered');
 
   rows = await readRawSessions(page);
   row = rows.find((candidate) => (candidate as InterviewSession).sessionId === stored.sessionId) as InterviewSession | undefined;
   expect(row?.clientLabel).toBe('Synthetic Import Original');
-  expect(row?.answers['existing-presence']?.value).toBe('Dirty in-memory answer recovered');
 });
 
 test('delete cancels a pending autosave so the removed session cannot resurrect', async ({ page }) => {
