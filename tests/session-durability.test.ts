@@ -2,23 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import type { InterviewSession } from '../src/domain';
 import { SessionAutosaveCoordinator } from '../src/autosave';
 import { beginSessionSwitch, importSessionReplacement, openStoredSession, SessionSwitchGate, shouldFlushActiveSession } from '../src/session-durability';
+import { bareSession } from './session-stub';
 
 function makeSession(sessionId: string, notes: string): InterviewSession {
-  return {
-    sessionSchemaVersion: '1.0.0',
-    sessionId,
-    interviewPackId: 'general-discovery',
-    interviewPackVersion: '1.0.0',
-    clientLabel: 'Synthetic',
-    interviewerLabel: '',
-    interviewMode: 'Conversation',
-    createdAt: '2026-10-31T12:00:00.000Z',
-    updatedAt: '2026-10-31T12:00:00.000Z',
-    currentQuestionId: 'existing-presence',
-    knownFacts: [],
-    answers: {},
-    runningNotes: notes,
-  };
+  return bareSession(sessionId, notes);
 }
 
 describe('session durability', () => {

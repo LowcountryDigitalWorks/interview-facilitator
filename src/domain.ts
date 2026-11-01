@@ -29,7 +29,7 @@ export interface Section {
   title: string;
 }
 
-export interface InterviewPack {
+export interface InterviewPackSnapshot {
   packSchemaVersion: '1.0.0';
   packId: string;
   packVersion: string;
@@ -40,6 +40,14 @@ export interface InterviewPack {
   knownFacts: KnownFact[];
 }
 
+export interface InterviewPack extends InterviewPackSnapshot {}
+
+export interface PackIdentity {
+  algorithm: 'SHA-256';
+  canonicalization: 'ldw-json-c14n-v1';
+  digest: string;
+}
+
 export interface QuestionState {
   value: string | null;
   status: AnswerStatus | null;
@@ -47,7 +55,7 @@ export interface QuestionState {
 }
 
 export interface InterviewSession {
-  sessionSchemaVersion: '1.0.0';
+  sessionSchemaVersion: '1.1.0';
   sessionId: string;
   interviewPackId: string;
   interviewPackVersion: string;
@@ -60,6 +68,8 @@ export interface InterviewSession {
   knownFacts: KnownFact[];
   answers: Record<string, QuestionState>;
   runningNotes: string;
+  packSnapshot: InterviewPackSnapshot;
+  packIdentity: PackIdentity;
 }
 
 export interface Coverage {
@@ -71,23 +81,34 @@ export interface Coverage {
 
 const ANSWER_STATUSES = new Set<AnswerStatus>(['ANSWERED', 'ALREADY_KNOWN', 'SKIP', 'N_A', 'MUST_CONFIRM']);
 
-export function createSession(pack: InterviewPack, input: {clientLabel: string; interviewerLabel?: string; interviewMode?: string}, now = new Date()): InterviewSession {
+export function sessionPack(session: InterviewSession): InterviewPackSnapshot {
+  return session.packSnapshot;
+}
+
+export function assemblePinnedSession(
+  snapshot: InterviewPackSnapshot,
+  identity: PackIdentity,
+  input: {clientLabel: string; interviewerLabel?: string; interviewMode?: string},
+  now = new Date(),
+): InterviewSession {
   const timestamp = now.toISOString();
-  const answers = Object.fromEntries(pack.questions.map((question) => [question.id, { value: null, status: null, note: '' }])) as Record<string, QuestionState>;
+  const answers = Object.fromEntries(snapshot.questions.map((question) => [question.id, { value: null, status: null, note: '' }])) as Record<string, QuestionState>;
   return {
-    sessionSchemaVersion: '1.0.0',
+    sessionSchemaVersion: '1.1.0',
     sessionId: crypto.randomUUID(),
-    interviewPackId: pack.packId,
-    interviewPackVersion: pack.packVersion,
+    interviewPackId: snapshot.packId,
+    interviewPackVersion: snapshot.packVersion,
     clientLabel: input.clientLabel.trim() || 'Untitled interview',
     interviewerLabel: input.interviewerLabel?.trim() ?? '',
     interviewMode: input.interviewMode?.trim() || 'Conversation',
     createdAt: timestamp,
     updatedAt: timestamp,
-    currentQuestionId: pack.questions[0]?.id ?? '',
-    knownFacts: structuredClone(pack.knownFacts),
+    currentQuestionId: snapshot.questions[0]?.id ?? '',
+    knownFacts: structuredClone(snapshot.knownFacts),
     answers,
-    runningNotes: ''
+    runningNotes: '',
+    packSnapshot: snapshot,
+    packIdentity: identity,
   };
 }
 
@@ -157,10 +178,86 @@ function validateQuestionState(value: unknown): QuestionState {
   return { value: record.value as string | null, status: record.status as AnswerStatus | null, note: record.note };
 }
 
+const QUESTION_KINDS = new Set<QuestionKind>(['text', 'textarea', 'single']);
+
+function requireOnlyKeys(record: Record<string, unknown>, allowed: readonly string[], label: string): void {
+  for (const key of Object.keys(record)) {
+    if (!allowed.includes(key)) throw new Error(`${label} contains an unsupported field.`);
+  }
+}
+
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} is invalid.`);
+  return value as Record<string, unknown>;
+}
+
+function validateCondition(value: unknown): Condition {
+  const record = requireRecord(value, 'Pack snapshot condition');
+  requireOnlyKeys(record, ['questionId', 'equals'], 'Pack snapshot condition');
+  return { questionId: requireString(record, 'questionId'), equals: requireString(record, 'equals') };
+}
+
+function validateSnapshotQuestion(value: unknown): Question {
+  const record = requireRecord(value, 'Pack snapshot question');
+  requireOnlyKeys(record, ['id', 'sectionId', 'prompt', 'help', 'kind', 'options', 'condition'], 'Pack snapshot question');
+  if (typeof record.kind !== 'string' || !QUESTION_KINDS.has(record.kind as QuestionKind)) throw new Error('Pack snapshot question kind is invalid.');
+  const question: Question = {
+    id: requireString(record, 'id'),
+    sectionId: requireString(record, 'sectionId'),
+    prompt: requireString(record, 'prompt'),
+    kind: record.kind as QuestionKind,
+  };
+  if (record.help !== undefined) question.help = requireString(record, 'help');
+  if (record.options !== undefined) {
+    if (!Array.isArray(record.options) || record.options.some((option) => typeof option !== 'string')) throw new Error('Pack snapshot options are invalid.');
+    question.options = [...record.options];
+  }
+  if (record.condition !== undefined) question.condition = validateCondition(record.condition);
+  return question;
+}
+
+function validateSnapshotSection(value: unknown): Section {
+  const record = requireRecord(value, 'Pack snapshot section');
+  requireOnlyKeys(record, ['id', 'title'], 'Pack snapshot section');
+  return { id: requireString(record, 'id'), title: requireString(record, 'title') };
+}
+
+function validateSnapshotFact(value: unknown): KnownFact {
+  const record = requireRecord(value, 'Pack snapshot known fact');
+  requireOnlyKeys(record, ['id', 'label', 'value', 'provenance', 'questionId'], 'Pack snapshot known fact');
+  return validateKnownFact(record);
+}
+
+export function validatePackSnapshot(value: unknown): InterviewPackSnapshot {
+  const record = requireRecord(value, 'Pack snapshot');
+  requireOnlyKeys(record, ['packSchemaVersion', 'packId', 'packVersion', 'title', 'description', 'sections', 'questions', 'knownFacts'], 'Pack snapshot');
+  if (record.packSchemaVersion !== '1.0.0') throw new Error('Unsupported pack snapshot schema version.');
+  if (!Array.isArray(record.sections) || !Array.isArray(record.questions) || !Array.isArray(record.knownFacts)) throw new Error('Pack snapshot collections are invalid.');
+  return {
+    packSchemaVersion: '1.0.0',
+    packId: requireString(record, 'packId'),
+    packVersion: requireString(record, 'packVersion'),
+    title: requireString(record, 'title'),
+    description: requireString(record, 'description'),
+    sections: record.sections.map(validateSnapshotSection),
+    questions: record.questions.map(validateSnapshotQuestion),
+    knownFacts: record.knownFacts.map(validateSnapshotFact),
+  };
+}
+
+export function validatePackIdentity(value: unknown): PackIdentity {
+  const record = requireRecord(value, 'Pack identity');
+  requireOnlyKeys(record, ['algorithm', 'canonicalization', 'digest'], 'Pack identity');
+  if (record.algorithm !== 'SHA-256' || record.canonicalization !== 'ldw-json-c14n-v1') throw new Error('Unsupported pack identity.');
+  if (typeof record.digest !== 'string' || !/^[0-9a-f]{64}$/.test(record.digest)) throw new Error('Pack identity digest is invalid.');
+  return { algorithm: 'SHA-256', canonicalization: 'ldw-json-c14n-v1', digest: record.digest };
+}
+
 export function validateSessionShape(value: unknown): InterviewSession {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Session JSON must be an object.');
   const record = value as Record<string, unknown>;
-  if (record.sessionSchemaVersion !== '1.0.0') throw new Error('Unsupported session schema version.');
+  if (record.sessionSchemaVersion === '1.0.0') throw new Error('Unsupported legacy session schema 1.0.0. This record has no pinned pack snapshot and was not migrated or deleted.');
+  if (record.sessionSchemaVersion !== '1.1.0') throw new Error('Unsupported session schema version.');
   if (!record.answers || typeof record.answers !== 'object' || Array.isArray(record.answers)) throw new Error('Session answers are missing or invalid.');
   if (!Array.isArray(record.knownFacts)) throw new Error('Session known facts are invalid.');
 
@@ -170,7 +267,7 @@ export function validateSessionShape(value: unknown): InterviewSession {
   }));
 
   return {
-    sessionSchemaVersion: '1.0.0',
+    sessionSchemaVersion: '1.1.0',
     sessionId: requireString(record, 'sessionId'),
     interviewPackId: requireString(record, 'interviewPackId'),
     interviewPackVersion: requireString(record, 'interviewPackVersion'),
@@ -182,11 +279,14 @@ export function validateSessionShape(value: unknown): InterviewSession {
     currentQuestionId: requireString(record, 'currentQuestionId'),
     knownFacts: record.knownFacts.map(validateKnownFact),
     answers,
-    runningNotes: requireString(record, 'runningNotes')
+    runningNotes: requireString(record, 'runningNotes'),
+    packSnapshot: validatePackSnapshot(record.packSnapshot),
+    packIdentity: validatePackIdentity(record.packIdentity),
   };
 }
 
-export function validateSessionForPack(session: InterviewSession, pack: InterviewPack): void {
+export function validateSessionForPack(session: InterviewSession): void {
+  const pack = session.packSnapshot;
   if (session.interviewPackId !== pack.packId || session.interviewPackVersion !== pack.packVersion) throw new Error('This session uses a different interview pack or version.');
   const questionIds = new Set(pack.questions.map((question) => question.id));
   for (const question of pack.questions) {

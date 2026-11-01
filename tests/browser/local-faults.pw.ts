@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { InterviewSession } from '../../src/domain';
+import { syntheticPinnedSession } from './synthetic-session';
 import {
   clearLocalState,
   installIdbFaultInjection,
@@ -14,29 +15,8 @@ import {
   startNewInterviewWhileActive,
 } from './fault-injection.mjs';
 
-function syntheticSession(sessionId = 'synthetic-valid-session', clientLabel = 'Synthetic Browser Test'): InterviewSession {
-  const timestamp = '2026-10-31T20:00:00.000Z';
-  return {
-    sessionSchemaVersion: '1.0.0',
-    sessionId,
-    interviewPackId: 'general-discovery',
-    interviewPackVersion: '1.0.0',
-    clientLabel,
-    interviewerLabel: 'Test Operator',
-    interviewMode: 'Conversation',
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    currentQuestionId: 'must-have',
-    knownFacts: [],
-    answers: {
-      'existing-presence': { value: null, status: null, note: '' },
-      'primary-goal': { value: null, status: null, note: '' },
-      'needs-booking': { value: null, status: null, note: '' },
-      'booking-process': { value: null, status: null, note: '' },
-      'must-have': { value: null, status: null, note: '' },
-    },
-    runningNotes: '',
-  };
+function syntheticSession(sessionId = 'synthetic-valid-session', clientLabel = 'Synthetic Browser Test'): Promise<InterviewSession> {
+  return syntheticPinnedSession({ sessionId, clientLabel, currentQuestionId: 'must-have' });
 }
 
 test.beforeEach(async ({ page }) => {
@@ -45,7 +25,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('forced IndexedDB open failure shows storage recovery and retry succeeds', async ({ page }) => {
-  await putRawSession(page, syntheticSession('seed-session'));
+  await putRawSession(page, await syntheticSession('seed-session'));
   await setIdbFault(page, { blockOpen: true, blockRead: false });
   await page.reload();
 
@@ -61,7 +41,7 @@ test('forced IndexedDB open failure shows storage recovery and retry succeeds', 
 });
 
 test('outgoing flush failure blocks session switch and keeps active session recoverable', async ({ page }) => {
-  await openSeededInterviewOnLastQuestion(page, 'Active Session');
+  await openSeededInterviewOnLastQuestion(page, 'Active Session', await syntheticSession('seed-active-session', 'Active Session'));
   await setIdbFault(page, { blockWrite: true });
   await page.locator('#answer').fill('Dirty active edit');
   await navigateHomeKeepingActiveSession(page);
@@ -76,8 +56,8 @@ test('outgoing flush failure blocks session switch and keeps active session reco
 });
 
 test('overlapping session switch attempts do not silently drop the active interview', async ({ page }) => {
-  await putRawSession(page, syntheticSession('session-a', 'Active Session'));
-  await putRawSession(page, syntheticSession('session-b', 'Other Session'));
+  await putRawSession(page, await syntheticSession('session-a', 'Active Session'));
+  await putRawSession(page, await syntheticSession('session-b', 'Other Session'));
   await page.reload();
   await page.getByRole('button', { name: /Active Session/ }).click();
   await setIdbFault(page, { blockWrite: true });
@@ -98,7 +78,7 @@ test('overlapping session switch attempts do not silently drop the active interv
 
 test('same-id import replacement failure keeps dirty active session authoritative', async ({ page }) => {
   const sessionId = 'import-active-session';
-  const active = syntheticSession(sessionId, 'Active Import Test');
+  const active = await syntheticSession(sessionId, 'Active Import Test');
   await putRawSession(page, active);
   await page.reload();
   await page.getByRole('button', { name: /Active Import Test/ }).click();
@@ -106,7 +86,7 @@ test('same-id import replacement failure keeps dirty active session authoritativ
   await page.locator('#answer').fill('Keep this authoritative answer');
   await navigateHomeKeepingActiveSession(page);
 
-  const replacement = syntheticSession(sessionId, 'Imported Replacement Label');
+  const replacement = await syntheticSession(sessionId, 'Imported Replacement Label');
   replacement.answers['existing-presence'] = { value: 'Imported overwrite attempt', status: null, note: '' };
 
   await setIdbFault(page, { blockWrite: true });
@@ -131,7 +111,7 @@ test('same-id import replacement failure keeps dirty active session authoritativ
 });
 
 test('delete clears IndexedDB even when autosave was recently scheduled', async ({ page }) => {
-  await openSeededInterviewOnLastQuestion(page, 'Delete Resurrection Test');
+  await openSeededInterviewOnLastQuestion(page, 'Delete Resurrection Test', await syntheticSession('seed-delete-resurrection-test', 'Delete Resurrection Test'));
   await page.locator('#answer').fill('Pending delete proof');
   await page.waitForTimeout(50);
   await openPrivateReview(page);
