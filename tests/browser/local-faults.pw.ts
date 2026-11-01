@@ -216,9 +216,12 @@ test('failed outgoing save blocks switching and recovery stays available until a
 
   await setFaultState(page, { failPut: false, debounceMs: 50 });
   await page.getByRole('button', { name: 'Return to active interview' }).click();
+  await expect(page.locator('[data-save-indicator]')).toContainText('Local save failed');
+
+  // Navigating to the earlier question schedules a fresh save. The error may clear only after that write succeeds.
   await page.locator('[data-question-id="existing-presence"]').click();
   await expect(page.locator('#answer')).toHaveValue('Dirty A latest answer');
-  await expect(page.locator('[data-save-indicator]')).toContainText('Local save failed');
+  await expect(page.locator('[data-save-indicator]')).toContainText('Saved', { timeout: 2_000 });
 
   await page.locator('#running-notes').fill('Recovered durable write');
   await expect(page.locator('[data-save-indicator]')).toContainText('Saved', { timeout: 2_000 });
@@ -259,7 +262,11 @@ test('same-ID import write failure leaves dirty active state recoverable and doe
 
   await setFaultState(page, { failPut: false, debounceMs: 50 });
   await page.getByRole('button', { name: 'Return to active interview' }).click();
+  await expect(page.locator('[data-save-indicator]')).toContainText('Local save failed');
+  await page.locator('[data-question-id="existing-presence"]').click();
   await expect(page.locator('#answer')).toHaveValue('Dirty in-memory answer');
+  await expect(page.locator('[data-save-indicator]')).toContainText('Saved', { timeout: 2_000 });
+
   await page.locator('#answer').fill('Dirty in-memory answer recovered');
   await expect(page.locator('[data-save-indicator]')).toContainText('Saved', { timeout: 2_000 });
 
