@@ -19,6 +19,7 @@ export class SessionAutosaveCoordinator {
   private readonly generations = new Map<string, number>();
   private readonly tails = new Map<string, Promise<void>>();
   private readonly errors = new Map<string, unknown>();
+  private readonly liveSessions = new Map<string, InterviewSession>();
 
   constructor(
     private readonly persist: (session: InterviewSession) => Promise<void>,
@@ -26,6 +27,11 @@ export class SessionAutosaveCoordinator {
   ) {}
 
   schedule(session: InterviewSession, hooks: AutosaveHooks = {}): void {
+    this.liveSessions.set(session.sessionId, session);
+    this.queue(session, hooks, this.delayMs);
+  }
+
+  private queue(session: InterviewSession, hooks: AutosaveHooks, delayMs: number): void {
     const sessionId = session.sessionId;
     const generation = (this.generations.get(sessionId) ?? 0) + 1;
     this.generations.set(sessionId, generation);
@@ -68,7 +74,7 @@ export class SessionAutosaveCoordinator {
       });
     };
 
-    const handle = setTimeout(run, this.delayMs);
+    const handle = setTimeout(run, delayMs);
     this.timers.set(sessionId, { handle, run });
   }
 
@@ -77,6 +83,11 @@ export class SessionAutosaveCoordinator {
   }
 
   async flushAndWait(sessionId: string): Promise<void> {
+    if (!this.timers.has(sessionId) && !this.tails.has(sessionId) && this.errors.has(sessionId)) {
+      const live = this.liveSessions.get(sessionId);
+      if (live) this.queue(live, {}, 0);
+    }
+
     const pending = this.timers.get(sessionId);
     if (pending) {
       clearTimeout(pending.handle);
@@ -103,5 +114,6 @@ export class SessionAutosaveCoordinator {
     const tail = this.tails.get(sessionId);
     if (tail) await tail.catch(() => undefined);
     this.errors.delete(sessionId);
+    this.liveSessions.delete(sessionId);
   }
 }
