@@ -30,6 +30,11 @@ const claimCalls = source.split('self.clients.claim()').length - 1;
 if (claimCalls !== 1) {
   fail('Generated worker should claim clients in exactly one gated call.');
 }
+const claimAt = source.indexOf('await self.clients.claim()');
+const deleteAt = source.indexOf('orderCache.delete(claimKey())');
+if (claimAt < 0 || deleteAt < claimAt) {
+  fail('Generated worker deletes the claim marker before clients.claim() resolves.');
+}
 
 const releaseMatch = source.match(/const RELEASE = (".*");/);
 if (!releaseMatch) fail('Generated worker is missing its release constant.');
@@ -67,7 +72,7 @@ function createCaches() {
   };
 }
 
-async function evaluate(cachesApi, active) {
+async function evaluate(cachesApi, active, claimBehavior = 'resolve') {
   const calls = { skipWaiting: 0, claim: 0 };
   const listeners = new Map();
   const context = vm.createContext({
@@ -80,7 +85,7 @@ async function evaluate(cachesApi, active) {
       clients: {
         claim() {
           calls.claim += 1;
-          return Promise.resolve();
+          return claimBehavior === 'reject' ? Promise.reject(new Error('claim failed')) : Promise.resolve();
         },
         matchAll() {
           return Promise.resolve([]);
@@ -123,11 +128,23 @@ if (firstInstall.calls.skipWaiting !== 1) fail('First install did not skip waiti
 if (firstCaches.read('interview-facilitator-release-order', claimPath) !== '{"claim":true}') {
   fail('First install did not store a durable claim marker.');
 }
+const rejectedActivate = await evaluate(firstCaches, null, 'reject');
+let claimRejection = null;
+try {
+  await rejectedActivate.fire('activate');
+} catch (error) {
+  claimRejection = error;
+}
+if (!claimRejection) fail('A rejected clients.claim() did not fail activation.');
+if (rejectedActivate.calls.claim !== 1) fail('A rejected activation did not attempt clients.claim().');
+if (firstCaches.read('interview-facilitator-release-order', claimPath) !== '{"claim":true}') {
+  fail('A rejected clients.claim() consumed the durable claim marker.');
+}
 const firstActivate = await evaluate(firstCaches, null);
 await firstActivate.fire('activate');
-if (firstActivate.calls.claim !== 1) fail('A restarted first-install worker did not claim from the durable marker.');
+if (firstActivate.calls.claim !== 1) fail('The retried activation did not claim exactly once.');
 if (firstCaches.read('interview-facilitator-release-order', claimPath) !== undefined) {
-  fail('Activate left the claim marker in place.');
+  fail('Successful claim left the marker in place.');
 }
 
 const updateCaches = createCaches();

@@ -64,6 +64,7 @@ self.addEventListener('activate', (event) => {
       } catch {
         claimClients = false;
       }
+      if (claimClients) await self.clients.claim();
       await orderCache.delete(claimKey());
     }
     const existing = await orderCache.match('/order');
@@ -80,7 +81,6 @@ self.addEventListener('activate', (event) => {
     await Promise.all(keys
       .filter((key) => key.startsWith(CACHE_PREFIX) && !retained.includes(key.slice(CACHE_PREFIX.length)))
       .map((key) => caches.delete(key)));
-    if (claimClients) await self.clients.claim();
     const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const client of windows) client.postMessage({ type: 'RELEASE_ACTIVATED', release: RELEASE, claimed: claimClients });
   })());
