@@ -2,6 +2,7 @@ import {
   assemblePinnedSession,
   validateSessionForPack,
   validateSessionShape,
+  validateHistoricalPinned11Shape,
   type InterviewPack,
   type InterviewPackSnapshot,
   type InterviewSession,
@@ -52,6 +53,7 @@ export async function sha256Hex(value: string): Promise<string> {
 export function snapshotPack(pack: InterviewPack): InterviewPackSnapshot {
   return {
     packSchemaVersion: pack.packSchemaVersion,
+    ruleSemanticsVersion: 'condition-equals-v1',
     packId: pack.packId,
     packVersion: pack.packVersion,
     title: pack.title,
@@ -62,8 +64,9 @@ export function snapshotPack(pack: InterviewPack): InterviewPackSnapshot {
   };
 }
 
-export async function pinPackSnapshot(pack: InterviewPack): Promise<{ packSnapshot: InterviewPackSnapshot; packIdentity: PackIdentity }> {
+export async function pinPackSnapshot(pack: InterviewPack, includeRuleSemantics = true): Promise<{ packSnapshot: InterviewPackSnapshot; packIdentity: PackIdentity }> {
   const packSnapshot = snapshotPack(pack);
+  if (!includeRuleSemantics) delete packSnapshot.ruleSemanticsVersion;
   const digest = await sha256Hex(canonicalizeJson(packSnapshot));
   return {
     packSnapshot,
@@ -87,6 +90,14 @@ export async function assertPackIdentity(session: InterviewSession): Promise<voi
 
 export async function validateSessionRecord(value: unknown): Promise<InterviewSession> {
   const session = validateSessionShape(value);
+  validateSessionForPack(session);
+  await assertPackIdentity(session);
+  return session;
+}
+
+export async function validateHistoricalPinned11Record(value: unknown): Promise<InterviewSession> {
+  const session = validateHistoricalPinned11Shape(value);
+  if (session.packSnapshot.ruleSemanticsVersion !== undefined) throw new Error('Pinned 1.1 sessions cannot contain rule semantics metadata.');
   validateSessionForPack(session);
   await assertPackIdentity(session);
   return session;

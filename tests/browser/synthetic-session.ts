@@ -15,7 +15,7 @@ export async function syntheticPinnedSession(overrides: Partial<InterviewSession
   return {
     ...session,
     ...rest,
-    sessionSchemaVersion: '1.1.0',
+    sessionSchemaVersion: '1.2.0',
     packSnapshot: session.packSnapshot,
     packIdentity: session.packIdentity,
   };

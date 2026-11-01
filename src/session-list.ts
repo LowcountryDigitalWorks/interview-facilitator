@@ -1,8 +1,8 @@
 import type { InterviewSession } from './domain';
-import type { StoredSessionList } from './storage';
+import type { ClassifiedStoredRow, StoredSessionList } from './storage';
 
 export type SessionListState =
-  | { kind: 'ready'; sessions: InterviewSession[]; unreadableCount: number }
+  | { kind: 'ready'; sessions: InterviewSession[]; unreadableCount: number; rows: ClassifiedStoredRow[] }
   | { kind: 'error'; error: unknown };
 
 export async function readSessionList(
@@ -10,7 +10,7 @@ export async function readSessionList(
 ): Promise<SessionListState> {
   try {
     const result = await loader();
-    return { kind: 'ready', sessions: result.sessions, unreadableCount: result.unreadableCount };
+    return { kind: 'ready', sessions: result.sessions, unreadableCount: result.unreadableCount, rows: result.rows ?? [] };
   } catch (error) {
     return { kind: 'error', error };
   }

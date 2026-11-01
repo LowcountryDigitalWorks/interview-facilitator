@@ -1,6 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import type { InterviewSession } from '../../src/domain';
+import { canonicalizeJson, sha256Hex, validateSessionRecord } from '../../src/pack-identity';
 import { syntheticPinnedSession } from './synthetic-session';
 
 const DB_NAME = 'ldw-interview-facilitator';
@@ -38,6 +39,37 @@ async function putRawSession(page: Page, row: unknown): Promise<void> {
     });
     db.close();
   }, { dbName: DB_NAME, store: STORE, row });
+}
+
+async function readStorageSnapshot(page: Page): Promise<{ rows: unknown[]; archives: unknown[]; archiveKeys: IDBValidKey[] }> {
+  return page.evaluate(async ({ dbName }) => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(dbName, 2);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = db.transaction(['sessions', 'legacy-session-archive'], 'readonly');
+    const completed = new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () => reject(transaction.error);
+      transaction.onerror = () => reject(transaction.error);
+    });
+    const rowsRequest = transaction.objectStore('sessions').getAll();
+    const archivesRequest = transaction.objectStore('legacy-session-archive').getAll();
+    const archiveKeysRequest = transaction.objectStore('legacy-session-archive').getAllKeys();
+    const read = <T>(request: IDBRequest<T>) => new Promise<T>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const [rows, archives, archiveKeys] = await Promise.all([
+      read(rowsRequest),
+      read(archivesRequest),
+      read(archiveKeysRequest),
+    ]);
+    await completed;
+    db.close();
+    return { rows, archives, archiveKeys };
+  }, { dbName: DB_NAME });
 }
 
 function syntheticSession(sessionId = 'synthetic-valid-session'): Promise<InterviewSession> {
@@ -274,4 +306,120 @@ test('review Change control keeps contextual accessible name', async ({ page }) 
   await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
   await page.getByRole('button', { name: 'Review interview' }).click();
   await expect(page.getByRole('button', { name: 'Change What is already in place today?' })).toBeVisible();
+});
+
+test('mixed Home records support explicit upgrade and recovery backup', async ({ page }) => {
+  await page.goto('/');
+  const current = await syntheticSession('synthetic-current-mixed');
+  const legacy = structuredClone(current);
+  legacy.sessionId = 'synthetic-legacy-mixed';
+  legacy.sessionSchemaVersion = '1.1.0';
+  delete legacy.packSnapshot.ruleSemanticsVersion;
+  legacy.packIdentity.digest = await sha256Hex(canonicalizeJson(legacy.packSnapshot));
+  const unsupported = { sessionId: 'synthetic-future-mixed', sessionSchemaVersion: '9.0.0', futurePayload: { retained: true } };
+  const malformed = { sessionId: 'synthetic-malformed-mixed', sessionSchemaVersion: null };
+  for (const row of [current, legacy, unsupported, malformed]) await putRawSession(page, row);
+  const seededSnapshot = await readStorageSnapshot(page);
+  await page.reload();
+  await expect(page.getByRole('button', { name: /Synthetic Browser Test/ })).toBeVisible();
+  await expect(page.getByText('Older interview format')).toBeVisible();
+  await expect(page.getByText('Unsupported interview format')).toBeVisible();
+  await expect(page.getByText('An interview record could not be read.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Upgrade' })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'Download recovery backup' })).toBeVisible();
+  const homeSnapshot = await readStorageSnapshot(page);
+  expect(homeSnapshot).toEqual(seededSnapshot);
+  expect(homeSnapshot.rows).toHaveLength(4);
+  expect(homeSnapshot.archives).toHaveLength(0);
+  expect(homeSnapshot.archiveKeys).toHaveLength(0);
+  const currentBefore = await page.evaluate(async (sessionId) => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open('ldw-interview-facilitator', 2); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    const value = await new Promise<unknown>((resolve, reject) => { const request = db.transaction('sessions').objectStore('sessions').get(sessionId); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    db.close(); return value;
+  }, legacy.sessionId);
+  expect(currentBefore).toMatchObject({ sessionSchemaVersion: '1.1.0' });
+  const upgradedCard = page.locator('[data-session-id="synthetic-legacy-mixed"]');
+  await page.getByRole('button', { name: 'Upgrade' }).click();
+  await expect(page.getByText('Older interview format')).toHaveCount(0);
+  await expect(upgradedCard).toBeVisible();
+  const upgraded = await page.evaluate(async (sessionId) => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open('ldw-interview-facilitator', 2); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    const transaction = db.transaction(['sessions', 'legacy-session-archive']);
+    const read = (storeName: string, key: IDBValidKey) => new Promise<unknown>((resolve, reject) => { const request = transaction.objectStore(storeName).get(key); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    const values = { active: await read('sessions', sessionId), archive: await read('legacy-session-archive', `${sessionId}|1.1.0|pinned-1.1-to-1.2`) };
+    db.close(); return values;
+  }, legacy.sessionId);
+  expect(upgraded.active).toMatchObject({ sessionSchemaVersion: '1.2.0', packSnapshot: { ruleSemanticsVersion: 'condition-equals-v1' } });
+  expect(await validateSessionRecord(upgraded.active)).toEqual(upgraded.active);
+  expect(upgraded.archive).toEqual(legacy);
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download recovery backup' }).click();
+  const recoveryDownload = await download;
+  expect(recoveryDownload.suggestedFilename()).toBe('interview-facilitator-recovery-backup.json');
+  const recoveryStream = await recoveryDownload.createReadStream();
+  if (!recoveryStream) throw new Error('Recovery download stream was unavailable.');
+  recoveryStream.setEncoding('utf8');
+  let recoveryJson = '';
+  for await (const chunk of recoveryStream) recoveryJson += chunk;
+  const recoveryBackup = JSON.parse(recoveryJson) as { backupType: string; formatVersion: string; record: unknown };
+  expect(recoveryBackup).toMatchObject({ backupType: 'interview-facilitator-recovery-internal', formatVersion: '1' });
+  expect(recoveryBackup.record).toEqual(unsupported);
+
+  const snapshot = await readStorageSnapshot(page);
+  expect(snapshot.rows).toHaveLength(4);
+  expect(snapshot.archives).toHaveLength(1);
+  expect(snapshot.archiveKeys).toEqual(['synthetic-legacy-mixed|1.1.0|pinned-1.1-to-1.2']);
+  expect(snapshot.rows).toContainEqual(current);
+  expect(snapshot.rows).toContainEqual(unsupported);
+  expect(snapshot.rows).toContainEqual(malformed);
+  expect(snapshot.rows).toContainEqual(upgraded.active);
+  expect(snapshot.archives[0]).toEqual(legacy);
+
+  const healthyCurrentCard = page.locator('[data-session-id="synthetic-current-mixed"]');
+  await expect(healthyCurrentCard).toBeVisible();
+  await healthyCurrentCard.click();
+  await expect(page.getByRole('heading', { name: 'What is already in place today?' })).toBeVisible();
+  await page.goto('/');
+  await expect(upgradedCard).toBeVisible();
+  await upgradedCard.click();
+  await expect(page.getByRole('heading', { name: 'What is already in place today?' })).toBeVisible();
+});
+
+test('failed legacy upgrade aborts its transaction and preserves source and archive', async ({ page }) => {
+  await page.goto('/');
+  const legacy = await syntheticSession('synthetic-legacy-abort');
+  legacy.sessionSchemaVersion = '1.1.0';
+  delete legacy.packSnapshot.ruleSemanticsVersion;
+  legacy.packIdentity.digest = await sha256Hex(canonicalizeJson(legacy.packSnapshot));
+  await putRawSession(page, legacy);
+  await page.reload();
+  await expect(page.getByText('Older interview format')).toBeVisible();
+
+  await page.evaluate((sessionId) => {
+    const state = window as Window & { __legacyMigrationAbortObserved?: boolean };
+    state.__legacyMigrationAbortObserved = false;
+    const originalPut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (...args) {
+      const [value] = args;
+      if (this.name === 'sessions' && value && typeof value === 'object' && (value as { sessionId?: string }).sessionId === sessionId) {
+        throw new DOMException('Synthetic legacy-upgrade put failure.', 'DataError');
+      }
+      return originalPut.apply(this, args);
+    };
+    const originalAbort = IDBTransaction.prototype.abort;
+    IDBTransaction.prototype.abort = function () {
+      this.addEventListener('abort', () => { state.__legacyMigrationAbortObserved = true; }, { once: true });
+      return originalAbort.call(this);
+    };
+  }, legacy.sessionId);
+
+  await page.getByRole('button', { name: 'Upgrade' }).click();
+  await expect(page.getByText(/^Upgrade did not complete\..*The original interview and any prior recovery record were preserved\.$/)).toBeVisible();
+  await expect(page.getByText('Older interview format')).toBeVisible();
+  expect(await page.evaluate(() => (window as Window & { __legacyMigrationAbortObserved?: boolean }).__legacyMigrationAbortObserved)).toBe(true);
+
+  const snapshot = await readStorageSnapshot(page);
+  expect(snapshot.rows).toEqual([legacy]);
+  expect(snapshot.archives).toEqual([]);
+  expect(snapshot.archiveKeys).toEqual([]);
 });

@@ -2,7 +2,7 @@ import type { InterviewSession } from '../src/domain';
 
 export function bareSession(sessionId: string, runningNotes = ''): InterviewSession {
   return {
-    sessionSchemaVersion: '1.1.0',
+    sessionSchemaVersion: '1.2.0',
     sessionId,
     interviewPackId: 'general-discovery',
     interviewPackVersion: '1.0.0',
@@ -17,6 +17,7 @@ export function bareSession(sessionId: string, runningNotes = ''): InterviewSess
     runningNotes,
     packSnapshot: {
       packSchemaVersion: '1.0.0',
+      ruleSemanticsVersion: 'condition-equals-v1',
       packId: 'general-discovery',
       packVersion: '1.0.0',
       title: 'General discovery',
