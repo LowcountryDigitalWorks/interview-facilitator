@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { sessionPack, validateSessionShape, visibleQuestions } from '../src/domain';
+import { sessionPack, validateSessionForPack, validateSessionShape, visibleQuestions } from '../src/domain';
 import { serializeSession, sessionToMarkdown } from '../src/markdown';
 import { generalDiscoveryPack as pack } from '../src/pack';
 import { assertPackIdentity, canonicalizeJson, createPinnedSession, sha256Hex, validateSessionRecord } from '../src/pack-identity';
@@ -108,5 +108,24 @@ describe('pinned pack identity', () => {
     };
     expect(() => validateSessionShape(legacy)).toThrow(/legacy session schema 1\.0\.0/i);
     expect(() => validateSessionShape(legacy)).toThrow(/not migrated or deleted/i);
+  });
+
+  it('rejects duplicate or dangling snapshot references', async () => {
+    const session = await createPinnedSession(pack, { clientLabel: 'Synthetic Client' }, new Date('2026-10-31T12:00:00.000Z'));
+    const duplicateSection = structuredClone(session);
+    duplicateSection.packSnapshot.sections.push(structuredClone(duplicateSection.packSnapshot.sections[0]!));
+    expect(() => validateSessionForPack(duplicateSection)).toThrow(/duplicate section/i);
+
+    const duplicateQuestion = structuredClone(session);
+    duplicateQuestion.packSnapshot.questions.push(structuredClone(duplicateQuestion.packSnapshot.questions[0]!));
+    expect(() => validateSessionForPack(duplicateQuestion)).toThrow(/duplicate question/i);
+
+    const unknownSection = structuredClone(session);
+    unknownSection.packSnapshot.questions[0]!.sectionId = 'missing-section';
+    expect(() => validateSessionForPack(unknownSection)).toThrow(/unknown section/i);
+
+    const unknownCondition = structuredClone(session);
+    unknownCondition.packSnapshot.questions[1]!.condition = { questionId: 'missing-question', equals: 'Yes' };
+    expect(() => validateSessionForPack(unknownCondition)).toThrow(/unknown question/i);
   });
 });

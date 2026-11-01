@@ -1,5 +1,5 @@
-import type { InterviewSession } from './domain';
-import { validateSessionRecord } from './pack-identity';
+import { validateSessionForPack, type InterviewSession } from './domain';
+import { assertPackIdentity, validateSessionRecord } from './pack-identity';
 
 const DB_NAME = 'ldw-interview-facilitator';
 const STORE = 'sessions';
@@ -45,6 +45,8 @@ function writeTransaction(db: IDBDatabase): IDBTransaction {
 }
 
 export async function saveSession(session: InterviewSession): Promise<void> {
+  validateSessionForPack(session);
+  await assertPackIdentity(session);
   const db = await openDb();
   try {
     await new Promise<void>((resolve, reject) => {

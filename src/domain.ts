@@ -287,6 +287,20 @@ export function validateSessionShape(value: unknown): InterviewSession {
 
 export function validateSessionForPack(session: InterviewSession): void {
   const pack = session.packSnapshot;
+  const sectionIds = new Set<string>();
+  for (const section of pack.sections) {
+    if (sectionIds.has(section.id)) throw new Error('Pack snapshot contains a duplicate section.');
+    sectionIds.add(section.id);
+  }
+  const seenQuestionIds = new Set<string>();
+  for (const question of pack.questions) {
+    if (seenQuestionIds.has(question.id)) throw new Error('Pack snapshot contains a duplicate question.');
+    seenQuestionIds.add(question.id);
+    if (!sectionIds.has(question.sectionId)) throw new Error('Pack snapshot question refers to an unknown section.');
+  }
+  for (const question of pack.questions) {
+    if (question.condition && !seenQuestionIds.has(question.condition.questionId)) throw new Error('Pack snapshot condition refers to an unknown question.');
+  }
   if (session.interviewPackId !== pack.packId || session.interviewPackVersion !== pack.packVersion) throw new Error('This session uses a different interview pack or version.');
   const questionIds = new Set(pack.questions.map((question) => question.id));
   for (const question of pack.questions) {
