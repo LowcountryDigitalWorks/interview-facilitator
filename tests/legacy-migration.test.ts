@@ -52,7 +52,7 @@ function legacyRecord(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function installMigrationDatabase(options: { fail?: 'archive-put' | 'session-put'; abortWrite?: boolean; swapSecondRead?: unknown } = {}) {
+function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put' | 'session-put'; abortWrite?: boolean; swapSecondRead?: unknown } = {}) {
   const stores = new Map<string, Map<string, unknown>>();
   let version = 0;
   let sessionReads = 0;
@@ -81,11 +81,16 @@ function installMigrationDatabase(options: { fail?: 'archive-put' | 'session-put
           queueMicrotask(() => tx.onabort?.());
         },
         objectStore(name: string) {
-          const store = stores.get(name) ?? new Map<string, unknown>();
+          if (!names.includes(name) || !stores.has(name)) throw new DOMException('Unknown transaction store.', 'NotFoundError');
+          const store = stores.get(name)!;
           return {
             get(key: IDBValidKey) {
               const request = { result: undefined as unknown, onsuccess: null as null | (() => void), onerror: null as null | (() => void), error: null as DOMException | null };
               enqueue(() => {
+                if (options.fail === 'archive-get' && name === LEGACY_ARCHIVE_STORE) {
+                  request.onerror?.();
+                  return;
+                }
                 let value = store.get(String(key));
                 if (name === SESSIONS_STORE) {
                   sessionReads += 1;
@@ -171,6 +176,12 @@ function installMigrationDatabase(options: { fail?: 'archive-put' | 'session-put
 function seedLegacy(memory: ReturnType<typeof installMigrationDatabase>, row: unknown, id = SESSION_ID) {
   memory.setVersion(1);
   memory.stores.set(SESSIONS_STORE, new Map([[id, structuredClone(row)]]));
+}
+
+function seedArchive(memory: ReturnType<typeof installMigrationDatabase>, row: unknown) {
+  memory.setVersion(2);
+  memory.stores.set(LEGACY_ARCHIVE_STORE, new Map([[legacyArchiveKey(SESSION_ID), row]]));
+  expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.get(legacyArchiveKey(SESSION_ID))).toBe(row);
 }
 
 describe('legacy 1.0 to pinned 1.1 migration', () => {
@@ -285,6 +296,7 @@ describe('legacy 1.0 to pinned 1.1 migration', () => {
   });
 
   it.each([
+    ['archive read', { fail: 'archive-get' as const }],
     ['archive put', { fail: 'archive-put' as const }],
     ['current put', { fail: 'session-put' as const }],
     ['transaction abort', { abortWrite: true }],
@@ -336,6 +348,48 @@ describe('legacy 1.0 to pinned 1.1 migration', () => {
     expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.get(legacyArchiveKey(SESSION_ID))).toBe(archived);
     if (first.kind !== 'migrated' || second.kind !== 'already-migrated') return;
     expect(canonicalizeJson(second.session)).toBe(canonicalizeJson(first.session));
+  });
+
+  it('preserves an identical pre-existing archive while migrating', async () => {
+    const memory = installMigrationDatabase();
+    const source = legacyRecord();
+    seedLegacy(memory, source);
+    const archive = structuredClone(source);
+    seedArchive(memory, archive);
+    const result = await migrateLegacySession(SESSION_ID);
+    expect(result.kind).toBe('migrated');
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size).toBe(1);
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.get(legacyArchiveKey(SESSION_ID))).toBe(archive);
+  });
+
+  it('returns conflict without changing either store for a different pre-existing archive', async () => {
+    const memory = installMigrationDatabase();
+    const source = legacyRecord();
+    seedLegacy(memory, source);
+    const original = structuredClone(source);
+    const archive = { ...structuredClone(source), runningNotes: 'Different historical source.' };
+    seedArchive(memory, archive);
+    const result = await migrateLegacySession(SESSION_ID);
+    expect(result.kind).toBe('conflict');
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(original);
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.get(legacyArchiveKey(SESSION_ID))).toBe(archive);
+  });
+
+  it.each([
+    { fail: 'archive-get' as const },
+    { fail: 'session-put' as const },
+    { abortWrite: true },
+  ])('preserves an existing archive and source on failure: %j', async (options) => {
+    const memory = installMigrationDatabase(options);
+    const source = legacyRecord();
+    seedLegacy(memory, source);
+    const archive = structuredClone(source);
+    seedArchive(memory, archive);
+    const result = await migrateLegacySession(SESSION_ID);
+    expect(result.kind).toBe('aborted');
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(source);
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.get(legacyArchiveKey(SESSION_ID))).toBe(archive);
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size).toBe(1);
   });
 
   it('reports a conflict when the current row no longer matches the archived source', async () => {

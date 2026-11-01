@@ -185,10 +185,26 @@ function commitLegacyMigration(db: IDBDatabase, sessionId: string, session: Inte
           fail({ kind: 'stale' });
           return;
         }
-        const archivePut = tx.objectStore(LEGACY_ARCHIVE_STORE).put(structuredClone(currentRequest.result), legacyArchiveKey(sessionId));
-        archivePut.onerror = () => fail({ kind: 'aborted' });
-        const sessionPut = tx.objectStore(STORE).put(session);
-        sessionPut.onerror = () => fail({ kind: 'aborted' });
+        const archiveStore = tx.objectStore(LEGACY_ARCHIVE_STORE);
+        const archiveRequest = archiveStore.get(legacyArchiveKey(sessionId));
+        archiveRequest.onerror = () => fail({ kind: 'aborted' });
+        archiveRequest.onsuccess = () => {
+          try {
+            if (archiveRequest.result !== undefined) {
+              if (canonicalizeJson(archiveRequest.result) !== fingerprint) {
+                fail({ kind: 'conflict', reason: 'An existing archive contains different legacy data.' });
+                return;
+              }
+            } else {
+              const archivePut = archiveStore.put(structuredClone(currentRequest.result), legacyArchiveKey(sessionId));
+              archivePut.onerror = () => fail({ kind: 'aborted' });
+            }
+            const sessionPut = tx.objectStore(STORE).put(session);
+            sessionPut.onerror = () => fail({ kind: 'aborted' });
+          } catch {
+            fail({ kind: 'aborted' });
+          }
+        };
       } catch {
         fail({ kind: 'aborted' });
       }
