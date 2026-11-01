@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
+import type { InterviewSession } from '../../src/domain';
 
 const DB_NAME = 'ldw-interview-facilitator';
 const STORE = 'sessions';
@@ -37,7 +38,7 @@ async function putRawSession(page: Page, row: unknown): Promise<void> {
   }, { dbName: DB_NAME, store: STORE, row });
 }
 
-function syntheticSession(sessionId = 'synthetic-valid-session') {
+function syntheticSession(sessionId = 'synthetic-valid-session'): InterviewSession {
   const timestamp = '2026-10-31T20:00:00.000Z';
   return {
     sessionSchemaVersion: '1.0.0',
@@ -122,4 +123,50 @@ test('an already-cached production shell reloads while offline', async ({ page, 
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByRole('button', { name: 'New interview' })).toBeVisible();
   await expect(page.getByText(/Offline/)).toBeVisible();
+});
+
+test('Presentation read-back stays public across Change and masks retained deferred values', async ({ page }) => {
+  await page.goto('/');
+  const row = syntheticSession('synthetic-presentation-session');
+  row.currentQuestionId = 'must-have';
+  row.answers['existing-presence'] = { value: 'stale internal detail', status: 'SKIP', note: 'private question note' };
+  row.answers['primary-goal'] = { value: 'stale not-applicable detail', status: 'N_A', note: '' };
+  row.answers['must-have'] = { value: 'Public launch requirement', status: 'ANSWERED', note: '' };
+  row.runningNotes = 'private running note';
+  await putRawSession(page, row);
+  await page.reload();
+
+  await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
+  await page.getByRole('button', { name: 'Presentation view' }).click();
+  await expect(page.getByRole('button', { name: 'Exit presentation' })).toBeVisible();
+  await expect(page.getByText('Question notes')).toHaveCount(0);
+  await expect(page.locator('.context-rail')).toHaveCount(0);
+  await expect(page.getByText('Question status')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Export backup' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await expect(page.getByText('Presentation read-back')).toBeVisible();
+  await expect(page.getByText('Deferred / not captured')).toBeVisible();
+  await expect(page.getByText('Not applicable').first()).toBeVisible();
+  await expect(page.getByText('stale internal detail')).toHaveCount(0);
+  await expect(page.getByText('stale not-applicable detail')).toHaveCount(0);
+  await expect(page.getByText('private question note')).toHaveCount(0);
+  await expect(page.getByText('private running note')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Export full JSON backup' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Export internal Markdown' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Delete local session' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Home' })).toHaveCount(0);
+  await expect(page.getByText(/cannot guarantee that free-text answers themselves contain no sensitive information/)).toBeVisible();
+
+  const readBackAxe = await new AxeBuilder({ page }).analyze();
+  const readBackConsequential = readBackAxe.violations.filter((violation) => violation.impact === 'critical' || violation.impact === 'serious');
+  expect(readBackConsequential).toEqual([]);
+
+  const change = page.getByRole('button', { name: 'Change What is already in place today?' });
+  await expect(change).toBeVisible();
+  await change.click();
+  await expect(page.getByRole('button', { name: 'Exit presentation' })).toBeVisible();
+  await expect(page.getByText('Question notes')).toHaveCount(0);
+  await expect(page.locator('.context-rail')).toHaveCount(0);
+
 });
