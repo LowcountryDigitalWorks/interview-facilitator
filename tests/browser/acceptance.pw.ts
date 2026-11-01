@@ -168,5 +168,89 @@ test('Presentation read-back stays public across Change and masks retained defer
   await expect(page.getByRole('button', { name: 'Exit presentation' })).toBeVisible();
   await expect(page.getByText('Question notes')).toHaveCount(0);
   await expect(page.locator('.context-rail')).toHaveCount(0);
+  await expect(page.locator('#question-prompt')).toBeFocused();
+});
 
+async function startSyntheticInterview(page: Page): Promise<void> {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill('Synthetic A11y Test');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+}
+
+test('active Interview names the text answer from the visible prompt', async ({ page }) => {
+  await startSyntheticInterview(page);
+  const answer = page.locator('#answer');
+  await expect(answer).toHaveAccessibleName('What is already in place today?');
+  await expect(answer).toHaveAttribute('aria-describedby', 'question-help');
+  await expect(page.getByLabel('Question notes')).toBeVisible();
+  await expect(page.getByLabel('Running notes')).toBeVisible();
+
+  const results = await new AxeBuilder({ page }).analyze();
+  const consequential = results.violations.filter((violation) => violation.impact === 'critical' || violation.impact === 'serious');
+  expect(consequential).toEqual([]);
+});
+
+test('status radio change does not replace the focused control', async ({ page }) => {
+  await startSyntheticInterview(page);
+  const answered = page.getByRole('radio', { name: 'Answered' });
+  await answered.focus();
+  await page.keyboard.press('Space');
+  await expect(answered).toBeChecked();
+  await expect(answered).toBeFocused();
+});
+
+test('Continue and Back move focus to the active question prompt', async ({ page }) => {
+  await startSyntheticInterview(page);
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.locator('#question-prompt')).toBeFocused();
+  await expect(page.locator('#question-prompt')).toHaveText('What outcome matters most from this work?');
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(page.locator('#question-prompt')).toBeFocused();
+  await expect(page.locator('#question-prompt')).toHaveText('What is already in place today?');
+
+  await page.getByRole('button', { name: 'Presentation view' }).click();
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.locator('#question-prompt')).toBeFocused();
+});
+
+test('phone Coverage and Context dialogs restore focus and keep state reachable', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await startSyntheticInterview(page);
+  await expect(page.locator('[data-save-indicator]')).toBeVisible();
+  await expect(page.locator('[data-connectivity-indicator]')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
+
+  const coverage = page.getByRole('button', { name: /^Coverage / });
+  await coverage.click();
+  await expect(coverage).toHaveAttribute('aria-expanded', 'true');
+  const coverageDialog = page.getByRole('dialog', { name: 'Coverage' });
+  await expect(coverageDialog).toBeVisible();
+  await expect(coverageDialog.getByRole('button', { name: 'Close' })).toBeFocused();
+  expect(await page.locator('header').evaluate((element) => (element as HTMLElement).inert)).toBe(true);
+  expect(await page.locator('.question-stage').evaluate((element) => (element as HTMLElement).inert)).toBe(true);
+
+  const context = page.getByRole('button', { name: /^Context / });
+  await context.evaluate((element) => (element as HTMLButtonElement).click());
+  await expect(coverage).toHaveAttribute('aria-expanded', 'false');
+  await expect(context).toHaveAttribute('aria-expanded', 'true');
+  const contextDialog = page.getByRole('dialog', { name: 'Known context' });
+  await expect(contextDialog.getByRole('button', { name: 'Close' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(context).toHaveAttribute('aria-expanded', 'false');
+  await expect(context).toBeFocused();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('private read-back Change actions include the question topic', async ({ page }) => {
+  await startSyntheticInterview(page);
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  const change = page.getByRole('button', { name: 'Change What is already in place today?' });
+  await expect(change).toBeVisible();
+  await change.click();
+  await expect(page.locator('#question-prompt')).toBeFocused();
+  await expect(page.locator('#question-prompt')).toHaveText('What is already in place today?');
 });

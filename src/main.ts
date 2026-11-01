@@ -29,6 +29,12 @@ type HomeNotice =
 
 let homeNotice: HomeNotice = null;
 const sessionSwitchGate = new SessionSwitchGate();
+let pendingInterviewFocus: 'prompt' | null = null;
+let pendingReviewFocus = false;
+let phonePanel: 'coverage' | 'context' | null = null;
+let phoneInvoker: HTMLElement | null = null;
+let saveFailureAnnounced = false;
+let announcedConnectivity: string | null = null;
 
 const autosave = new SessionAutosaveCoordinator(saveSession);
 
@@ -110,6 +116,15 @@ function connectivityLabel(): string {
   return formatConnectivityLabel(navigator.onLine, offlineReady);
 }
 
+function announceConsequential(message: string, tone: 'polite' | 'assertive'): void {
+  const region = app.querySelector<HTMLElement>('#consequential-status');
+  if (!region) return;
+  region.setAttribute('role', tone === 'assertive' ? 'alert' : 'status');
+  region.setAttribute('aria-live', tone);
+  region.textContent = '';
+  region.textContent = message;
+}
+
 function updateStateIndicators(): void {
   app.querySelectorAll<HTMLElement>('[data-save-indicator]').forEach((element) => {
     element.textContent = saveLabel();
@@ -118,6 +133,16 @@ function updateStateIndicators(): void {
   app.querySelectorAll<HTMLElement>('[data-connectivity-indicator]').forEach((element) => {
     element.textContent = connectivityLabel();
   });
+  if (saveState === 'error' && !saveFailureAnnounced) {
+    announceConsequential(saveLabel(), 'assertive');
+    saveFailureAnnounced = true;
+  } else if (saveState === 'saved' && saveFailureAnnounced) {
+    announceConsequential('Local save recovered.', 'polite');
+    saveFailureAnnounced = false;
+  }
+  const connectivity = connectivityLabel();
+  if (announcedConnectivity !== null && announcedConnectivity !== connectivity) announceConsequential(connectivity, 'polite');
+  announcedConnectivity = connectivity;
 }
 
 function refreshConnectivityIndicators(): void {
@@ -386,12 +411,85 @@ function renderNew(): void {
 }
 
 function answerControl(question: Question, value: string): string {
-  if (question.kind === 'textarea') return `<textarea id="answer" rows="6" placeholder="Capture the useful answer, not a transcript.">${escapeHtml(value)}</textarea>`;
+  const described = question.help ? ' aria-describedby="question-help"' : '';
+  const labelled = ' aria-labelledby="question-prompt"';
+  if (question.kind === 'textarea') return `<textarea id="answer"${labelled}${described} rows="6" placeholder="Capture the useful answer, not a transcript.">${escapeHtml(value)}</textarea>`;
   if (question.kind === 'single') return `<fieldset class="choice-group"><legend class="sr-only">${escapeHtml(question.prompt)}</legend>${(question.options ?? []).map((option) => `<label class="choice"><input type="radio" name="answer" value="${escapeHtml(option)}" ${value === option ? 'checked' : ''}/><span>${escapeHtml(option)}</span></label>`).join('')}</fieldset>`;
-  return `<input id="answer" value="${escapeHtml(value)}" />`;
+  return `<input id="answer"${labelled}${described} value="${escapeHtml(value)}" />`;
+}
+
+function visibleQuestionKey(): string {
+  if (!session) return '';
+  return visibleQuestions(pack, session).map((item) => item.id).join('\n');
+}
+
+function paintInterviewChrome(): void {
+  if (!session) return;
+  const stats = coverage(pack, session);
+  const coverageButton = app.querySelector<HTMLButtonElement>('[data-action="coverage"]');
+  if (coverageButton) {
+    const expanded = coverageButton.getAttribute('aria-expanded');
+    coverageButton.textContent = `Coverage ${stats.resolved}/${stats.visible}`;
+    if (expanded) coverageButton.setAttribute('aria-expanded', expanded);
+  }
+  const resolved = app.querySelector<HTMLElement>('[data-coverage-resolved]');
+  if (resolved) resolved.textContent = `${stats.resolved} resolved`;
+  const remaining = app.querySelector<HTMLElement>('[data-coverage-remaining]');
+  if (remaining) remaining.textContent = `${stats.remaining} currently remaining · ${stats.mustConfirm} must confirm`;
+  app.querySelectorAll<HTMLButtonElement>('[data-question-id]').forEach((button) => {
+    const status = session?.answers[button.dataset.questionId ?? '']?.status;
+    button.classList.toggle('confirm', status === 'MUST_CONFIRM');
+  });
+  app.querySelectorAll<HTMLInputElement>('input[name="status"]').forEach((input) => {
+    input.closest('.status-chip')?.classList.toggle('selected', input.checked);
+  });
+}
+
+function setInterviewBackgroundInert(panel: HTMLElement | null): void {
+  for (const node of [app.querySelector('header'), app.querySelector('.question-stage'), app.querySelector('#coverage-panel'), app.querySelector('#context-panel')]) {
+    if (!(node instanceof HTMLElement)) continue;
+    node.inert = panel !== null && node !== panel;
+  }
+}
+
+function closePhonePanel(restoreFocus = true): void {
+  const panel = phonePanel ? app.querySelector<HTMLElement>(phonePanel === 'coverage' ? '#coverage-panel' : '#context-panel') : null;
+  panel?.classList.remove('mobile-open');
+  panel?.removeAttribute('role');
+  panel?.removeAttribute('aria-modal');
+  panel?.removeAttribute('aria-labelledby');
+  const button = phonePanel ? app.querySelector<HTMLButtonElement>(`[data-action="${phonePanel}"]`) : null;
+  button?.setAttribute('aria-expanded', 'false');
+  setInterviewBackgroundInert(null);
+  const restore = phoneInvoker;
+  phonePanel = null;
+  phoneInvoker = null;
+  if (restoreFocus) restore?.focus();
+}
+
+function openPhonePanel(which: 'coverage' | 'context', invoker: HTMLElement): void {
+  if (phonePanel === which) {
+    closePhonePanel();
+    return;
+  }
+  if (phonePanel) closePhonePanel(false);
+  const panel = app.querySelector<HTMLElement>(which === 'coverage' ? '#coverage-panel' : '#context-panel');
+  const button = app.querySelector<HTMLButtonElement>(`[data-action="${which}"]`);
+  if (!panel || !button) return;
+  phonePanel = which;
+  phoneInvoker = invoker;
+  panel.classList.add('mobile-open');
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-modal', 'true');
+  panel.setAttribute('aria-labelledby', which === 'coverage' ? 'coverage-panel-title' : 'context-panel-title');
+  button.setAttribute('aria-expanded', 'true');
+  setInterviewBackgroundInert(panel);
+  panel.querySelector<HTMLButtonElement>('[data-action="close-panel"]')?.focus();
 }
 
 function renderInterview(): void {
+  phonePanel = null;
+  phoneInvoker = null;
   if (!session) { view = 'home'; void render(); return; }
   const question = currentQuestion();
   if (!question) return;
@@ -405,11 +503,11 @@ function renderInterview(): void {
   app.innerHTML = `
     <header class="app-header cockpit-header">
       <div><strong>${escapeHtml(session.clientLabel)}</strong><span>${escapeHtml(pack.title)}</span></div>
-      <div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator>${escapeHtml(saveLabel())}</span>${presenting ? '<span class="state-pill">Presentation view</span><button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : `<span class="state-pill" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span><button class="secondary small" data-action="enter-presentation">Presentation view</button><button class="icon-button" data-action="export" aria-label="Export backup">⇩</button>`}</div>
+      <div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator>${escapeHtml(saveLabel())}</span>${presenting ? '<span class="state-pill">Presentation view</span><button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : `<span class="state-pill" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span><button class="secondary small" data-action="enter-presentation">Presentation view</button><button class="icon-button" data-action="export" aria-label="Export backup">⇩</button>`}<div id="consequential-status" class="sr-only" role="status"></div></div>
     </header>
     <main id="main" class="cockpit" ${presenting ? 'style="display:block"' : ''}>
-      ${presenting ? '' : `<aside class="coverage-rail" aria-label="Interview coverage">
-        <div class="rail-heading"><p class="eyebrow">Coverage</p><strong>${stats.resolved} resolved</strong><span>${stats.remaining} currently remaining · ${stats.mustConfirm} must confirm</span></div>
+      ${presenting ? '' : `<aside id="coverage-panel" class="coverage-rail" aria-label="Interview coverage">
+        <div class="rail-heading"><h2 id="coverage-panel-title">Coverage</h2><button type="button" class="secondary rail-close" data-action="close-panel">Close</button><strong data-coverage-resolved>${stats.resolved} resolved</strong><span data-coverage-remaining>${stats.remaining} currently remaining · ${stats.mustConfirm} must confirm</span></div>
         ${pack.sections.map((item) => {
           const questions = visibleQuestions(pack, session!).filter((candidate) => candidate.sectionId === item.id);
           if (!questions.length) return '';
@@ -418,17 +516,18 @@ function renderInterview(): void {
         }).join('')}
       </aside>`}
       <section class="question-stage">
-        ${presenting ? '<div class="known-preview"><strong>Presentation view</strong><p>Internal notes, provenance, coverage, status controls, and private tools are intentionally excluded. Answer text can still contain sensitive material, so use interviewer judgment while sharing.</p></div>' : `<div class="mobile-tools"><button class="secondary small" data-action="coverage">Coverage ${stats.resolved}/${stats.visible}</button><button class="secondary small" data-action="context">Context ${facts.length}</button></div>`}
+        ${presenting ? '<div class="known-preview"><strong>Presentation view</strong><p>Internal notes, provenance, coverage, status controls, and private tools are intentionally excluded. Answer text can still contain sensitive material, so use interviewer judgment while sharing.</p></div>' : `<div class="mobile-tools"><button type="button" class="secondary small" data-action="coverage" aria-controls="coverage-panel" aria-expanded="false">Coverage ${stats.resolved}/${stats.visible}</button><button type="button" class="secondary small" data-action="context" aria-controls="context-panel" aria-expanded="false">Context ${facts.length}</button></div>`}
         <p class="eyebrow">${escapeHtml(section?.title ?? '')}</p>
-        <h1>${escapeHtml(question.prompt)}</h1>
-        ${question.help ? `<p class="question-help">${escapeHtml(question.help)}</p>` : ''}
+        <h1 id="question-prompt" tabindex="-1">${escapeHtml(question.prompt)}</h1>
+        ${question.help ? `<p id="question-help" class="question-help">${escapeHtml(question.help)}</p>` : ''}
         <div class="answer-block">${answerControl(question, state.value ?? '')}</div>
         ${presenting ? '' : `<label class="notes-label">Question notes <span>internal</span><textarea id="question-note" rows="3" placeholder="Optional interviewer note">${escapeHtml(state.note)}</textarea></label>
         <fieldset class="status-fieldset"><legend>Question status</legend><div class="status-grid">${statusOptions.map((option) => `<label class="status-chip ${state.status === option.value ? 'selected' : ''}"><input type="radio" name="status" value="${option.value}" ${state.status === option.value ? 'checked' : ''}/><span>${escapeHtml(option.label)}</span></label>`).join('')}</div></fieldset>`}
         <div class="action-dock"><button class="secondary" data-action="back" ${nextVisibleQuestion(pack, session, question.id, -1) ? '' : 'disabled'}>Back</button><button class="primary" data-action="next">${nextVisibleQuestion(pack, session, question.id, 1) ? 'Continue' : 'Review interview'}</button></div>
       </section>
-      ${presenting ? '' : `<aside class="context-rail">
-        <section><p class="eyebrow">Known context</p>${facts.length ? facts.map((fact) => `<div class="fact-card"><strong>${escapeHtml(fact.label)}</strong><p>${escapeHtml(fact.value)}</p><small>${escapeHtml(fact.provenance)}</small></div>`).join('') : '<p class="muted">No known facts linked to this question.</p>'}</section>
+      ${presenting ? '' : `<aside id="context-panel" class="context-rail">
+        <div class="rail-heading"><h2 id="context-panel-title">Known context</h2><button type="button" class="secondary rail-close" data-action="close-panel">Close</button></div>
+        <section>${facts.length ? facts.map((fact) => `<div class="fact-card"><strong>${escapeHtml(fact.label)}</strong><p>${escapeHtml(fact.value)}</p><small>${escapeHtml(fact.provenance)}</small></div>`).join('') : '<p class="muted">No known facts linked to this question.</p>'}</section>
         <section><label class="notes-label">Running notes <span>internal</span><textarea id="running-notes" rows="10" placeholder="Cross-question notes">${escapeHtml(session.runningNotes)}</textarea></label></section>
       </aside>`}
     </main>`;
@@ -449,16 +548,40 @@ function renderInterview(): void {
     scheduleSave();
   };
 
-  app.querySelectorAll<HTMLInputElement>('input[name="answer"], input[name="status"]').forEach((element) => element.addEventListener('change', () => { applyAnswer(); if (!presenting) renderInterview(); }));
+  app.querySelectorAll<HTMLInputElement>('input[name="status"]').forEach((element) => element.addEventListener('change', () => {
+    applyAnswer();
+    if (!presenting) paintInterviewChrome();
+  }));
+  app.querySelectorAll<HTMLInputElement>('input[name="answer"]').forEach((element) => element.addEventListener('change', () => {
+    const before = visibleQuestionKey();
+    applyAnswer();
+    if (presenting || visibleQuestionKey() === before) return;
+    const selected = element.value;
+    pendingInterviewFocus = null;
+    renderInterview();
+    app.querySelector<HTMLInputElement>(`input[name="answer"][value="${CSS.escape(selected)}"]`)?.focus();
+  }));
   app.querySelectorAll<HTMLTextAreaElement>('#answer, #question-note, #running-notes').forEach((element) => element.addEventListener('input', applyAnswer));
-  app.querySelectorAll<HTMLElement>('[data-question-id]').forEach((button) => button.addEventListener('click', () => { applyAnswer(); if (session) session.currentQuestionId = button.dataset.questionId ?? session.currentQuestionId; renderInterview(); }));
-  app.querySelector('[data-action="back"]')?.addEventListener('click', () => { applyAnswer(); const previous = session && nextVisibleQuestion(pack, session, question.id, -1); if (previous && session) session.currentQuestionId = previous.id; renderInterview(); });
-  app.querySelector('[data-action="next"]')?.addEventListener('click', () => { applyAnswer(); const next = session && nextVisibleQuestion(pack, session, question.id, 1); if (next && session) { session.currentQuestionId = next.id; renderInterview(); } else { presentationMode = enterPresentation(); view = 'review'; render(); } });
+  app.querySelectorAll<HTMLElement>('[data-question-id]').forEach((button) => button.addEventListener('click', () => {
+    applyAnswer();
+    if (session) session.currentQuestionId = button.dataset.questionId ?? session.currentQuestionId;
+    phonePanel = null;
+    phoneInvoker = null;
+    pendingInterviewFocus = 'prompt';
+    renderInterview();
+  }));
+  app.querySelector('[data-action="back"]')?.addEventListener('click', () => { applyAnswer(); const previous = session && nextVisibleQuestion(pack, session, question.id, -1); if (previous && session) session.currentQuestionId = previous.id; pendingInterviewFocus = 'prompt'; renderInterview(); });
+  app.querySelector('[data-action="next"]')?.addEventListener('click', () => { applyAnswer(); const next = session && nextVisibleQuestion(pack, session, question.id, 1); if (next && session) { session.currentQuestionId = next.id; pendingInterviewFocus = 'prompt'; renderInterview(); } else { presentationMode = enterPresentation(); view = 'review'; pendingReviewFocus = true; render(); } });
   app.querySelector('[data-action="enter-presentation"]')?.addEventListener('click', () => { applyAnswer(); presentationMode = enterPresentation(); renderInterview(); });
-  app.querySelector('[data-action="exit-presentation"]')?.addEventListener('click', () => { applyAnswer(); presentationMode = exitPresentation(); renderInterview(); });
+  app.querySelector('[data-action="exit-presentation"]')?.addEventListener('click', () => { applyAnswer(); presentationMode = exitPresentation(); pendingInterviewFocus = 'prompt'; renderInterview(); });
   app.querySelector('[data-action="export"]')?.addEventListener('click', () => { if (session) download(`${session.clientLabel.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-interview.json`, serializeSession(session), 'application/json'); });
-  app.querySelector('[data-action="coverage"]')?.addEventListener('click', () => app.querySelector('.coverage-rail')?.classList.toggle('mobile-open'));
-  app.querySelector('[data-action="context"]')?.addEventListener('click', () => app.querySelector('.context-rail')?.classList.toggle('mobile-open'));
+  app.querySelector<HTMLButtonElement>('[data-action="coverage"]')?.addEventListener('click', (event) => openPhonePanel('coverage', event.currentTarget as HTMLElement));
+  app.querySelector<HTMLButtonElement>('[data-action="context"]')?.addEventListener('click', (event) => openPhonePanel('context', event.currentTarget as HTMLElement));
+  app.querySelectorAll<HTMLButtonElement>('[data-action="close-panel"]').forEach((button) => button.addEventListener('click', () => closePhonePanel()));
+  if (pendingInterviewFocus === 'prompt') {
+    pendingInterviewFocus = null;
+    app.querySelector<HTMLElement>('#question-prompt')?.focus();
+  }
 }
 
 function renderReview(): void {
@@ -470,7 +593,7 @@ function renderReview(): void {
     <header class="app-header"><div><strong>${escapeHtml(session.clientLabel)}</strong><span>${presenting ? 'Presentation read-back' : 'Private review'}</span></div><div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator>${escapeHtml(saveLabel())}</span>${presenting ? '<button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : '<button class="secondary small" data-action="enter-presentation">Presentation view</button>'}</div></header>
     <main id="main" class="review-shell">
       <button class="text-button" data-action="return">← Return to interview</button>
-      <p class="eyebrow">Read-back</p><h1>Read back what matters before ending the conversation.</h1>
+      <p class="eyebrow">Read-back</p><h1 id="readback-heading" tabindex="-1">Read back what matters before ending the conversation.</h1>
       ${presenting ? '' : `<div class="review-stats"><span>${stats.resolved} resolved</span><span>${stats.remaining} currently not resolved</span><span>${stats.mustConfirm} must confirm</span></div>`}
       ${pack.sections.map((section) => {
         const sectionQuestions = questions.filter((question) => question.sectionId === section.id);
@@ -491,8 +614,8 @@ function renderReview(): void {
         ? ''
         : '<div class="button-row"><button class="primary" data-action="enter-presentation">Open presentation view</button><button class="secondary" data-action="json">Export full JSON backup</button><button class="secondary" data-action="markdown">Export internal Markdown</button><button class="secondary" data-action="home">Home</button><button class="secondary" data-action="delete">Delete local session</button></div>'}
     </main>`;
-  app.querySelector('[data-action="return"]')?.addEventListener('click', () => { view = 'interview'; render(); });
-  app.querySelectorAll<HTMLElement>('[data-change]').forEach((button) => button.addEventListener('click', () => { if (session) session.currentQuestionId = button.dataset.change ?? session.currentQuestionId; view = 'interview'; render(); }));
+  app.querySelector('[data-action="return"]')?.addEventListener('click', () => { pendingInterviewFocus = 'prompt'; view = 'interview'; render(); });
+  app.querySelectorAll<HTMLElement>('[data-change]').forEach((button) => button.addEventListener('click', () => { if (session) session.currentQuestionId = button.dataset.change ?? session.currentQuestionId; pendingInterviewFocus = 'prompt'; view = 'interview'; render(); }));
   app.querySelectorAll('[data-action="enter-presentation"]').forEach((button) => button.addEventListener('click', () => { presentationMode = enterPresentation(); renderReview(); }));
   app.querySelectorAll('[data-action="exit-presentation"]').forEach((button) => button.addEventListener('click', () => { presentationMode = exitPresentation(); renderReview(); }));
   app.querySelector('[data-action="json"]')?.addEventListener('click', () => { if (session) download('interview.json', serializeSession(session), 'application/json'); });
@@ -513,6 +636,10 @@ function renderReview(): void {
       alert(error instanceof Error ? error.message : 'Unable to delete local interview.');
     }
   });
+  if (pendingReviewFocus) {
+    pendingReviewFocus = false;
+    app.querySelector<HTMLElement>('#readback-heading')?.focus();
+  }
 }
 
 async function render(): Promise<void> {
@@ -533,6 +660,9 @@ function flushActiveSessionBestEffort(): void {
   });
 }
 
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && phonePanel) closePhonePanel();
+});
 window.addEventListener('online', () => refreshConnectivityIndicators());
 window.addEventListener('offline', () => refreshConnectivityIndicators());
 window.addEventListener('pagehide', () => {
