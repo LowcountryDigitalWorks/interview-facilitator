@@ -46,5 +46,6 @@ jobs:
           grep -q 'SKIP_WAITING' dist/sw.js
           grep -q '?release=' dist/sw.js
           grep -q "cache: 'reload'" dist/sw.js
+          grep -q '/claim/' dist/sw.js
           grep -q "updateViaCache: 'none'" src/pwa.ts
           node scripts/check-generated-sw.mjs

@@ -25,10 +25,13 @@ const CACHE = CACHE_PREFIX + RELEASE;
 const ORDER_CACHE = 'interview-facilitator-release-order';
 const SHELL = ${JSON.stringify(shell)};
 const SHELL_PATHS = new Set(SHELL);
-let claimOnActivate = false;
 
 function releaseKey(pathname) {
   return pathname + '?release=' + encodeURIComponent(RELEASE);
+}
+
+function claimKey() {
+  return '/claim/' + encodeURIComponent(RELEASE);
 }
 
 self.addEventListener('install', (event) => {
@@ -40,16 +43,29 @@ self.addEventListener('install', (event) => {
       if (!response.ok) throw new Error('Shell precache failed for ' + qualified);
       await cache.put(qualified, response);
     }));
-    if (!self.registration.active) {
-      claimOnActivate = true;
-      await self.skipWaiting();
-    }
+    const firstInstall = !self.registration.active;
+    const orderCache = await caches.open(ORDER_CACHE);
+    await orderCache.put(claimKey(), new Response(JSON.stringify({ claim: firstInstall }), {
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    if (firstInstall) await self.skipWaiting();
   })());
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     const orderCache = await caches.open(ORDER_CACHE);
+    const claimRecord = await orderCache.match(claimKey());
+    let claimClients = false;
+    if (claimRecord) {
+      try {
+        const parsed = await claimRecord.json();
+        claimClients = Boolean(parsed) && parsed.claim === true;
+      } catch {
+        claimClients = false;
+      }
+      await orderCache.delete(claimKey());
+    }
     const existing = await orderCache.match('/order');
     let order = [];
     if (existing) {
@@ -64,9 +80,9 @@ self.addEventListener('activate', (event) => {
     await Promise.all(keys
       .filter((key) => key.startsWith(CACHE_PREFIX) && !retained.includes(key.slice(CACHE_PREFIX.length)))
       .map((key) => caches.delete(key)));
-    if (claimOnActivate) await self.clients.claim();
+    if (claimClients) await self.clients.claim();
     const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    for (const client of windows) client.postMessage({ type: 'RELEASE_ACTIVATED', release: RELEASE, claimed: claimOnActivate });
+    for (const client of windows) client.postMessage({ type: 'RELEASE_ACTIVATED', release: RELEASE, claimed: claimClients });
   })());
 });
 
