@@ -9,6 +9,7 @@ import { SessionAutosaveCoordinator } from './autosave';
 import { readSessionList } from './session-list';
 import { beginSessionSwitch, importSessionReplacement, openStoredSession, SessionSwitchGate, shouldFlushActiveSession, type OpenStoredSessionResult } from './session-durability';
 import { enterPresentation, exitPresentation, isPresentationMode, projectReadBack, type PresentationMode } from './presentation';
+import { paintUpdateSlot, startControlledUpdates } from './pwa';
 
 const appElement = document.querySelector<HTMLDivElement>('#app');
 if (!appElement) throw new Error('App root not found.');
@@ -40,7 +41,9 @@ const statusOptions: { value: AnswerStatus; label: string }[] = [
   { value: 'MUST_CONFIRM', label: 'Must confirm' }
 ];
 
-const SHELL_CACHE_URLS = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg', '/assets/app.js', '/assets/app.css'] as const;
+function updateSlotMarkup(): string {
+  return `<span class="update-slot" data-update-slot data-client-release="${escapeHtml(__APP_RELEASE__)}"></span>`;
+}
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char] ?? char);
@@ -66,16 +69,6 @@ async function refreshPersistenceState(): Promise<void> {
     persistenceState = (await requestPersistentStorage()) === true ? 'persistent' : 'best-effort';
   } catch {
     persistenceState = 'best-effort';
-  }
-}
-
-async function isShellCacheReady(): Promise<boolean> {
-  if (!('caches' in window)) return false;
-  try {
-    const cached = await Promise.all(SHELL_CACHE_URLS.map((path) => caches.match(path)));
-    return cached.every((response) => response !== undefined);
-  } catch {
-    return false;
   }
 }
 
@@ -172,7 +165,7 @@ async function renderHome(): Promise<void> {
   if (storageError) console.error('Unable to read local interviews.', listState.error);
 
   app.innerHTML = `
-    <header class="app-header"><div><strong>Interview Facilitator</strong><span>Local-first discovery cockpit</span></div><span class="state-pill" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span></header>
+    <header class="app-header"><div><strong>Interview Facilitator</strong><span>Local-first discovery cockpit</span></div><span class="state-pill" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span>${updateSlotMarkup()}</header>
     <main id="main" class="home-shell">
       <section class="hero-card">
         <p class="eyebrow">Human-led discovery</p>
@@ -331,6 +324,7 @@ async function renderHome(): Promise<void> {
     });
     if (gated.kind === 'busy') return;
   }));
+  paintUpdateSlot();
 }
 
 async function showOutgoingSaveFailure(error: unknown): Promise<void> {
@@ -356,7 +350,7 @@ function renderHomeNotice(notice: Exclude<HomeNotice, null>): string {
 
 function renderNew(): void {
   app.innerHTML = `
-    <header class="app-header"><div><strong>Interview Facilitator</strong><span>New interview</span></div></header>
+    <header class="app-header"><div><strong>Interview Facilitator</strong><span>New interview</span></div>${updateSlotMarkup()}</header>
     <main id="main" class="form-shell">
       <button class="text-button" data-action="home">← Back</button>
       <p class="eyebrow">Pack 1 of 1</p><h1>${escapeHtml(pack.title)}</h1><p>${escapeHtml(pack.description)}</p>
@@ -407,6 +401,7 @@ function renderNew(): void {
     });
     if (gated.kind === 'busy') return;
   });
+  paintUpdateSlot();
 }
 
 function answerControl(question: Question, value: string): string {
@@ -430,7 +425,7 @@ function renderInterview(): void {
   app.innerHTML = `
     <header class="app-header cockpit-header">
       <div><strong>${escapeHtml(session.clientLabel)}</strong><span>${escapeHtml(pack.title)}</span></div>
-      <div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator aria-live="off">${escapeHtml(saveLabel())}</span>${presenting ? '<span class="state-pill">Presentation view</span><button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : `<span class="state-pill header-connectivity" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span><button class="secondary small header-presentation" data-action="enter-presentation">Presentation view</button><button class="icon-button header-export" data-action="export" aria-label="Export JSON backup">⇩</button>`}</div>
+      <div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator aria-live="off">${escapeHtml(saveLabel())}</span>${presenting ? '<span class="state-pill">Presentation view</span><button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : `<span class="state-pill header-connectivity" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span><button class="secondary small header-presentation" data-action="enter-presentation">Presentation view</button><button class="icon-button header-export" data-action="export" aria-label="Export JSON backup">⇩</button>`}${updateSlotMarkup()}</div>
       <span class="sr-only" role="alert" data-save-alert>${saveState === 'error' ? 'Local save failed. Export a backup or retry before leaving this interview.' : ''}</span>
       <span class="sr-only" role="status" aria-live="polite" data-connectivity-status></span>
     </header>
@@ -640,6 +635,7 @@ function renderInterview(): void {
     openMobilePanel(contextPanel, event.currentTarget as HTMLElement);
   });
   app.querySelectorAll<HTMLElement>('[data-action="close-mobile-panel"]').forEach((button) => button.addEventListener('click', closeMobilePanel));
+  paintUpdateSlot();
 }
 
 function renderReview(): void {
@@ -648,7 +644,7 @@ function renderReview(): void {
   const questions = visibleQuestions(pack, session);
   const presenting = isPresentationMode(presentationMode);
   app.innerHTML = `
-    <header class="app-header"><div><strong>${escapeHtml(session.clientLabel)}</strong><span>${presenting ? 'Presentation read-back' : 'Private review'}</span></div><div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator>${escapeHtml(saveLabel())}</span>${presenting ? '<button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : '<button class="secondary small" data-action="enter-presentation">Presentation view</button>'}</div><span class="sr-only" role="alert" data-save-alert>${saveState === 'error' ? 'Local save failed. Export a backup or retry before leaving this interview.' : ''}</span></header>
+    <header class="app-header"><div><strong>${escapeHtml(session.clientLabel)}</strong><span>${presenting ? 'Presentation read-back' : 'Private review'}</span></div><div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator>${escapeHtml(saveLabel())}</span>${presenting ? '<button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : '<button class="secondary small" data-action="enter-presentation">Presentation view</button>'}${updateSlotMarkup()}</div><span class="sr-only" role="alert" data-save-alert>${saveState === 'error' ? 'Local save failed. Export a backup or retry before leaving this interview.' : ''}</span></header>
     <main id="main" class="review-shell">
       <button class="text-button" data-action="return">← Return to interview</button>
       <p class="eyebrow">Read-back</p><h1 id="review-title" tabindex="-1">Read back what matters before ending the conversation.</h1>
@@ -694,6 +690,7 @@ function renderReview(): void {
       alert(error instanceof Error ? error.message : 'Unable to delete local interview.');
     }
   });
+  paintUpdateSlot();
 }
 
 async function render(): Promise<void> {
@@ -725,12 +722,18 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('/sw.js').then(async () => {
-    const readyRegistration = await navigator.serviceWorker.ready;
-    offlineReady = Boolean(readyRegistration.active) && await isShellCacheReady();
-    refreshConnectivityIndicators();
-  }).catch(() => { offlineReady = false; });
-}
+document.documentElement.dataset.appRelease = __APP_RELEASE__;
+startControlledUpdates({
+  getSessionId: () => session?.sessionId ?? null,
+  flush: (sessionId) => autosave.flushAndWait(sessionId),
+  onSaveError: () => {
+    saveState = 'error';
+    updateStateIndicators();
+  },
+  setOfflineReady: (ready) => {
+    offlineReady = ready;
+    updateStateIndicators();
+  },
+});
 
 void render();

@@ -11,7 +11,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -27,8 +27,11 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Browser acceptance
         run: npx playwright test
+      - name: Controlled update acceptance
+        run: npm run test:browser:update
       - name: PWA shell sanity
         run: |
+          test ! -f public/sw.js
           test -f dist/index.html
           test -f dist/sw.js
           test -f dist/manifest.webmanifest
@@ -38,8 +41,9 @@ jobs:
           grep -q 'ldw-interview-facilitator' src/storage.ts
           grep -q 'Saved on this device' src/indicators.ts
           grep -q 'Presentation view' src/main.ts
-          grep -q 'interview-facilitator-shell-v2' public/sw.js
-          grep -q "key.startsWith(CACHE_PREFIX) && key !== CACHE" public/sw.js
-          grep -q "new Request(request, { cache: 'no-cache' })" public/sw.js
-          grep -q 'const response = await fetch(networkRequest)' public/sw.js
-          grep -q 'cache.match(url.pathname)' public/sw.js
+          grep -q 'interview-facilitator-shell-' dist/sw.js
+          grep -q 'GET_RELEASE' dist/sw.js
+          grep -q 'SKIP_WAITING' dist/sw.js
+          grep -q "key.startsWith(CACHE_PREFIX) && key !== CACHE" dist/sw.js
+          grep -q "cache: 'reload'" dist/sw.js
+          node scripts/check-generated-sw.mjs
