@@ -1,9 +1,12 @@
 import { validateSessionForPack, type InterviewSession } from './domain';
-import { assertPackIdentity, validateSessionRecord } from './pack-identity';
+import { canonicalizeJson, assertPackIdentity, validateSessionRecord } from './pack-identity';
+import { INDEXED_DB_LAYOUT_VERSION, legacyArchiveKey, planLegacyMigration } from './session-migration';
 
 const DB_NAME = 'ldw-interview-facilitator';
-const STORE = 'sessions';
-const DB_VERSION = 1;
+export const SESSIONS_STORE = 'sessions';
+export const LEGACY_ARCHIVE_STORE = 'legacy-session-archive';
+const STORE = SESSIONS_STORE;
+const DB_VERSION = INDEXED_DB_LAYOUT_VERSION;
 
 export type StoredSessionList = {
   sessions: InterviewSession[];
@@ -30,6 +33,7 @@ function openDb(): Promise<IDBDatabase> {
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'sessionId' });
+      if (!db.objectStoreNames.contains(LEGACY_ARCHIVE_STORE)) db.createObjectStore(LEGACY_ARCHIVE_STORE);
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error('Unable to open local storage.'));
@@ -103,6 +107,109 @@ export async function listSessions(): Promise<StoredSessionList> {
   } finally {
     db.close();
   }
+}
+
+function requestResult<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error('Local storage request failed.'));
+  });
+}
+
+function openTransaction(db: IDBDatabase, stores: string[], mode: IDBTransactionMode): IDBTransaction {
+  try {
+    return db.transaction(stores, mode, { durability: 'strict' });
+  } catch {
+    return db.transaction(stores, mode);
+  }
+}
+
+export type LegacyMigrationResult =
+  | { kind: 'migrated'; session: InterviewSession }
+  | { kind: 'already-migrated'; session: InterviewSession }
+  | { kind: 'missing' }
+  | { kind: 'stale' }
+  | { kind: 'aborted' }
+  | { kind: 'unsupported'; reason: string }
+  | { kind: 'invalid'; reason: string }
+  | { kind: 'conflict'; reason: string }
+  | { kind: 'not-legacy' };
+
+export async function migrateLegacySession(sessionId: string): Promise<LegacyMigrationResult> {
+  const db = await openDb();
+  try {
+    const raw = await requestResult(db.transaction(STORE, 'readonly').objectStore(STORE).get(sessionId));
+    if (raw === undefined) return { kind: 'missing' };
+    const plan = await planLegacyMigration(raw);
+    if (plan.kind === 'unsupported' || plan.kind === 'invalid') return plan;
+    if (plan.kind === 'current') return await confirmAlreadyMigrated(db, sessionId, raw);
+    return await commitLegacyMigration(db, sessionId, plan.session, plan.fingerprint);
+  } finally {
+    db.close();
+  }
+}
+
+async function confirmAlreadyMigrated(db: IDBDatabase, sessionId: string, raw: unknown): Promise<LegacyMigrationResult> {
+  const archived = await requestResult(db.transaction(LEGACY_ARCHIVE_STORE, 'readonly').objectStore(LEGACY_ARCHIVE_STORE).get(legacyArchiveKey(sessionId)));
+  if (archived === undefined) return { kind: 'not-legacy' };
+  const replay = await planLegacyMigration(archived);
+  if (replay.kind !== 'ready') return { kind: 'conflict', reason: 'The archived legacy row cannot be migrated again.' };
+  const current = await validateSessionRecord(raw);
+  if (canonicalizeJson(current) !== canonicalizeJson(replay.session)) {
+    return { kind: 'conflict', reason: 'The archived legacy row does not match the current session.' };
+  }
+  return { kind: 'already-migrated', session: current };
+}
+
+function commitLegacyMigration(db: IDBDatabase, sessionId: string, session: InterviewSession, fingerprint: string): Promise<LegacyMigrationResult> {
+  return new Promise((resolve) => {
+    const tx = openTransaction(db, [STORE, LEGACY_ARCHIVE_STORE], 'readwrite');
+    let settled = false;
+    let failure: LegacyMigrationResult | null = null;
+    const finish = (result: LegacyMigrationResult) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    const fail = (result: LegacyMigrationResult) => {
+      failure = result;
+      tx.abort();
+    };
+    tx.oncomplete = () => finish({ kind: 'migrated', session });
+    tx.onabort = () => finish(failure ?? { kind: 'aborted' });
+    const currentRequest = tx.objectStore(STORE).get(sessionId);
+    currentRequest.onerror = () => fail({ kind: 'aborted' });
+    currentRequest.onsuccess = () => {
+      try {
+        if (canonicalizeJson(currentRequest.result) !== fingerprint) {
+          fail({ kind: 'stale' });
+          return;
+        }
+        const archiveStore = tx.objectStore(LEGACY_ARCHIVE_STORE);
+        const archiveRequest = archiveStore.get(legacyArchiveKey(sessionId));
+        archiveRequest.onerror = () => fail({ kind: 'aborted' });
+        archiveRequest.onsuccess = () => {
+          try {
+            if (archiveRequest.result !== undefined) {
+              if (canonicalizeJson(archiveRequest.result) !== fingerprint) {
+                fail({ kind: 'conflict', reason: 'An existing archive contains different legacy data.' });
+                return;
+              }
+            } else {
+              const archivePut = archiveStore.put(structuredClone(currentRequest.result), legacyArchiveKey(sessionId));
+              archivePut.onerror = () => fail({ kind: 'aborted' });
+            }
+            const sessionPut = tx.objectStore(STORE).put(session);
+            sessionPut.onerror = () => fail({ kind: 'aborted' });
+          } catch {
+            fail({ kind: 'aborted' });
+          }
+        };
+      } catch {
+        fail({ kind: 'aborted' });
+      }
+    };
+  });
 }
 
 export async function requestPersistentStorage(): Promise<boolean | null> {

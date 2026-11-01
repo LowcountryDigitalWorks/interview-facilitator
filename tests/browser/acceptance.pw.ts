@@ -21,9 +21,10 @@ async function clearLocalState(page: Page): Promise<void> {
 async function putRawSession(page: Page, row: unknown): Promise<void> {
   await page.evaluate(async ({ dbName, store, row }) => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(dbName, 1);
+      const request = indexedDB.open(dbName, 2);
       request.onupgradeneeded = () => {
         if (!request.result.objectStoreNames.contains(store)) request.result.createObjectStore(store, { keyPath: 'sessionId' });
+        if (!request.result.objectStoreNames.contains('legacy-session-archive')) request.result.createObjectStore('legacy-session-archive');
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);

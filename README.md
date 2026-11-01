@@ -37,6 +37,8 @@ Public source, tests, screenshots, and demos must use synthetic/public-safe data
 
 Local interview data is stored in IndexedDB. Cache Storage is reserved for the application shell. Browser storage can still be removed by browser/device/user policy, so JSON export remains the explicit backup path.
 
+Pack identity uses the browser's built-in Web Crypto. That API is available in a secure context (HTTPS or localhost). Opening the app over plain HTTP on another device on the LAN cannot compute the pack digest.
+
 ## Authority
 
 Product authority and roadmap are tracked in this repository's issues, rooted in `LowcountryDigitalWorks/business-operations#753`. Repository-local implementation truth belongs here.

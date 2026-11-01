@@ -170,10 +170,13 @@ export async function clearLocalState(page) {
 export async function putRawSession(page, row) {
   await page.evaluate(async ({ dbName, store, row: value }) => {
     const db = await new Promise((resolve, reject) => {
-      const request = indexedDB.open(dbName, 1);
+      const request = indexedDB.open(dbName, 2);
       request.onupgradeneeded = () => {
         if (!request.result.objectStoreNames.contains(store)) {
           request.result.createObjectStore(store, { keyPath: 'sessionId' });
+        }
+        if (!request.result.objectStoreNames.contains('legacy-session-archive')) {
+          request.result.createObjectStore('legacy-session-archive');
         }
       };
       request.onsuccess = () => resolve(request.result);
@@ -194,12 +197,7 @@ export async function putRawSession(page, row) {
 export async function listStoredSessionIds(page) {
   return page.evaluate(async ({ dbName, store }) => {
     const db = await new Promise((resolve, reject) => {
-      const request = indexedDB.open(dbName, 1);
-      request.onupgradeneeded = () => {
-        if (!request.result.objectStoreNames.contains(store)) {
-          request.result.createObjectStore(store, { keyPath: 'sessionId' });
-        }
-      };
+      const request = indexedDB.open(dbName);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -217,7 +215,7 @@ export async function listStoredSessionIds(page) {
 export async function readStoredAnswer(page, sessionId) {
   return page.evaluate(async ({ dbName, store, sessionId: id }) => {
     const db = await new Promise((resolve, reject) => {
-      const request = indexedDB.open(dbName, 1);
+      const request = indexedDB.open(dbName);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });

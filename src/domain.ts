@@ -212,6 +212,7 @@ function validateSnapshotQuestion(value: unknown): Question {
     if (!Array.isArray(record.options) || record.options.some((option) => typeof option !== 'string')) throw new Error('Pack snapshot options are invalid.');
     question.options = [...record.options];
   }
+  if (question.kind === 'single' && (!question.options || question.options.length === 0)) throw new Error('A single-choice question requires a non-empty options array.');
   if (record.condition !== undefined) question.condition = validateCondition(record.condition);
   return question;
 }
@@ -297,8 +298,10 @@ export function validateSessionForPack(session: InterviewSession): void {
     if (seenQuestionIds.has(question.id)) throw new Error('Pack snapshot contains a duplicate question.');
     seenQuestionIds.add(question.id);
     if (!sectionIds.has(question.sectionId)) throw new Error('Pack snapshot question refers to an unknown section.');
+    if (question.kind === 'single' && (!question.options || question.options.length === 0)) throw new Error('A single-choice question requires a non-empty options array.');
   }
   for (const question of pack.questions) {
+    if (question.condition?.questionId === question.id) throw new Error('Pack snapshot condition cannot refer to its own question.');
     if (question.condition && !seenQuestionIds.has(question.condition.questionId)) throw new Error('Pack snapshot condition refers to an unknown question.');
   }
   if (session.interviewPackId !== pack.packId || session.interviewPackVersion !== pack.packVersion) throw new Error('This session uses a different interview pack or version.');
