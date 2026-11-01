@@ -34,3 +34,8 @@ jobs:
           grep -q 'ldw-interview-facilitator' src/storage.ts
           grep -q 'Saved on this device' src/indicators.ts
           grep -q 'Share-safe view' src/main.ts
+          grep -q 'interview-facilitator-shell-v2' public/sw.js
+          grep -q "key.startsWith(CACHE_PREFIX) && key !== CACHE" public/sw.js
+          grep -q "new Request(request, { cache: 'no-cache' })" public/sw.js
+          grep -q 'const response = await fetch(networkRequest)' public/sw.js
+          grep -q 'cache.match(url.pathname)' public/sw.js
