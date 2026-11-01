@@ -13,6 +13,6 @@ export function formatSaveLabel(
 }
 
 export function formatConnectivityLabel(online: boolean, offlineReady: boolean): string {
-  if (!online) return 'Offline';
-  return offlineReady ? 'Online · offline ready' : 'Online';
+  if (!online) return offlineReady ? 'Offline · App ready' : 'Offline · Keep this tab open';
+  return offlineReady ? 'Online · Offline ready' : 'Online · Offline not ready';
 }

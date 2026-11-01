@@ -13,9 +13,10 @@ describe('formatSaveLabel', () => {
 });
 
 describe('formatConnectivityLabel', () => {
-  it('reflects offline and offline-ready online states', () => {
-    expect(formatConnectivityLabel(false, true)).toBe('Offline');
-    expect(formatConnectivityLabel(true, false)).toBe('Online');
-    expect(formatConnectivityLabel(true, true)).toBe('Online · offline ready');
+  it('keeps network connectivity and exact-release offline readiness separate', () => {
+    expect(formatConnectivityLabel(true, true)).toBe('Online · Offline ready');
+    expect(formatConnectivityLabel(true, false)).toBe('Online · Offline not ready');
+    expect(formatConnectivityLabel(false, true)).toBe('Offline · App ready');
+    expect(formatConnectivityLabel(false, false)).toBe('Offline · Keep this tab open');
   });
 });
