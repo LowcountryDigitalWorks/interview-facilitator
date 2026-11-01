@@ -1,6 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import type { InterviewSession } from '../../src/domain';
+import { syntheticPinnedSession } from './synthetic-session';
 
 const DB_NAME = 'ldw-interview-facilitator';
 const STORE = 'sessions';
@@ -38,29 +39,8 @@ async function putRawSession(page: Page, row: unknown): Promise<void> {
   }, { dbName: DB_NAME, store: STORE, row });
 }
 
-function syntheticSession(sessionId = 'synthetic-valid-session'): InterviewSession {
-  const timestamp = '2026-10-31T20:00:00.000Z';
-  return {
-    sessionSchemaVersion: '1.0.0',
-    sessionId,
-    interviewPackId: 'general-discovery',
-    interviewPackVersion: '1.0.0',
-    clientLabel: 'Synthetic Browser Test',
-    interviewerLabel: 'Test Operator',
-    interviewMode: 'Conversation',
-    createdAt: timestamp,
-    updatedAt: timestamp,
-    currentQuestionId: 'existing-presence',
-    knownFacts: [],
-    answers: {
-      'existing-presence': { value: null, status: null, note: '' },
-      'primary-goal': { value: null, status: null, note: '' },
-      'needs-booking': { value: null, status: null, note: '' },
-      'booking-process': { value: null, status: null, note: '' },
-      'must-have': { value: null, status: null, note: '' },
-    },
-    runningNotes: '',
-  };
+function syntheticSession(sessionId = 'synthetic-valid-session'): Promise<InterviewSession> {
+  return syntheticPinnedSession({ sessionId });
 }
 
 test.beforeEach(async ({ page }) => {
@@ -80,7 +60,7 @@ test('Home distinguishes a legitimate empty database and meets the initial axe f
 
 test('one malformed IndexedDB row does not hide a healthy local interview', async ({ page }) => {
   await page.goto('/');
-  await putRawSession(page, syntheticSession());
+  await putRawSession(page, await syntheticSession());
   await putRawSession(page, { sessionId: 'synthetic-malformed-session', updatedAt: null });
   await page.reload();
 
@@ -127,7 +107,7 @@ test('an already-cached production shell reloads while offline', async ({ page, 
 
 test('Presentation read-back stays public across Change and masks retained deferred values', async ({ page }) => {
   await page.goto('/');
-  const row = syntheticSession('synthetic-presentation-session');
+  const row = await syntheticSession('synthetic-presentation-session');
   row.currentQuestionId = 'must-have';
   row.answers['existing-presence'] = { value: 'stale internal detail', status: 'SKIP', note: 'private question note' };
   row.answers['primary-goal'] = { value: 'stale not-applicable detail', status: 'N_A', note: '' };
@@ -285,7 +265,7 @@ test('320px phone coverage and context panels expose dialog semantics and isolat
 
 test('review Change control keeps contextual accessible name', async ({ page }) => {
   await page.goto('/');
-  const row = syntheticSession('synthetic-review-a11y');
+  const row = await syntheticSession('synthetic-review-a11y');
   row.answers['existing-presence'] = { value: 'Baseline answer', status: 'ANSWERED', note: '' };
   row.currentQuestionId = 'must-have';
   await putRawSession(page, row);

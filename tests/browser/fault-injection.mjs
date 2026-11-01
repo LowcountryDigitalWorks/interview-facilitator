@@ -241,28 +241,8 @@ export async function startFreshInterview(page, clientLabel = 'Synthetic Fault T
 }
 
 /** @param {Page} page @param {string} clientLabel */
-export async function openSeededInterviewOnLastQuestion(page, clientLabel) {
-  await putRawSession(page, {
-    sessionSchemaVersion: '1.0.0',
-    sessionId: `seed-${clientLabel.replace(/\s+/g, '-').toLowerCase()}`,
-    interviewPackId: 'general-discovery',
-    interviewPackVersion: '1.0.0',
-    clientLabel,
-    interviewerLabel: 'Test Operator',
-    interviewMode: 'Conversation',
-    createdAt: '2026-10-31T20:00:00.000Z',
-    updatedAt: '2026-10-31T20:00:00.000Z',
-    currentQuestionId: 'must-have',
-    knownFacts: [],
-    answers: {
-      'existing-presence': { value: null, status: null, note: '' },
-      'primary-goal': { value: null, status: null, note: '' },
-      'needs-booking': { value: null, status: null, note: '' },
-      'booking-process': { value: null, status: null, note: '' },
-      'must-have': { value: null, status: null, note: '' },
-    },
-    runningNotes: '',
-  });
+export async function openSeededInterviewOnLastQuestion(page, clientLabel, row) {
+  await putRawSession(page, row);
   await page.reload();
   await page.getByRole('button', { name: new RegExp(clientLabel) }).click();
 }

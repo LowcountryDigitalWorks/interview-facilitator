@@ -1,4 +1,5 @@
-import { validateSessionShape, type InterviewSession } from './domain';
+import { validateSessionForPack, type InterviewSession } from './domain';
+import { assertPackIdentity, validateSessionRecord } from './pack-identity';
 
 const DB_NAME = 'ldw-interview-facilitator';
 const STORE = 'sessions';
@@ -9,12 +10,12 @@ export type StoredSessionList = {
   unreadableCount: number;
 };
 
-export function partitionStoredSessionRows(rows: unknown[]): StoredSessionList {
+export async function partitionStoredSessionRows(rows: unknown[]): Promise<StoredSessionList> {
   let unreadableCount = 0;
   const sessions: InterviewSession[] = [];
   for (const row of rows) {
     try {
-      sessions.push(validateSessionShape(row));
+      sessions.push(await validateSessionRecord(row));
     } catch {
       unreadableCount += 1;
     }
@@ -44,6 +45,8 @@ function writeTransaction(db: IDBDatabase): IDBTransaction {
 }
 
 export async function saveSession(session: InterviewSession): Promise<void> {
+  validateSessionForPack(session);
+  await assertPackIdentity(session);
   const db = await openDb();
   try {
     await new Promise<void>((resolve, reject) => {
@@ -82,7 +85,7 @@ export async function loadSession(sessionId: string): Promise<InterviewSession |
       request.onerror = () => reject(request.error ?? new Error('Unable to load session.'));
     });
     if (raw === undefined) return undefined;
-    return validateSessionShape(raw);
+    return await validateSessionRecord(raw);
   } finally {
     db.close();
   }
@@ -96,7 +99,7 @@ export async function listSessions(): Promise<StoredSessionList> {
       request.onsuccess = () => resolve(request.result as unknown[]);
       request.onerror = () => reject(request.error ?? new Error('Unable to list sessions.'));
     });
-    return partitionStoredSessionRows(rows);
+    return await partitionStoredSessionRows(rows);
   } finally {
     db.close();
   }

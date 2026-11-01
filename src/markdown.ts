@@ -1,5 +1,5 @@
-import type { InterviewPack, InterviewSession, Question } from './domain';
-import { visibleQuestions } from './domain';
+import type { InterviewSession, Question } from './domain';
+import { sessionPack, visibleQuestions } from './domain';
 
 const statusLabel: Record<string, string> = {
   ANSWERED: 'Answered',
@@ -32,7 +32,8 @@ function hasPreservedInternalState(session: InterviewSession, questionId: string
   return Boolean(state?.value?.trim() || state?.status || trimmedNote(session, questionId));
 }
 
-export function sessionToMarkdown(pack: InterviewPack, session: InterviewSession): string {
+export function sessionToMarkdown(session: InterviewSession): string {
+  const pack = sessionPack(session);
   const visible = visibleQuestions(pack, session);
   const visibleIds = new Set(visible.map((question) => question.id));
   const lines: string[] = [

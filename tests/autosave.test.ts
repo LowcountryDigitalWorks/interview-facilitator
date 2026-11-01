@@ -1,23 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionAutosaveCoordinator } from '../src/autosave';
 import type { InterviewSession } from '../src/domain';
+import { bareSession } from './session-stub';
 
 function makeSession(sessionId: string): InterviewSession {
-  return {
-    sessionSchemaVersion: '1.0.0',
-    sessionId,
-    interviewPackId: 'general-discovery',
-    interviewPackVersion: '1.0.0',
-    clientLabel: sessionId,
-    interviewerLabel: '',
-    interviewMode: 'Conversation',
-    createdAt: '2026-10-31T12:00:00.000Z',
-    updatedAt: '2026-10-31T12:00:00.000Z',
-    currentQuestionId: 'existing-presence',
-    knownFacts: [],
-    answers: {},
-    runningNotes: '',
-  };
+  return { ...bareSession(sessionId), clientLabel: sessionId };
 }
 
 describe('SessionAutosaveCoordinator', () => {
