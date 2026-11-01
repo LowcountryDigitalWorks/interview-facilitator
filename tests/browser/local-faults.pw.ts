@@ -152,7 +152,7 @@ async function openPrivateReview(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: 'Read back what matters before ending the conversation.' })).toBeVisible();
   await expect(page.getByText('Presentation view', { exact: true }).first()).toBeVisible();
   await page.getByRole('button', { name: 'Exit presentation' }).click();
-  await expect(page.getByText('Private review', { exact: true })).toBeVisible();
+  await expect(page.getByRole('banner').getByText('Private review', { exact: true })).toBeVisible();
 }
 
 async function goHomeWithActiveSession(page: Page): Promise<void> {
