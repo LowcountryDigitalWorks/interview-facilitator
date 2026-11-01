@@ -52,7 +52,7 @@ function legacyRecord(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put' | 'session-put'; abortWrite?: boolean; swapSecondRead?: unknown } = {}) {
+function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put' | 'session-put'; abortWrite?: boolean; abortAtCommit?: boolean; swapSecondRead?: unknown } = {}) {
   const stores = new Map<string, Map<string, unknown>>();
   let version = 0;
   let sessionReads = 0;
@@ -136,6 +136,10 @@ function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put
           fn();
           pending -= 1;
           if (pending === 0 && !aborted && !finished) {
+            if (options.abortAtCommit && mode === 'readwrite' && names.includes(LEGACY_ARCHIVE_STORE)) {
+              tx.abort();
+              return;
+            }
             finished = true;
             if (mode === 'readwrite') {
               for (const write of writes) stores.get(write.store)?.set(write.key, write.value);
@@ -300,6 +304,7 @@ describe('legacy 1.0 to pinned 1.1 migration', () => {
     ['archive put', { fail: 'archive-put' as const }],
     ['current put', { fail: 'session-put' as const }],
     ['transaction abort', { abortWrite: true }],
+    ['abort after staged writes', { abortAtCommit: true }],
   ])('rolls back when %s fails', async (_label, options) => {
     const memory = installMigrationDatabase(options);
     const source = legacyRecord();
@@ -379,6 +384,7 @@ describe('legacy 1.0 to pinned 1.1 migration', () => {
     { fail: 'archive-get' as const },
     { fail: 'session-put' as const },
     { abortWrite: true },
+    { abortAtCommit: true },
   ])('preserves an existing archive and source on failure: %j', async (options) => {
     const memory = installMigrationDatabase(options);
     const source = legacyRecord();
