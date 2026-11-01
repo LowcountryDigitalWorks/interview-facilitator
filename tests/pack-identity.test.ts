@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { sessionPack, validateSessionForPack, validateSessionShape, visibleQuestions } from '../src/domain';
 import { serializeSession, sessionToMarkdown } from '../src/markdown';
 import { generalDiscoveryPack as pack } from '../src/pack';
@@ -127,5 +127,48 @@ describe('pinned pack identity', () => {
     const unknownCondition = structuredClone(session);
     unknownCondition.packSnapshot.questions[1]!.condition = { questionId: 'missing-question', equals: 'Yes' };
     expect(() => validateSessionForPack(unknownCondition)).toThrow(/unknown question/i);
+  });
+
+  it('rejects a single-choice question with missing or empty options', async () => {
+    const session = await createPinnedSession(pack, { clientLabel: 'Synthetic Client' }, new Date('2026-10-31T12:00:00.000Z'));
+    expect(() => validateSessionForPack(session)).not.toThrow();
+    const choice = session.packSnapshot.questions.find((question) => question.kind === 'single');
+    expect(choice?.options?.length).toBeGreaterThan(0);
+
+    const missing = structuredClone(session);
+    const missingChoice = missing.packSnapshot.questions.find((question) => question.kind === 'single');
+    delete missingChoice!.options;
+    expect(() => validateSessionForPack(missing)).toThrow(/non-empty options/i);
+    expect(() => validateSessionShape(missing)).toThrow(/non-empty options/i);
+
+    const empty = structuredClone(session);
+    const emptyChoice = empty.packSnapshot.questions.find((question) => question.kind === 'single');
+    emptyChoice!.options = [];
+    expect(() => validateSessionForPack(empty)).toThrow(/non-empty options/i);
+
+    const nonString = structuredClone(session);
+    const nonStringChoice = nonString.packSnapshot.questions.find((question) => question.kind === 'single');
+    nonStringChoice!.options = ['Yes', 1 as unknown as string];
+    expect(() => validateSessionShape(nonString)).toThrow(/options are invalid/i);
+  });
+
+  it('rejects a condition that refers to its own question', async () => {
+    const session = await createPinnedSession(pack, { clientLabel: 'Synthetic Client' }, new Date('2026-10-31T12:00:00.000Z'));
+    const self = structuredClone(session);
+    const conditional = self.packSnapshot.questions.find((question) => question.id === 'booking-process');
+    conditional!.condition = { questionId: 'booking-process', equals: 'Yes' };
+    expect(() => validateSessionForPack(self)).toThrow(/own question/i);
+  });
+});
+
+describe('pack digest secure context', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('names HTTPS or localhost when Web Crypto is unavailable', async () => {
+    vi.stubGlobal('crypto', {});
+    await expect(sha256Hex('{}')).rejects.toThrow(/secure context \(HTTPS or localhost\)/i);
+    await expect(sha256Hex('{}')).rejects.toThrow(/plain HTTP on a LAN device/i);
   });
 });
