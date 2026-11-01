@@ -21,6 +21,14 @@ async function cacheNames(page: Page): Promise<string[]> {
   return page.evaluate(async () => caches.keys());
 }
 
+async function cachedShell(page: Page, release: string, pathname: string): Promise<string | null> {
+  return page.evaluate(async ({ release, pathname }) => {
+    const cache = await caches.open(`interview-facilitator-shell-${release}`);
+    const response = await cache.match(`${pathname}?release=${encodeURIComponent(release)}`);
+    return response ? response.text() : null;
+  }, { release, pathname });
+}
+
 async function waitForRelease(page: Page, release: string): Promise<void> {
   await expect.poll(() => controllerRelease(page)).toBe(release);
   await expect.poll(() => page.evaluate(() => document.documentElement.dataset.appRelease ?? '')).toBe(release);
@@ -51,6 +59,10 @@ test('a waiting release B leaves the active tab on A until Apply update', async 
   await page.getByLabel('Project or client label').fill('Controlled Update');
   await page.getByRole('button', { name: 'Start interview' }).click();
   await answer.evaluate((element) => { element.dataset.identity = 'kept'; });
+  await page.evaluate(async () => {
+    const cache = await caches.open('interview-facilitator-shell-release-old');
+    await cache.put('/old', new Response('old-shell'));
+  });
 
   await publishRelease(page, 'release-b');
   await expect(page.getByText('Update ready')).toBeVisible();
@@ -60,6 +72,17 @@ test('a waiting release B leaves the active tab on A until Apply update', async 
   const names = await cacheNames(page);
   expect(names).toContain('interview-facilitator-shell-release-a');
   expect(names).toContain('interview-facilitator-shell-release-b');
+  expect(names).toContain('interview-facilitator-shell-release-old');
+  const cachedB = await cachedShell(page, 'release-b', '/assets/app.js');
+  const cachedA = await cachedShell(page, 'release-a', '/assets/app.js');
+  const networkB = await page.evaluate(async () => (await fetch('/assets/app.js?release=release-b', { cache: 'reload' })).text());
+  const networkCssB = await page.evaluate(async () => (await fetch('/assets/app.css?release=release-b', { cache: 'reload' })).text());
+  expect(cachedB).toBe(networkB);
+  expect(cachedB).toContain('release-b');
+  expect(cachedB).not.toContain('release-a');
+  expect(cachedA).toContain('release-a');
+  expect(cachedA).not.toBe(cachedB);
+  expect(await cachedShell(page, 'release-b', '/assets/app.css')).toBe(networkCssB);
 });
 
 test('Apply update flushes the dirty edit, activates B, and preserves sentinel storage', async ({ page, context }) => {
@@ -68,6 +91,8 @@ test('Apply update flushes the dirty edit, activates B, and preserves sentinel s
   await page.evaluate(async () => {
     const cache = await caches.open('unrelated-sentinel');
     await cache.put('/sentinel', new Response('keep-me'));
+    const oldShell = await caches.open('interview-facilitator-shell-release-old');
+    await oldShell.put('/old', new Response('old-shell'));
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open('ldw-interview-facilitator', 1);
       request.onupgradeneeded = () => {
@@ -114,8 +139,12 @@ test('Apply update flushes the dirty edit, activates B, and preserves sentinel s
   expect(stored).toContain('sentinel-row');
   const names = await cacheNames(page);
   expect(names).toContain('unrelated-sentinel');
+  expect(names).toContain('interview-facilitator-shell-release-a');
   expect(names).toContain('interview-facilitator-shell-release-b');
-  expect(names).not.toContain('interview-facilitator-shell-release-a');
+  expect(names).not.toContain('interview-facilitator-shell-release-old');
+  const activeJs = await cachedShell(page, 'release-b', '/assets/app.js');
+  expect(activeJs).toContain('release-b');
+  expect(activeJs).not.toContain('release-a');
 
   await context.setOffline(true);
   await page.reload();
@@ -130,7 +159,10 @@ test('a second tab does not auto-reload and can save before moving to B', async 
   const other = await context.newPage();
   await other.goto('/');
   await waitForRelease(other, 'release-a');
-  await other.evaluate(() => { window.sessionStorage.setItem('tab-two-stayed', 'yes'); });
+  await other.evaluate(() => {
+    window.sessionStorage.setItem('tab-two-stayed', 'yes');
+    (window as Window & { __stay?: string }).__stay = 'resident';
+  });
   await other.getByRole('button', { name: 'New interview' }).click();
   await other.getByLabel('Project or client label').fill('Second Tab');
   await other.getByRole('button', { name: 'Start interview' }).click();
@@ -142,7 +174,35 @@ test('a second tab does not auto-reload and can save before moving to B', async 
   await waitForRelease(page, 'release-b');
 
   await expect.poll(() => other.evaluate(() => window.sessionStorage.getItem('tab-two-stayed'))).toBe('yes');
+  await expect.poll(() => other.evaluate(() => (window as Window & { __stay?: string }).__stay ?? 'reloaded')).toBe('resident');
   await expect(other.getByText('Updated app available — save and reload')).toBeVisible();
+  const stayed = await other.evaluate(async () => {
+    const read = async (worker: ServiceWorker | null) => {
+      if (!worker) return null;
+      const channel = new MessageChannel();
+      return new Promise<string>((resolve) => {
+        channel.port1.onmessage = (event: MessageEvent<{ release?: string }>) => resolve(event.data.release ?? '');
+        worker.postMessage({ type: 'GET_RELEASE' }, [channel.port2]);
+      });
+    };
+    const registration = await navigator.serviceWorker.getRegistration();
+    return {
+      controller: await read(navigator.serviceWorker.controller),
+      active: await read(registration?.active ?? null),
+      claimed: (window as Window & { __releaseClaimed?: boolean }).__releaseClaimed === true,
+    };
+  });
+  expect(stayed.claimed).toBe(false);
+  expect(stayed.active).toBe('release-b');
+  await expect.poll(() => other.evaluate(() => document.documentElement.dataset.appRelease ?? '')).toBe('release-a');
+  const names = await cacheNames(other);
+  expect(names).toContain('interview-facilitator-shell-release-a');
+  expect(names).toContain('interview-facilitator-shell-release-b');
+  await context.setOffline(true);
+  await expect(other.locator('#answer')).toBeVisible();
+  const offlineJs = await other.evaluate(async () => (await fetch('/assets/app.js')).text());
+  expect(offlineJs).toContain(stayed.controller === 'release-a' ? 'release-a' : 'release-b');
+  await context.setOffline(false);
   await other.locator('#answer').fill('saved-from-stale-tab');
   await other.getByRole('button', { name: 'Save and reload' }).click();
   await other.waitForFunction(() => document.documentElement.dataset.appRelease === 'release-b');
