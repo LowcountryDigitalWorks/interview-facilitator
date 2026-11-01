@@ -8,7 +8,8 @@
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:browser": "npm run build && playwright test"
+    "test:browser": "npm run build && playwright test",
+    "test:browser:update": "playwright test -c playwright.update.config.ts"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.14.0",
