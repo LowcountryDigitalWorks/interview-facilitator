@@ -3,9 +3,10 @@ import { readSessionList } from '../src/session-list';
 
 describe('readSessionList', () => {
   it('preserves a legitimate empty session list', async () => {
-    await expect(readSessionList(async () => [])).resolves.toEqual({
+    await expect(readSessionList(async () => ({ sessions: [], unreadableCount: 0 }))).resolves.toEqual({
       kind: 'ready',
       sessions: [],
+      unreadableCount: 0,
     });
   });
 
@@ -19,10 +20,10 @@ describe('readSessionList', () => {
     if (result.kind === 'error') expect(result.error).toBe(failure);
   });
 
-  it('returns sessions unchanged when storage succeeds', async () => {
+  it('returns sessions and unreadable count when storage succeeds', async () => {
     const row = { sessionId: 'synthetic-session' } as never;
-    const result = await readSessionList(async () => [row]);
+    const result = await readSessionList(async () => ({ sessions: [row], unreadableCount: 2 }));
 
-    expect(result).toEqual({ kind: 'ready', sessions: [row] });
+    expect(result).toEqual({ kind: 'ready', sessions: [row], unreadableCount: 2 });
   });
 });

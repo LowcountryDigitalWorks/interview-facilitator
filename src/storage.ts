@@ -1,8 +1,27 @@
-import type { InterviewSession } from './domain';
+import { validateSessionShape, type InterviewSession } from './domain';
 
 const DB_NAME = 'ldw-interview-facilitator';
 const STORE = 'sessions';
 const DB_VERSION = 1;
+
+export type StoredSessionList = {
+  sessions: InterviewSession[];
+  unreadableCount: number;
+};
+
+export function partitionStoredSessionRows(rows: unknown[]): StoredSessionList {
+  let unreadableCount = 0;
+  const sessions: InterviewSession[] = [];
+  for (const row of rows) {
+    try {
+      sessions.push(validateSessionShape(row));
+    } catch {
+      unreadableCount += 1;
+    }
+  }
+  sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  return { sessions, unreadableCount };
+}
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -57,25 +76,27 @@ export async function deleteSession(sessionId: string): Promise<void> {
 export async function loadSession(sessionId: string): Promise<InterviewSession | undefined> {
   const db = await openDb();
   try {
-    return await new Promise((resolve, reject) => {
+    const raw = await new Promise<unknown>((resolve, reject) => {
       const request = db.transaction(STORE, 'readonly').objectStore(STORE).get(sessionId);
-      request.onsuccess = () => resolve(request.result as InterviewSession | undefined);
+      request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error ?? new Error('Unable to load session.'));
     });
+    if (raw === undefined) return undefined;
+    return validateSessionShape(raw);
   } finally {
     db.close();
   }
 }
 
-export async function listSessions(): Promise<InterviewSession[]> {
+export async function listSessions(): Promise<StoredSessionList> {
   const db = await openDb();
   try {
-    const rows = await new Promise<InterviewSession[]>((resolve, reject) => {
+    const rows = await new Promise<unknown[]>((resolve, reject) => {
       const request = db.transaction(STORE, 'readonly').objectStore(STORE).getAll();
-      request.onsuccess = () => resolve(request.result as InterviewSession[]);
+      request.onsuccess = () => resolve(request.result as unknown[]);
       request.onerror = () => reject(request.error ?? new Error('Unable to list sessions.'));
     });
-    return rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return partitionStoredSessionRows(rows);
   } finally {
     db.close();
   }
