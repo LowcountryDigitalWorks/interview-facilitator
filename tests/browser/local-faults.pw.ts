@@ -1,4 +1,3 @@
-import { Buffer } from 'node:buffer';
 import { expect, test, type Page } from '@playwright/test';
 import type { InterviewSession } from '../../src/domain';
 
@@ -153,6 +152,17 @@ async function goHomeWithActiveSession(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: 'Recent interviews' })).toBeVisible();
 }
 
+async function setImportFile(page: Page, session: InterviewSession): Promise<void> {
+  await page.evaluate((contents) => {
+    const input = document.querySelector<HTMLInputElement>('#import-file');
+    if (!input) throw new Error('Import input not found.');
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([contents], 'synthetic-import.json', { type: 'application/json' }));
+    input.files = transfer.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, JSON.stringify(session));
+}
+
 test.beforeEach(async ({ page }) => {
   await clearLocalState(page);
 });
@@ -227,11 +237,7 @@ test('same-ID import write failure leaves dirty active state recoverable and doe
   imported.answers['existing-presence'] = { value: 'Imported replacement answer', status: 'ANSWERED', note: '' };
 
   await setFaultState(page, { failPut: true });
-  await page.locator('#import-file').setInputFiles({
-    name: 'synthetic-import.json',
-    mimeType: 'application/json',
-    buffer: Buffer.from(JSON.stringify(imported)),
-  });
+  await setImportFile(page, imported);
 
   await expect(page.getByRole('alert').filter({ hasText: 'Local save failed.' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Return to active interview' })).toBeVisible();
