@@ -7,7 +7,7 @@ import { serializeSession, sessionToMarkdown } from './markdown';
 import { formatConnectivityLabel, formatSaveLabel, type PersistenceState, type SaveState } from './indicators';
 import { SessionAutosaveCoordinator } from './autosave';
 import { readSessionList } from './session-list';
-import { beginSessionSwitch, importSessionReplacement, openStoredSession, SessionSwitchGate, shouldFlushActiveSession } from './session-durability';
+import { beginSessionSwitch, importSessionReplacement, openStoredSession, SessionSwitchGate, shouldFlushActiveSession, type OpenStoredSessionResult } from './session-durability';
 
 const appElement = document.querySelector<HTMLDivElement>('#app');
 if (!appElement) throw new Error('App root not found.');
@@ -124,10 +124,26 @@ function refreshConnectivityIndicators(): void {
   updateStateIndicators();
 }
 
+async function openStoredSessionForPack(sessionId: string): Promise<OpenStoredSessionResult> {
+  const result = await openStoredSession({
+    sessionId,
+    flush: (id) => autosave.flushAndWait(id),
+    load: loadSession,
+  });
+  if (result.kind !== 'opened') return result;
+  try {
+    validateSessionForPack(result.session, pack);
+    return result;
+  } catch (error) {
+    return { kind: 'read-failure', error };
+  }
+}
+
 async function renderHome(): Promise<void> {
   const listState = await readSessionList(listSessions);
   const storageError = listState.kind === 'error';
   const recent = listState.kind === 'ready' ? listState.sessions : [];
+  const unreadableCount = listState.kind === 'ready' ? listState.unreadableCount : 0;
   if (storageError) console.error('Unable to read local interviews.', listState.error);
 
   app.innerHTML = `
@@ -151,6 +167,11 @@ async function renderHome(): Promise<void> {
               <div class="button-row"><button class="secondary" data-action="retry-storage">Retry local storage</button>${session ? '<button class="secondary" data-action="return-active">Return to active interview</button><button class="secondary" data-action="export-active">Export active backup</button>' : ''}</div>
             </div>` : `
             ${homeNotice ? renderHomeNotice(homeNotice) : ''}
+            ${unreadableCount > 0 ? `
+            <div class="known-preview" role="status">
+              <strong>${unreadableCount} local interview${unreadableCount === 1 ? '' : 's'} could not be read.</strong>
+              <p>${unreadableCount === 1 ? 'It was' : 'They were'} not deleted.</p>
+            </div>` : ''}
             ${recent.length ? recent.map((item) => `
               <button class="session-card" data-session-id="${escapeHtml(item.sessionId)}">
                 <span><strong>${escapeHtml(item.clientLabel)}</strong><small>${escapeHtml(item.interviewMode)} · updated ${escapeHtml(new Date(item.updatedAt).toLocaleString())}</small></span>
@@ -246,11 +267,7 @@ async function renderHome(): Promise<void> {
         active: session,
         nextSessionId: sessionId,
         flush: (id) => autosave.flushAndWait(id),
-        proceed: () => openStoredSession({
-          sessionId,
-          flush: (id) => autosave.flushAndWait(id),
-          load: loadSession,
-        }),
+        proceed: () => openStoredSessionForPack(sessionId),
       });
       if (outcome.kind === 'save-failure') {
         await showOutgoingSaveFailure(outcome.error);
