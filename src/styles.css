@@ -12,7 +12,8 @@
   --danger: #a83a3a;
 }
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; min-height: 100vh; background: #f7f8f6; }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: #f7f8f6; overflow-x: clip; }
+#app { max-width: 100%; overflow-x: clip; }
 button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 3px solid #e8a51c; outline-offset: 2px; }
@@ -85,7 +86,7 @@ textarea { resize: vertical; line-height: 1.5; }
 .status-chip span { display: inline-flex; min-height: 44px; align-items: center; padding: .5rem .72rem; border: 1px solid var(--line); border-radius: 999px; background: #fff; font-size: .83rem; font-weight: 700; }
 .status-chip.selected span { color: #fff; background: var(--teal); border-color: var(--teal); }
 .status-chip:has(input:focus-visible) span { outline: 3px solid #e8a51c; outline-offset: 2px; }
-.action-dock { position: sticky; bottom: 0; display: flex; justify-content: space-between; gap: .75rem; margin: 2rem -1rem -5rem; padding: .9rem 1rem; background: rgba(247,248,246,.96); border-top: 1px solid var(--line); backdrop-filter: blur(8px); }
+.action-dock { position: sticky; bottom: 0; display: flex; justify-content: space-between; gap: .75rem; margin: 2rem 0 0; padding: .9rem 0 calc(.9rem + env(safe-area-inset-bottom)); background: rgba(247,248,246,.96); border-top: 1px solid var(--line); backdrop-filter: blur(8px); z-index: 2; }
 .fact-card { padding: .85rem; background: #eef6f4; border-radius: 10px; }
 .fact-card + .fact-card { margin-top: .6rem; }
 .fact-card p { margin: .35rem 0; line-height: 1.4; }
@@ -115,11 +116,24 @@ textarea { resize: vertical; line-height: 1.5; }
 }
 @media (max-width: 700px) {
   .app-header { align-items: flex-start; }
+  .cockpit-header { gap: .65rem; }
+  .header-states {
+    width: 100%;
+    justify-content: flex-start;
+    row-gap: .35rem;
+  }
+  .header-states .state-pill,
+  .header-states .header-connectivity {
+    flex: 0 1 auto;
+    max-width: 100%;
+  }
   .cockpit { display: block; }
   .coverage-rail { display: none; position: static; width: auto; box-shadow: none; border: 0; }
-  .question-stage { padding-top: 1.25rem; }
+  .question-stage { padding-top: 1.25rem; padding-bottom: 1rem; }
   .question-stage h1 { font-size: clamp(1.9rem, 9vw, 2.65rem); }
+  .cockpit-header .secondary.small { font-size: .78rem; padding-inline: .55rem; }
   .secondary.small, .icon-button { min-height: 44px; }
-  .action-dock { margin-bottom: -5rem; }
+  .action-dock { margin-bottom: 0; }
   .summary-row { flex-direction: column; }
+  body { overflow-x: hidden; }
 }

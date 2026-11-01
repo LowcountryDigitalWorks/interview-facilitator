@@ -170,3 +170,127 @@ test('Presentation read-back stays public across Change and masks retained defer
   await expect(page.locator('.context-rail')).toHaveCount(0);
 
 });
+
+async function startFreshInterview(page: Page, clientLabel = 'Synthetic Browser Test'): Promise<void> {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill(clientLabel);
+  await page.getByRole('button', { name: 'Start interview' }).click();
+}
+
+async function advanceToQuestion(page: Page, prompt: string): Promise<void> {
+  for (let step = 0; step < 8; step += 1) {
+    if (await page.getByRole('heading', { name: prompt, level: 1 }).isVisible()) return;
+    const continueButton = page.getByRole('button', { name: 'Continue' });
+    if (!(await continueButton.isEnabled())) break;
+    await continueButton.click();
+  }
+}
+
+test('Interview cockpit meets axe floor on the active question view', async ({ page }) => {
+  await startFreshInterview(page);
+  const results = await new AxeBuilder({ page }).analyze();
+  const consequential = results.violations.filter((violation) => violation.impact === 'critical' || violation.impact === 'serious');
+  expect(consequential).toEqual([]);
+});
+
+test('textarea answer exposes prompt and helper in its accessible name and description', async ({ page }) => {
+  await startFreshInterview(page);
+  const answer = page.locator('#answer');
+  await expect(answer).toHaveAccessibleName('What is already in place today?');
+  await expect(answer).toHaveAccessibleDescription('Confirm the known context or capture what has changed.');
+});
+
+test('status radio keeps focus and node identity through autosave update', async ({ page }) => {
+  await startFreshInterview(page);
+  const answered = page.locator('label.status-chip', { hasText: 'Answered' }).locator('input');
+  await page.locator('label.status-chip', { hasText: 'Answered' }).click();
+  await page.waitForTimeout(280);
+  await expect(answered).toBeFocused();
+  await expect(answered).toBeChecked();
+  const nodeId = await answered.evaluate((element) => element.outerHTML);
+  await page.waitForTimeout(280);
+  await expect(answered).toBeFocused();
+  expect(await answered.evaluate((element) => element.outerHTML)).toBe(nodeId);
+});
+
+test('single-choice answer keeps focus when conditional visibility is unchanged', async ({ page }) => {
+  await startFreshInterview(page);
+  await advanceToQuestion(page, 'Do people need to request or book time?');
+  const notSure = page.getByRole('radio', { name: 'Not sure' });
+  await notSure.check();
+  await page.waitForTimeout(280);
+  await expect(notSure).toBeFocused();
+  const yes = page.getByRole('radio', { name: 'Yes' });
+  await yes.check();
+  await page.waitForTimeout(280);
+  await expect(yes).toBeFocused();
+  await expect(page.getByRole('heading', { name: 'Do people need to request or book time?', level: 1 })).toBeVisible();
+});
+
+test('single-choice answer rerenders when conditional visibility changes', async ({ page }) => {
+  await startFreshInterview(page);
+  await advanceToQuestion(page, 'Do people need to request or book time?');
+  await page.getByRole('radio', { name: 'Yes' }).check();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { name: 'How should booking or scheduling work?', level: 1 })).toBeVisible();
+  await page.locator('[data-action="back"]').click();
+  await page.locator('fieldset.choice-group input[value="No"]').check();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { name: 'What absolutely has to be true for the first version to feel successful?', level: 1 })).toBeVisible();
+});
+
+test('Continue and Back land focus on the next or previous answer control', async ({ page }) => {
+  await startFreshInterview(page);
+  await page.locator('#answer').fill('Current state summary');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.locator('#answer')).toBeFocused({ timeout: 5000 });
+  await page.locator('[data-action="back"]').click();
+  await expect(page.locator('#answer')).toBeFocused({ timeout: 5000 });
+});
+
+test('320px phone coverage and context panels expose dialog semantics and isolate background', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await startFreshInterview(page);
+  await expect(page.locator('[data-save-indicator]')).toBeVisible();
+  await expect(page.locator('[data-connectivity-indicator]').first()).toBeVisible();
+
+  const coverageTrigger = page.locator('#coverage-mobile-trigger');
+  const contextTrigger = page.locator('#context-mobile-trigger');
+  await coverageTrigger.click();
+  await expect(coverageTrigger).toHaveAttribute('aria-expanded', 'true');
+  await expect(contextTrigger).toHaveAttribute('aria-expanded', 'false');
+  const coveragePanel = page.locator('#coverage-mobile-panel');
+  await expect(coveragePanel).toHaveAttribute('role', 'dialog');
+  await expect(page.locator('.question-stage')).toHaveJSProperty('inert', true);
+  await expect(page.getByRole('button', { name: 'Close coverage' })).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(coverageTrigger).toHaveAttribute('aria-expanded', 'false');
+  await expect(coverageTrigger).toBeFocused();
+
+  await contextTrigger.click();
+  await expect(contextTrigger).toHaveAttribute('aria-expanded', 'true');
+  await expect(coverageTrigger).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('#context-mobile-panel')).toHaveAttribute('role', 'dialog');
+  await page.getByRole('button', { name: 'Close context' }).click();
+  await expect(contextTrigger).toBeFocused();
+
+  const overflow = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }));
+  expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth + 1);
+});
+
+test('review Change control keeps contextual accessible name', async ({ page }) => {
+  await page.goto('/');
+  const row = syntheticSession('synthetic-review-a11y');
+  row.answers['existing-presence'] = { value: 'Baseline answer', status: 'ANSWERED', note: '' };
+  row.currentQuestionId = 'must-have';
+  await putRawSession(page, row);
+  await page.reload();
+  await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await expect(page.getByRole('button', { name: 'Change What is already in place today?' })).toBeVisible();
+});
