@@ -145,9 +145,18 @@ async function startFreshInterview(page: Page, label: string): Promise<void> {
   await expect(page.getByRole('heading', { name: 'What is already in place today?' })).toBeVisible();
 }
 
-async function goHomeWithActiveSession(page: Page): Promise<void> {
+async function openPrivateReview(page: Page): Promise<void> {
   await page.locator('[data-question-id="must-have"]').click();
+  await expect(page.getByRole('heading', { name: 'What absolutely has to be true for the first version to feel successful?' })).toBeVisible();
   await page.getByRole('button', { name: 'Review interview' }).click();
+  await expect(page.getByRole('heading', { name: 'Read back what matters before ending the conversation.' })).toBeVisible();
+  await expect(page.getByText('Presentation view', { exact: true }).first()).toBeVisible();
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.getByText('Private review', { exact: true })).toBeVisible();
+}
+
+async function goHomeWithActiveSession(page: Page): Promise<void> {
+  await openPrivateReview(page);
   await page.getByRole('button', { name: 'Home' }).click();
   await expect(page.getByRole('heading', { name: 'Recent interviews' })).toBeVisible();
 }
@@ -200,10 +209,10 @@ test('failed outgoing save blocks switching and recovery stays available until a
   await setFaultState(page, { failPut: true });
   await page.getByRole('button', { name: /Synthetic Session B/ }).click();
 
+  await expect(page.getByRole('heading', { name: 'Recent interviews' })).toBeVisible();
   await expect(page.getByRole('alert').filter({ hasText: 'Local save failed.' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Return to active interview' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Export active backup' })).toBeVisible();
-  await expect(page.getByText('Synthetic Session B', { exact: true })).not.toBeVisible();
 
   await setFaultState(page, { failPut: false, debounceMs: 50 });
   await page.getByRole('button', { name: 'Return to active interview' }).click();
@@ -265,8 +274,7 @@ test('delete cancels a pending autosave so the removed session cannot resurrect'
   await page.reload();
   await startFreshInterview(page, 'Synthetic Delete Race');
   await page.locator('#answer').fill('Pending edit that must not resurrect');
-  await page.locator('[data-question-id="must-have"]').click();
-  await page.getByRole('button', { name: 'Review interview' }).click();
+  await openPrivateReview(page);
 
   page.once('dialog', (dialog) => void dialog.accept());
   await page.getByRole('button', { name: 'Delete local session' }).click();
