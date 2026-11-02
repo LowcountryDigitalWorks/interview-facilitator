@@ -202,7 +202,12 @@ export class RevisionHistoryConflictError extends Error {
 }
 
 export function revisionHistoryKey(sessionId: string, revisionId: string): string {
-  return `${sessionId}|${revisionId}`;
+  return canonicalizeJson([sessionId, revisionId]);
+}
+
+function revisionHistorySessionPrefix(sessionId: string): string {
+  const encodedSessionTuple = canonicalizeJson([sessionId]);
+  return `${encodedSessionTuple.slice(0, -1)},`;
 }
 
 export async function replaceSessionWithHistory(imported: InterviewSession, expectedRevisionId: string): Promise<InterviewSession> {
@@ -350,7 +355,8 @@ export async function deleteSession(sessionId: string, expectedRevisionId: strin
         const deleteCurrent = currentStore.delete(sessionId);
         deleteCurrent.onerror = () => fail(deleteCurrent.error ?? new Error('Unable to delete the current session.'));
 
-        const historyRange = IDBKeyRange.bound(`${sessionId}|`, `${sessionId}|\uffff`);
+        const historyPrefix = revisionHistorySessionPrefix(sessionId);
+        const historyRange = IDBKeyRange.bound(historyPrefix, `${historyPrefix}\uffff`);
         const cursorRequest = historyStore.openCursor(historyRange);
         cursorRequest.onerror = () => fail(cursorRequest.error ?? new Error('Unable to delete retained revision history.'));
         cursorRequest.onsuccess = () => {

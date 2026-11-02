@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { InterviewSession } from '../../src/domain';
+import { revisionHistoryKey } from '../../src/storage';
 import { syntheticPinnedSession } from './synthetic-session';
 import {
   clearLocalState,
@@ -186,7 +187,7 @@ test('explicit replace retains the exact prior revision and writes a fresh paren
   expect(stored.revisionId).not.toBe(imported.revisionId);
   expect(stored.parentRevisionId).toBe(current.revisionId);
   expect(stored.runningNotes).toBe('Replacement content');
-  const historyKey = `${sessionId}|${current.revisionId}`;
+  const historyKey = revisionHistoryKey(sessionId, current.revisionId);
   expect(await listRevisionHistoryKeys(page)).toEqual([historyKey]);
   expect(await readRevisionHistory(page, historyKey)).toEqual(current);
 });
@@ -196,7 +197,7 @@ test('explicit replace preserves an identical pre-existing history record', asyn
   const current = await syntheticSession(sessionId, 'Import Existing History Test');
   await putRawSession(page, current);
   await page.reload();
-  const historyKey = `${sessionId}|${current.revisionId}`;
+  const historyKey = revisionHistoryKey(sessionId, current.revisionId);
   await overwriteRevisionHistory(page, historyKey, current);
   const imported = structuredClone(current);
   imported.runningNotes = 'Replacement after existing history';
@@ -217,7 +218,7 @@ test('conflicting pre-existing history fails closed without changing current or 
   const current = await syntheticSession(sessionId, 'Import Conflicting History Test');
   await putRawSession(page, current);
   await page.reload();
-  const historyKey = `${sessionId}|${current.revisionId}`;
+  const historyKey = revisionHistoryKey(sessionId, current.revisionId);
   const conflictingHistory = structuredClone(current);
   conflictingHistory.runningNotes = 'Conflicting retained data';
   await overwriteRevisionHistory(page, historyKey, conflictingHistory);
@@ -315,7 +316,7 @@ test('delete clears current and retained history even when autosave was recently
   const sessionId = 'seed-delete-resurrection-test';
   const seeded = await syntheticSession(sessionId, 'Delete Resurrection Test');
   await openSeededInterviewOnLastQuestion(page, 'Delete Resurrection Test', seeded);
-  await overwriteRevisionHistory(page, `${sessionId}|retained-old-revision`, { ...seeded, revisionId: 'retained-old-revision' });
+  await overwriteRevisionHistory(page, revisionHistoryKey(sessionId, 'retained-old-revision'), { ...seeded, revisionId: 'retained-old-revision' });
   await page.locator('#answer').fill('Pending delete proof');
   await page.waitForTimeout(50);
   await openPrivateReview(page);
@@ -329,6 +330,25 @@ test('delete clears current and retained history even when autosave was recently
   expect(await listRevisionHistoryKeys(page)).toEqual([]);
 });
 
+test('delete history range cannot consume another session whose imported ID shares a delimiter prefix', async ({ page }) => {
+  const sessionId = 'delete-prefix';
+  const otherSessionId = 'delete-prefix|nested';
+  const current = await syntheticSession(sessionId, 'Delete Prefix Isolation Test');
+  const otherHistory = await syntheticSession(otherSessionId, 'Other Retained History');
+  otherHistory.revisionId = 'other-retained-revision';
+  await openSeededInterviewOnLastQuestion(page, 'Delete Prefix Isolation Test', current);
+  const otherHistoryKey = revisionHistoryKey(otherSessionId, otherHistory.revisionId);
+  await overwriteRevisionHistory(page, otherHistoryKey, otherHistory);
+  await openPrivateReview(page);
+
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: 'Delete local session' }).click();
+  await expect(page.getByText('No saved interviews yet.')).toBeVisible();
+  expect(await listStoredSessionIds(page)).toEqual([]);
+  expect(await listRevisionHistoryKeys(page)).toEqual([otherHistoryKey]);
+  expect(await readRevisionHistory(page, otherHistoryKey)).toEqual(otherHistory);
+});
+
 test('stale delete decision cannot remove a newer local revision or its retained history', async ({ page }) => {
   const sessionId = 'stale-delete-session';
   const current = await syntheticSession(sessionId, 'Stale Delete Test');
@@ -337,7 +357,7 @@ test('stale delete decision cannot remove a newer local revision or its retained
   await page.getByRole('button', { name: 'Exit presentation' }).click();
   await page.getByRole('button', { name: 'Delete local session' }).waitFor({ state: 'visible', timeout: 10_000 });
 
-  const historyKey = `${sessionId}|${current.revisionId}`;
+  const historyKey = revisionHistoryKey(sessionId, current.revisionId);
   await overwriteRevisionHistory(page, historyKey, current);
   const newer = structuredClone(current);
   newer.parentRevisionId = current.revisionId;
