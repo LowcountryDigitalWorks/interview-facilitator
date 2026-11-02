@@ -4,6 +4,8 @@ export function bareSession(sessionId: string, runningNotes = ''): InterviewSess
   return {
     sessionSchemaVersion: '1.2.0',
     sessionId,
+    revisionId: crypto.randomUUID(),
+    parentRevisionId: null,
     interviewPackId: 'general-discovery',
     interviewPackVersion: '1.0.0',
     clientLabel: 'Synthetic',

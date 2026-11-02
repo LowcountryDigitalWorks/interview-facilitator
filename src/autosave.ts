@@ -20,14 +20,16 @@ export class SessionAutosaveCoordinator {
   private readonly tails = new Map<string, Promise<void>>();
   private readonly errors = new Map<string, unknown>();
   private readonly liveSessions = new Map<string, InterviewSession>();
+  private readonly expectedRevisions = new Map<string, string | null>();
 
   constructor(
-    private readonly persist: (session: InterviewSession) => Promise<void>,
+    private readonly persist: (session: InterviewSession, expectedRevisionId: string | null) => Promise<InterviewSession | void>,
     private readonly delayMs = 180,
   ) {}
 
   schedule(session: InterviewSession, hooks: AutosaveHooks = {}): void {
     this.liveSessions.set(session.sessionId, session);
+    if (!this.expectedRevisions.has(session.sessionId)) this.expectedRevisions.set(session.sessionId, session.revisionId);
     this.queue(session, hooks, this.delayMs);
   }
 
@@ -53,11 +55,14 @@ export class SessionAutosaveCoordinator {
         .catch(() => undefined)
         .then(async () => {
           try {
-            await this.persist(snapshot);
+            const expectedRevisionId = this.expectedRevisions.get(sessionId) ?? null;
+            const saved = await this.persist(snapshot, expectedRevisionId);
+            const savedSession = saved ?? { ...snapshot, revisionId: crypto.randomUUID(), parentRevisionId: expectedRevisionId };
+            this.expectedRevisions.set(sessionId, savedSession.revisionId);
             if (this.generations.get(sessionId) === generation) {
               this.generations.delete(sessionId);
               this.errors.delete(sessionId);
-              hooks.onSaved?.(sessionId, snapshot);
+              hooks.onSaved?.(sessionId, savedSession);
             }
           } catch (error) {
             if (this.generations.get(sessionId) === generation) {
@@ -115,5 +120,6 @@ export class SessionAutosaveCoordinator {
     if (tail) await tail.catch(() => undefined);
     this.errors.delete(sessionId);
     this.liveSessions.delete(sessionId);
+    this.expectedRevisions.delete(sessionId);
   }
 }
