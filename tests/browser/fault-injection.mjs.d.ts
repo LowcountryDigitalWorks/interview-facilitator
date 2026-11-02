@@ -5,11 +5,16 @@ export declare const STORE: string;
 export declare function installIdbFaultInjection(page: Page): Promise<void>;
 export declare function setIdbFault(
   page: Page,
-  patch: Partial<{ blockOpen: boolean; blockWrite: boolean; blockRead: boolean }>,
+  patch: Partial<{ blockOpen: boolean; blockWrite: boolean; blockRead: boolean; blockHistoryWrite: boolean }>,
 ): Promise<void>;
 export declare function clearLocalState(page: Page): Promise<void>;
 export declare function putRawSession(page: Page, row: unknown): Promise<void>;
+export declare function overwriteStoredSession(page: Page, row: unknown): Promise<void>;
 export declare function listStoredSessionIds(page: Page): Promise<string[]>;
+export declare function readStoredSession(page: Page, sessionId: string): Promise<any>;
+export declare function overwriteRevisionHistory(page: Page, key: string, row: unknown): Promise<void>;
+export declare function listRevisionHistoryKeys(page: Page): Promise<string[]>;
+export declare function readRevisionHistory(page: Page, key: string): Promise<any>;
 export declare function readStoredAnswer(page: Page, sessionId: string): Promise<string | null>;
 export declare function startFreshInterview(page: Page, clientLabel?: string): Promise<void>;
 export declare function openSeededInterviewOnLastQuestion(page: Page, clientLabel: string, row: unknown): Promise<void>;

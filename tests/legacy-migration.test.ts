@@ -13,7 +13,7 @@ import {
   planCurrentMigration,
   planLegacyMigration,
 } from '../src/session-migration';
-import { LEGACY_ARCHIVE_STORE, SESSIONS_STORE, listSessions, migrateLegacySession } from '../src/storage';
+import { LEGACY_ARCHIVE_STORE, REVISION_HISTORY_STORE, SESSIONS_STORE, listSessions, migrateLegacySession } from '../src/storage';
 
 const SESSION_ID = 'synthetic-legacy-session';
 
@@ -205,7 +205,7 @@ describe('legacy 1.0 to pinned 1.1 migration', () => {
   });
 
   it('keeps compatibility versions independent and uses the archived pack identity', () => {
-    expect(INDEXED_DB_LAYOUT_VERSION).toBe(3);
+    expect(INDEXED_DB_LAYOUT_VERSION).toBe(4);
     expect(migrationRegistry).toHaveLength(1);
     expect(migrationRegistry[0]).toMatchObject({
       sourceSessionSchemaVersion: '1.0.0',
@@ -286,9 +286,11 @@ describe('legacy 1.0 to pinned 1.1 migration', () => {
     const source = legacyRecord();
     seedLegacy(memory, source);
     const listed = await listSessions();
-    expect(memory.version()).toBe(3);
+    expect(memory.version()).toBe(4);
     expect(memory.stores.has(LEGACY_ARCHIVE_STORE)).toBe(true);
     expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size).toBe(0);
+    expect(memory.stores.has(REVISION_HISTORY_STORE)).toBe(true);
+    expect(memory.stores.get(REVISION_HISTORY_STORE)?.size).toBe(0);
     expect(listed.sessions).toHaveLength(0);
     expect(listed.unreadableCount).toBe(0);
     expect(listed.rows?.map((row) => row.classification)).toEqual(['legacy-migratable']);

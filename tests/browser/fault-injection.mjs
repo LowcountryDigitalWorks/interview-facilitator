@@ -22,6 +22,7 @@ export async function installIdbFaultInjection(page) {
       blockOpen: false,
       blockWrite: false,
       blockRead: false,
+      blockHistoryWrite: false,
       ...readPersisted(),
     };
     window.__ldwIdbFault = state;
@@ -31,6 +32,7 @@ export async function installIdbFaultInjection(page) {
         blockOpen: state.blockOpen,
         blockWrite: state.blockWrite,
         blockRead: state.blockRead,
+        blockHistoryWrite: state.blockHistoryWrite,
       }));
     };
 
@@ -47,6 +49,21 @@ export async function installIdbFaultInjection(page) {
         const nativeObjectStore = tx.objectStore.bind(tx);
         tx.objectStore = (storeName) => {
           const objectStore = nativeObjectStore(storeName);
+
+          if (faultState.blockHistoryWrite && storeName === 'revision-history' && mode === 'readwrite') {
+            const nativePut = objectStore.put.bind(objectStore);
+            objectStore.put = (...args) => {
+              const request = nativePut(...args);
+              try {
+                tx.abort();
+              } catch {
+                // ignore
+              }
+              return request;
+            };
+            return objectStore;
+          }
+
           if (storeName !== store) return objectStore;
 
           if (faultState.blockWrite && mode === 'readwrite') {
@@ -138,7 +155,7 @@ export async function installIdbFaultInjection(page) {
   }, { dbName: DB_NAME, store: STORE });
 }
 
-/** @param {Page} page @param {Partial<{ blockOpen: boolean, blockWrite: boolean, blockRead: boolean }>} patch */
+/** @param {Page} page @param {Partial<{ blockOpen: boolean, blockWrite: boolean, blockRead: boolean, blockHistoryWrite: boolean }>} patch */
 export async function setIdbFault(page, patch) {
   await page.evaluate((next) => {
     if (typeof window.__ldwIdbFaultPersist === 'function') {
@@ -155,7 +172,7 @@ export async function clearLocalState(page) {
   await page.evaluate(async ({ dbName }) => {
     sessionStorage.removeItem('ldw-idb-fault-flags');
     if (typeof window.__ldwIdbFaultPersist === 'function') {
-      window.__ldwIdbFaultPersist({ blockOpen: false, blockWrite: false, blockRead: false });
+      window.__ldwIdbFaultPersist({ blockOpen: false, blockWrite: false, blockRead: false, blockHistoryWrite: false });
     }
     await new Promise((resolve) => {
       const request = indexedDB.deleteDatabase(dbName);
@@ -193,6 +210,25 @@ export async function putRawSession(page, row) {
   }, { dbName: DB_NAME, store: STORE, row });
 }
 
+/** @param {Page} page @param {unknown} row */
+export async function overwriteStoredSession(page, row) {
+  await page.evaluate(async ({ dbName, store, row: value }) => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(dbName);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(store, 'readwrite');
+      tx.objectStore(store).put(value);
+      tx.oncomplete = () => resolve(undefined);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+    db.close();
+  }, { dbName: DB_NAME, store: STORE, row });
+}
+
 /** @param {Page} page */
 export async function listStoredSessionIds(page) {
   return page.evaluate(async ({ dbName, store }) => {
@@ -209,6 +245,79 @@ export async function listStoredSessionIds(page) {
     db.close();
     return rows.map((row) => row.sessionId);
   }, { dbName: DB_NAME, store: STORE });
+}
+
+/** @param {Page} page @param {string} sessionId */
+export async function readStoredSession(page, sessionId) {
+  return page.evaluate(async ({ dbName, store, sessionId: id }) => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(dbName);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const row = await new Promise((resolve, reject) => {
+      const request = db.transaction(store, 'readonly').objectStore(store).get(id);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return row ?? null;
+  }, { dbName: DB_NAME, store: STORE, sessionId });
+}
+
+/** @param {Page} page @param {string} key @param {unknown} row */
+export async function overwriteRevisionHistory(page, key, row) {
+  await page.evaluate(async ({ dbName, key: revisionKey, row: value }) => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(dbName);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction('revision-history', 'readwrite');
+      tx.objectStore('revision-history').put(value, revisionKey);
+      tx.oncomplete = () => resolve(undefined);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+    db.close();
+  }, { dbName: DB_NAME, key, row });
+}
+
+/** @param {Page} page */
+export async function listRevisionHistoryKeys(page) {
+  return page.evaluate(async ({ dbName }) => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(dbName);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const keys = await new Promise((resolve, reject) => {
+      const request = db.transaction('revision-history', 'readonly').objectStore('revision-history').getAllKeys();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return keys.map(String);
+  }, { dbName: DB_NAME });
+}
+
+/** @param {Page} page @param {string} key */
+export async function readRevisionHistory(page, key) {
+  return page.evaluate(async ({ dbName, key: revisionKey }) => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(dbName);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const row = await new Promise((resolve, reject) => {
+      const request = db.transaction('revision-history', 'readonly').objectStore('revision-history').get(revisionKey);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return row ?? null;
+  }, { dbName: DB_NAME, key });
 }
 
 /** @param {Page} page @param {string} sessionId */

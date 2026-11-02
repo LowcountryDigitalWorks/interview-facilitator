@@ -22,10 +22,11 @@ async function clearLocalState(page: Page): Promise<void> {
 async function putRawSession(page: Page, row: unknown): Promise<void> {
   await page.evaluate(async ({ dbName, store, row }) => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(dbName, 3);
+      const request = indexedDB.open(dbName, 4);
       request.onupgradeneeded = () => {
         if (!request.result.objectStoreNames.contains(store)) request.result.createObjectStore(store, { keyPath: 'sessionId' });
         if (!request.result.objectStoreNames.contains('legacy-session-archive')) request.result.createObjectStore('legacy-session-archive');
+        if (!request.result.objectStoreNames.contains('revision-history')) request.result.createObjectStore('revision-history');
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
@@ -44,7 +45,7 @@ async function putRawSession(page: Page, row: unknown): Promise<void> {
 async function readStorageSnapshot(page: Page): Promise<{ rows: unknown[]; archives: unknown[]; archiveKeys: IDBValidKey[] }> {
   return page.evaluate(async ({ dbName }) => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open(dbName, 3);
+      const request = indexedDB.open(dbName, 4);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -341,7 +342,7 @@ test('mixed Home records support explicit upgrade and recovery backup', async ({
   expect(homeSnapshot.archives).toHaveLength(0);
   expect(homeSnapshot.archiveKeys).toHaveLength(0);
   const currentBefore = await page.evaluate(async (sessionId) => {
-    const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open('ldw-interview-facilitator', 3); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open('ldw-interview-facilitator', 4); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
     const value = await new Promise<unknown>((resolve, reject) => { const request = db.transaction('sessions').objectStore('sessions').get(sessionId); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
     db.close(); return value;
   }, legacy.sessionId);
@@ -351,7 +352,7 @@ test('mixed Home records support explicit upgrade and recovery backup', async ({
   await expect(page.getByText('Older interview format')).toHaveCount(0);
   await expect(upgradedCard).toBeVisible();
   const upgraded = await page.evaluate(async (sessionId) => {
-    const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open('ldw-interview-facilitator', 3); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open('ldw-interview-facilitator', 4); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
     const transaction = db.transaction(['sessions', 'legacy-session-archive']);
     const read = (storeName: string, key: IDBValidKey) => new Promise<unknown>((resolve, reject) => { const request = transaction.objectStore(storeName).get(key); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
     const values = { active: await read('sessions', sessionId), archive: await read('legacy-session-archive', `${sessionId}|1.1.0|pinned-1.1-to-1.2`) };
