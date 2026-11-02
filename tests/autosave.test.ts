@@ -73,6 +73,31 @@ describe('SessionAutosaveCoordinator', () => {
     expect(coordinator.hasPending(active.sessionId)).toBe(false);
   });
 
+  it('rebases the expected revision when a same-ID session is reloaded while idle', async () => {
+    let current = makeSession('session-reloaded');
+    const expectedRevisions: Array<string | null> = [];
+    const coordinator = new SessionAutosaveCoordinator(async (value, expectedRevisionId) => {
+      expectedRevisions.push(expectedRevisionId);
+      if (current.revisionId !== expectedRevisionId) throw new Error('stale expected revision');
+      const saved = { ...structuredClone(value), revisionId: crypto.randomUUID(), parentRevisionId: expectedRevisionId };
+      current = saved;
+      return saved;
+    });
+
+    coordinator.schedule(current);
+    await vi.advanceTimersByTimeAsync(180);
+    await coordinator.flushAndWait(current.sessionId);
+    const externallyUpdated = { ...structuredClone(current), revisionId: crypto.randomUUID(), parentRevisionId: current.revisionId };
+    current = externallyUpdated;
+
+    coordinator.schedule(structuredClone(externallyUpdated));
+    await vi.advanceTimersByTimeAsync(180);
+    await coordinator.flushAndWait(externallyUpdated.sessionId);
+
+    expect(expectedRevisions[1]).toBe(externallyUpdated.revisionId);
+    expect(current.parentRevisionId).toBe(externallyUpdated.revisionId);
+  });
+
   it('surfaces a failed flush instead of allowing stale resume data', async () => {
     const coordinator = new SessionAutosaveCoordinator(async () => {
       throw new Error('synthetic write failure');

@@ -29,7 +29,11 @@ export class SessionAutosaveCoordinator {
 
   schedule(session: InterviewSession, hooks: AutosaveHooks = {}): void {
     this.liveSessions.set(session.sessionId, session);
-    if (!this.expectedRevisions.has(session.sessionId)) this.expectedRevisions.set(session.sessionId, session.revisionId);
+    if (!this.timers.has(session.sessionId) && !this.tails.has(session.sessionId)) {
+      this.expectedRevisions.set(session.sessionId, session.revisionId);
+    } else if (!this.expectedRevisions.has(session.sessionId)) {
+      this.expectedRevisions.set(session.sessionId, session.revisionId);
+    }
     this.queue(session, hooks, this.delayMs);
   }
 
