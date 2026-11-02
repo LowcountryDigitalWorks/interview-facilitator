@@ -320,6 +320,61 @@ export async function readRevisionHistory(page, key) {
   }, { dbName: DB_NAME, key });
 }
 
+/** @param {Page} page @param {string} key @param {unknown} row */
+export async function overwriteLegacyArchive(page, key, row) {
+  await page.evaluate(async ({ dbName, key: archiveKey, row: value }) => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(dbName);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction('legacy-session-archive', 'readwrite');
+      tx.objectStore('legacy-session-archive').put(value, archiveKey);
+      tx.oncomplete = () => resolve(undefined);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+    db.close();
+  }, { dbName: DB_NAME, key, row });
+}
+
+/** @param {Page} page */
+export async function listLegacyArchiveKeys(page) {
+  return page.evaluate(async ({ dbName }) => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(dbName);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const keys = await new Promise((resolve, reject) => {
+      const request = db.transaction('legacy-session-archive', 'readonly').objectStore('legacy-session-archive').getAllKeys();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return keys.map(String);
+  }, { dbName: DB_NAME });
+}
+
+/** @param {Page} page @param {string} key */
+export async function readLegacyArchive(page, key) {
+  return page.evaluate(async ({ dbName, key: archiveKey }) => {
+    const db = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(dbName);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const row = await new Promise((resolve, reject) => {
+      const request = db.transaction('legacy-session-archive', 'readonly').objectStore('legacy-session-archive').get(archiveKey);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return row ?? null;
+  }, { dbName: DB_NAME, key });
+}
+
 /** @param {Page} page @param {string} sessionId */
 export async function readStoredAnswer(page, sessionId) {
   return page.evaluate(async ({ dbName, store, sessionId: id }) => {

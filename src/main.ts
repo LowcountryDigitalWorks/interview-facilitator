@@ -766,11 +766,11 @@ function renderReview(): void {
   app.querySelector('[data-action="delete"]')?.addEventListener('click', async () => {
     if (!session) return;
     if (!confirm('Delete this local interview? Export a backup first if you need one. This cannot be undone.')) return;
-    const sessionId = session.sessionId;
+    const deletingSession = session;
+    const sessionId = deletingSession.sessionId;
     try {
-      const expectedRevisionId = session.revisionId;
       await autosave.cancelAndWait(sessionId);
-      await deleteSession(sessionId, expectedRevisionId);
+      await deleteSession(sessionId, deletingSession.revisionId);
       if (session?.sessionId === sessionId) session = null;
       presentationMode = exitPresentation();
       view = 'home';

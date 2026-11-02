@@ -5,14 +5,17 @@ import { syntheticPinnedSession } from './synthetic-session';
 import {
   clearLocalState,
   installIdbFaultInjection,
+  listLegacyArchiveKeys,
   listRevisionHistoryKeys,
   listStoredSessionIds,
   navigateHomeKeepingActiveSession,
   openPrivateReview,
   openSeededInterviewOnLastQuestion,
+  overwriteLegacyArchive,
   overwriteRevisionHistory,
   overwriteStoredSession,
   putRawSession,
+  readLegacyArchive,
   readRevisionHistory,
   readStoredAnswer,
   readStoredSession,
@@ -312,11 +315,17 @@ test('failed same-ID import flush keeps dirty active session authoritative', asy
   expect(await listRevisionHistoryKeys(page)).toEqual([]);
 });
 
-test('delete clears current and retained history even when autosave was recently scheduled', async ({ page }) => {
+test('delete clears current and all app-owned retained copies even when autosave was recently scheduled', async ({ page }) => {
   const sessionId = 'seed-delete-resurrection-test';
+  const otherSessionId = `${sessionId}|nested`;
   const seeded = await syntheticSession(sessionId, 'Delete Resurrection Test');
+  const targetArchiveKey = 'archive-target';
+  const otherArchiveKey = 'archive-other';
+  const otherArchive = { sessionId: otherSessionId, marker: 'must remain' };
   await openSeededInterviewOnLastQuestion(page, 'Delete Resurrection Test', seeded);
   await overwriteRevisionHistory(page, revisionHistoryKey(sessionId, 'retained-old-revision'), { ...seeded, revisionId: 'retained-old-revision' });
+  await overwriteLegacyArchive(page, targetArchiveKey, { sessionId, marker: 'must purge' });
+  await overwriteLegacyArchive(page, otherArchiveKey, otherArchive);
   await page.locator('#answer').fill('Pending delete proof');
   await page.waitForTimeout(50);
   await openPrivateReview(page);
@@ -328,6 +337,9 @@ test('delete clears current and retained history even when autosave was recently
   await expect(page.getByText('No saved interviews yet.')).toBeVisible();
   expect(await listStoredSessionIds(page)).toEqual([]);
   expect(await listRevisionHistoryKeys(page)).toEqual([]);
+  expect(await readLegacyArchive(page, targetArchiveKey)).toBeNull();
+  expect(await listLegacyArchiveKeys(page)).toEqual([otherArchiveKey]);
+  expect(await readLegacyArchive(page, otherArchiveKey)).toEqual(otherArchive);
 });
 
 test('delete history range cannot consume another session whose imported ID shares a delimiter prefix', async ({ page }) => {

@@ -328,9 +328,10 @@ export async function deleteSession(sessionId: string, expectedRevisionId: strin
   const db = await openDb();
   try {
     await new Promise<void>((resolve, reject) => {
-      const tx = openTransaction(db, [STORE, REVISION_HISTORY_STORE], 'readwrite');
+      const tx = openTransaction(db, [STORE, REVISION_HISTORY_STORE, LEGACY_ARCHIVE_STORE], 'readwrite');
       const currentStore = tx.objectStore(STORE);
       const historyStore = tx.objectStore(REVISION_HISTORY_STORE);
+      const legacyArchiveStore = tx.objectStore(LEGACY_ARCHIVE_STORE);
       let failure: unknown = null;
       const fail = (error: unknown) => {
         if (failure !== null) return;
@@ -364,6 +365,19 @@ export async function deleteSession(sessionId: string, expectedRevisionId: strin
           if (!cursor) return;
           const deleteHistory = cursor.delete();
           deleteHistory.onerror = () => fail(deleteHistory.error ?? new Error('Unable to delete retained revision history.'));
+          cursor.continue();
+        };
+
+        const archiveCursorRequest = legacyArchiveStore.openCursor();
+        archiveCursorRequest.onerror = () => fail(archiveCursorRequest.error ?? new Error('Unable to delete retained legacy migration archives.'));
+        archiveCursorRequest.onsuccess = () => {
+          const cursor = archiveCursorRequest.result;
+          if (!cursor) return;
+          const archived = cursor.value as { sessionId?: unknown } | undefined;
+          if (archived?.sessionId === sessionId) {
+            const deleteArchive = cursor.delete();
+            deleteArchive.onerror = () => fail(deleteArchive.error ?? new Error('Unable to delete retained legacy migration archive.'));
+          }
           cursor.continue();
         };
       };

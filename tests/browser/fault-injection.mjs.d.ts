@@ -15,6 +15,9 @@ export declare function readStoredSession(page: Page, sessionId: string): Promis
 export declare function overwriteRevisionHistory(page: Page, key: string, row: unknown): Promise<void>;
 export declare function listRevisionHistoryKeys(page: Page): Promise<string[]>;
 export declare function readRevisionHistory(page: Page, key: string): Promise<any>;
+export declare function overwriteLegacyArchive(page: Page, key: string, row: unknown): Promise<void>;
+export declare function listLegacyArchiveKeys(page: Page): Promise<string[]>;
+export declare function readLegacyArchive(page: Page, key: string): Promise<any>;
 export declare function readStoredAnswer(page: Page, sessionId: string): Promise<string | null>;
 export declare function startFreshInterview(page: Page, clientLabel?: string): Promise<void>;
 export declare function openSeededInterviewOnLastQuestion(page: Page, clientLabel: string, row: unknown): Promise<void>;
