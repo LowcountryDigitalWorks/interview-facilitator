@@ -317,19 +317,27 @@ test('mixed Home records support explicit upgrade and recovery backup', async ({
   delete legacy.packSnapshot.ruleSemanticsVersion;
   legacy.packIdentity.digest = await sha256Hex(canonicalizeJson(legacy.packSnapshot));
   const unsupported = { sessionId: 'synthetic-future-mixed', sessionSchemaVersion: '9.0.0', futurePayload: { retained: true } };
-  const malformed = { sessionId: 'synthetic-malformed-mixed', sessionSchemaVersion: null };
-  for (const row of [current, legacy, unsupported, malformed]) await putRawSession(page, row);
+  const malformed = structuredClone(current);
+  malformed.sessionId = 'synthetic-malformed-mixed';
+  malformed.packIdentity.digest = '0'.repeat(64);
+  const unsafeMalformed = { sessionId: 'synthetic-unsafe-malformed-mixed', sessionSchemaVersion: null, unsafeValue: Number.NaN };
+  for (const row of [current, legacy, unsupported, malformed, unsafeMalformed]) await putRawSession(page, row);
   const seededSnapshot = await readStorageSnapshot(page);
   await page.reload();
   await expect(page.getByRole('button', { name: /Synthetic Browser Test/ })).toBeVisible();
   await expect(page.getByText('Older interview format')).toBeVisible();
   await expect(page.getByText('Unsupported interview format')).toBeVisible();
-  await expect(page.getByText('An interview record could not be read.')).toBeVisible();
+  await expect(page.getByText('An interview record could not be read.')).toHaveCount(2);
   await expect(page.getByRole('button', { name: 'Upgrade' })).toHaveCount(1);
-  await expect(page.getByRole('button', { name: 'Download recovery backup' })).toBeVisible();
+  await expect(page.locator('[data-recovery-id="synthetic-future-mixed"]')).toBeVisible();
+  await expect(page.locator('[data-recovery-id="synthetic-malformed-mixed"]')).toBeVisible();
+  await expect(page.locator('[data-recovery-id="synthetic-unsafe-malformed-mixed"]')).toHaveCount(0);
+  await expect(page.locator('[data-session-id="synthetic-malformed-mixed"]')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Upgrade' })).toHaveCount(1);
+  await expect(page.getByText('5 local interviews could not be read.')).toHaveCount(0);
   const homeSnapshot = await readStorageSnapshot(page);
   expect(homeSnapshot).toEqual(seededSnapshot);
-  expect(homeSnapshot.rows).toHaveLength(4);
+  expect(homeSnapshot.rows).toHaveLength(5);
   expect(homeSnapshot.archives).toHaveLength(0);
   expect(homeSnapshot.archiveKeys).toHaveLength(0);
   const currentBefore = await page.evaluate(async (sessionId) => {
@@ -353,7 +361,7 @@ test('mixed Home records support explicit upgrade and recovery backup', async ({
   expect(await validateSessionRecord(upgraded.active)).toEqual(upgraded.active);
   expect(upgraded.archive).toEqual(legacy);
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Download recovery backup' }).click();
+  await page.locator('[data-recovery-id="synthetic-future-mixed"]').click();
   const recoveryDownload = await download;
   expect(recoveryDownload.suggestedFilename()).toBe('interview-facilitator-recovery-backup.json');
   const recoveryStream = await recoveryDownload.createReadStream();
@@ -365,13 +373,25 @@ test('mixed Home records support explicit upgrade and recovery backup', async ({
   expect(recoveryBackup).toMatchObject({ backupType: 'interview-facilitator-recovery-internal', formatVersion: '1' });
   expect(recoveryBackup.record).toEqual(unsupported);
 
+  const malformedDownload = page.waitForEvent('download');
+  await page.locator('[data-recovery-id="synthetic-malformed-mixed"]').click();
+  const quarantinedDownload = await malformedDownload;
+  const quarantinedStream = await quarantinedDownload.createReadStream();
+  if (!quarantinedStream) throw new Error('Quarantined recovery stream was unavailable.');
+  quarantinedStream.setEncoding('utf8');
+  let quarantinedJson = '';
+  for await (const chunk of quarantinedStream) quarantinedJson += chunk;
+  const quarantinedBackup = JSON.parse(quarantinedJson) as { record: unknown };
+  expect(quarantinedBackup.record).toEqual(malformed);
+
   const snapshot = await readStorageSnapshot(page);
-  expect(snapshot.rows).toHaveLength(4);
+  expect(snapshot.rows).toHaveLength(5);
   expect(snapshot.archives).toHaveLength(1);
   expect(snapshot.archiveKeys).toEqual(['synthetic-legacy-mixed|1.1.0|pinned-1.1-to-1.2']);
   expect(snapshot.rows).toContainEqual(current);
   expect(snapshot.rows).toContainEqual(unsupported);
   expect(snapshot.rows).toContainEqual(malformed);
+  expect(snapshot.rows).toContainEqual(unsafeMalformed);
   expect(snapshot.rows).toContainEqual(upgraded.active);
   expect(snapshot.archives[0]).toEqual(legacy);
 

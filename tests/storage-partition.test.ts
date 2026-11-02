@@ -92,6 +92,56 @@ describe('stored session quarantine', () => {
     expect(result.sessions[0]?.sessionId).toBe(good.sessionId);
   });
 
+  it('offers raw recovery for serializable integrity failures and counts only malformed rows as unreadable', async () => {
+    const current = await createPinnedSession(pack, { clientLabel: 'Quarantined' });
+    const quarantined = structuredClone(current);
+    quarantined.packIdentity.digest = '0'.repeat(64);
+    const legacy = structuredClone(current);
+    legacy.sessionId = 'legacy-count';
+    legacy.sessionSchemaVersion = '1.1.0';
+    delete legacy.packSnapshot.ruleSemanticsVersion;
+    legacy.packIdentity.digest = await sha256Hex(canonicalizeJson(legacy.packSnapshot));
+    const unsupported = { sessionId: 'future-count', sessionSchemaVersion: '9.0.0', unknown: true };
+    const unsafe = { sessionId: 'unsafe-row', sessionSchemaVersion: '1.2.0', value: Number.NaN };
+    const rows = [quarantined, legacy, unsupported, unsafe];
+    const before = structuredClone(rows);
+    const classified = await classifyStoredSessionRows(rows);
+    expect(classified.map((row) => row.classification)).toEqual([
+      'malformed-unreadable', 'legacy-migratable', 'unsupported-recoverable', 'malformed-unreadable',
+    ]);
+    const damaged = classified[0];
+    const unsafeClassified = classified[3];
+    expect(damaged).toMatchObject({ classification: 'malformed-unreadable', sessionId: quarantined.sessionId, recoveryAvailable: true });
+    expect(unsafeClassified).toMatchObject({ classification: 'malformed-unreadable', recoveryAvailable: false });
+    const partition = await partitionStoredSessionRows(rows);
+    expect(partition.unreadableCount).toBe(2);
+
+    const modes: IDBTransactionMode[] = [];
+    const stored = new Map(rows.map((row) => [(row as { sessionId: string }).sessionId, structuredClone(row)]));
+    const db = {
+      close() {},
+      transaction: (_store: string, mode: IDBTransactionMode) => {
+        modes.push(mode);
+        return { objectStore: () => ({ get: (id: string) => {
+          const request: { result?: unknown; onsuccess: (() => void) | null; onerror: (() => void) | null } = { onsuccess: null, onerror: null };
+          queueMicrotask(() => { request.result = structuredClone(stored.get(id)); request.onsuccess?.(); });
+          return request;
+        } }) };
+      },
+    };
+    vi.stubGlobal('indexedDB', { open: () => {
+      const request: { result: typeof db; onupgradeneeded: (() => void) | null; onsuccess: (() => void) | null; onerror: (() => void) | null } = { result: db, onupgradeneeded: null, onsuccess: null, onerror: null };
+      queueMicrotask(() => request.onsuccess?.());
+      return request;
+    } });
+
+    const backup = JSON.parse(await exportRecoveryBackup(quarantined.sessionId));
+    expect(backup.record).toEqual(quarantined);
+    await expect(exportRecoveryBackup(unsafe.sessionId)).rejects.toThrow(/safely created/i);
+    expect(modes).toEqual(['readonly', 'readonly']);
+    expect([...stored.values()]).toEqual(before);
+  });
+
   it('sorts only validated rows and ignores malformed updatedAt values during partitioning', async () => {
     const older = await createPinnedSession(pack, { clientLabel: 'Older' }, new Date('2026-10-30T12:00:00Z'));
     const newer = await createPinnedSession(pack, { clientLabel: 'Newer' }, new Date('2026-10-31T12:00:00Z'));

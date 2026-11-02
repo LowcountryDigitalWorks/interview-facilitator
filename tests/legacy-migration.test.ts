@@ -289,7 +289,8 @@ describe('legacy 1.0 to pinned 1.1 migration', () => {
     expect(memory.stores.has(LEGACY_ARCHIVE_STORE)).toBe(true);
     expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size).toBe(0);
     expect(listed.sessions).toHaveLength(0);
-    expect(listed.unreadableCount).toBe(1);
+    expect(listed.unreadableCount).toBe(0);
+    expect(listed.rows?.map((row) => row.classification)).toEqual(['legacy-migratable']);
     expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(source);
   });
 

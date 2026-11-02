@@ -21,7 +21,7 @@ export type ClassifiedStoredRow =
   | { sessionId: string; classification: 'current'; raw: unknown; session: InterviewSession }
   | { sessionId: string; classification: 'legacy-migratable'; raw: unknown; plan: Extract<Awaited<ReturnType<typeof planCurrentMigration>>, { kind: 'ready' }> }
   | { sessionId: string; classification: 'unsupported-recoverable'; raw: unknown; reason: string }
-  | { sessionId: string; classification: 'malformed-unreadable'; reason: string };
+  | { sessionId: string; classification: 'malformed-unreadable'; reason: string; recoveryAvailable: boolean };
 
 function assertRecoveryJson(value: unknown): void {
   const ancestors = new Set<object>();
@@ -99,6 +99,21 @@ export async function buildUnsupportedRecoveryBackup(raw: unknown, expectedSessi
   return buildRecoveryBackup(raw);
 }
 
+function hasStableRecoveryIdentity(raw: unknown, expectedSessionId?: string): raw is Record<string, unknown> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const sessionId = (raw as Record<string, unknown>).sessionId;
+  return typeof sessionId === 'string' && sessionId.trim().length > 0
+    && (expectedSessionId === undefined || sessionId === expectedSessionId);
+}
+
+async function buildStoredRecoveryBackup(raw: unknown, expectedSessionId: string): Promise<string> {
+  if (!hasStableRecoveryIdentity(raw, expectedSessionId)) throw new Error('Stored row lacks a stable recovery identity.');
+  const plan = await planCurrentMigration(raw);
+  if (plan.kind === 'unsupported') return buildUnsupportedRecoveryBackup(raw, expectedSessionId);
+  if (plan.kind !== 'invalid') throw new Error('Stored row is not eligible for recovery backup.');
+  return buildRecoveryBackup(raw);
+}
+
 export async function classifyStoredSessionRows(rows: unknown[]): Promise<ClassifiedStoredRow[]> {
   const classified: ClassifiedStoredRow[] = [];
   for (const raw of rows) {
@@ -113,9 +128,16 @@ export async function classifyStoredSessionRows(rows: unknown[]): Promise<Classi
       else if (plan.kind === 'unsupported') {
         await buildUnsupportedRecoveryBackup(raw);
         classified.push({ sessionId, classification: 'unsupported-recoverable', raw, reason: plan.reason });
-      } else classified.push({ sessionId, classification: 'malformed-unreadable', reason: plan.reason });
+      } else {
+        const recoveryAvailable = hasStableRecoveryIdentity(raw);
+        if (recoveryAvailable) {
+          try { buildRecoveryBackup(raw); }
+          catch { classified.push({ sessionId, classification: 'malformed-unreadable', reason: plan.reason, recoveryAvailable: false }); continue; }
+        }
+        classified.push({ sessionId, classification: 'malformed-unreadable', reason: plan.reason, recoveryAvailable });
+      }
     } catch {
-      classified.push({ sessionId, classification: 'malformed-unreadable', reason: 'Stored row is not safely classifiable.' });
+      classified.push({ sessionId, classification: 'malformed-unreadable', reason: 'Stored row is not safely classifiable.', recoveryAvailable: false });
     }
   }
   return classified;
@@ -125,7 +147,7 @@ export async function partitionStoredSessionRows(rows: unknown[]): Promise<Store
   const classified = await classifyStoredSessionRows(rows);
   const sessions = classified.flatMap((row) => row.classification === 'current' ? [row.session] : []);
   sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  return { sessions, unreadableCount: classified.filter((row) => row.classification !== 'current').length, rows: classified };
+  return { sessions, unreadableCount: classified.filter((row) => row.classification === 'malformed-unreadable').length, rows: classified };
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -214,7 +236,7 @@ export async function exportRecoveryBackup(sessionId: string): Promise<string> {
   const db = await openDb();
   try {
     const raw = await requestResult(db.transaction(STORE, 'readonly').objectStore(STORE).get(sessionId));
-    return await buildUnsupportedRecoveryBackup(raw, sessionId);
+    return await buildStoredRecoveryBackup(raw, sessionId);
   } catch {
     throw new Error('Recovery backup could not be safely created. The stored interview was left unchanged.');
   } finally {
