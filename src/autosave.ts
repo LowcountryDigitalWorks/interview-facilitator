@@ -63,6 +63,12 @@ export class SessionAutosaveCoordinator {
             const saved = await this.persist(snapshot, expectedRevisionId);
             const savedSession = saved ?? { ...snapshot, revisionId: crypto.randomUUID(), parentRevisionId: expectedRevisionId };
             this.expectedRevisions.set(sessionId, savedSession.revisionId);
+            const liveSession = this.liveSessions.get(sessionId);
+            if (liveSession) {
+              liveSession.updatedAt = savedSession.updatedAt;
+              liveSession.revisionId = savedSession.revisionId;
+              liveSession.parentRevisionId = savedSession.parentRevisionId;
+            }
             if (this.generations.get(sessionId) === generation) {
               this.generations.delete(sessionId);
               this.errors.delete(sessionId);

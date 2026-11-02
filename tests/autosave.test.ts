@@ -110,6 +110,41 @@ describe('SessionAutosaveCoordinator', () => {
     expect(coordinator.hasPending(active.sessionId)).toBe(false);
   });
 
+  it('updates live revision metadata after an internal retry with no save hooks', async () => {
+    const active = makeSession('session-retry-revision');
+    const initialRevisionId = active.revisionId;
+    let currentRevisionId = active.revisionId;
+    let failNext = true;
+    const expectedRevisionIds: Array<string | null> = [];
+    const coordinator = new SessionAutosaveCoordinator(async (value, expectedRevisionId) => {
+      expectedRevisionIds.push(expectedRevisionId);
+      if (expectedRevisionId !== currentRevisionId) throw new Error('stale expected revision');
+      if (failNext) {
+        failNext = false;
+        throw new Error('synthetic transient write failure');
+      }
+      const saved = { ...structuredClone(value), revisionId: crypto.randomUUID(), parentRevisionId: expectedRevisionId };
+      currentRevisionId = saved.revisionId;
+      return saved;
+    });
+
+    coordinator.schedule(active);
+    await vi.advanceTimersByTimeAsync(180);
+    await coordinator.flushAndWait(active.sessionId);
+    expect(active.revisionId).toBe(currentRevisionId);
+    const retriedRevisionId = active.revisionId;
+
+    active.runningNotes = 'edited after retry';
+    coordinator.schedule(active);
+    await vi.advanceTimersByTimeAsync(180);
+    await coordinator.flushAndWait(active.sessionId);
+
+    expect(expectedRevisionIds).toEqual([initialRevisionId, initialRevisionId, retriedRevisionId]);
+    expect(active.parentRevisionId).toBe(retriedRevisionId);
+    expect(active.runningNotes).toBe('edited after retry');
+    expect(active.revisionId).toBe(currentRevisionId);
+  });
+
   it('cancels a pending write before delete/import replacement', async () => {
     const persisted: InterviewSession[] = [];
     const coordinator = new SessionAutosaveCoordinator(async (value) => {
