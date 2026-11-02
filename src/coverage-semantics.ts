@@ -16,6 +16,7 @@ export interface ConfirmationReference {
   value: Exclude<CaptureValue, null>;
 }
 
+/** Structurally bounded follow-up data only; task lifecycle/workflow semantics are intentionally out of scope. */
 export interface FollowUpMetadata {
   action: string;
   owner?: string;
@@ -35,7 +36,7 @@ export type EffectiveEvidence =
   | { strength: 'none' }
   | { strength: 'tentative' | 'authoritative'; value: Exclude<CaptureValue, null>; source: EvidenceSource | null };
 
-export function isMeaningfulCaptureValue(spec: CaptureSpec, value: unknown): value is Exclude<CaptureValue, null> {
+export function isMeaningfulCaptureValue(spec: CaptureSpec, value: unknown): boolean {
   switch (spec.kind) {
     case 'text':
     case 'textarea':
@@ -94,28 +95,36 @@ export function projectLegacyQuestionState(state: QuestionState, spec: CaptureSp
   }
 }
 
+function captureValuesEqual(left: CaptureValue, right: CaptureValue): boolean {
+  if (left === right) return true;
+  return typeof left === 'number' && typeof right === 'number' && Number.isNaN(left) && Number.isNaN(right);
+}
+
 export function effectiveEvidence(spec: CaptureSpec, state: SemanticQuestionState): EffectiveEvidence {
-  if (state.resolution !== 'captured' || !isMeaningfulCaptureValue(spec, state.value)) {
+  const value = state.value;
+  if (state.resolution !== 'captured' || value === null || !isMeaningfulCaptureValue(spec, value)) {
     return { strength: 'none' };
   }
 
+  const staleConfirmation = state.confirmation !== null && !captureValuesEqual(state.confirmation.value, value);
   return {
-    strength: state.needsConfirmation || state.source === null ? 'tentative' : 'authoritative',
-    value: state.value,
+    strength: state.needsConfirmation || state.source === null || staleConfirmation ? 'tentative' : 'authoritative',
+    value,
     source: state.source,
   };
 }
 
 /**
  * Updates only the value/confirmation dimensions. Resolution/source classification remains a
- * separate human/domain decision. Editing a value that had a current confirmation invalidates
- * that current reference while leaving historical confirmation evidence to the later lifecycle layer.
+ * separate human/domain decision. Callers must explicitly reclassify source/resolution when an
+ * edit changes their meaning. Editing a value that had a current confirmation invalidates that
+ * current reference while leaving historical confirmation evidence to the later lifecycle layer.
  */
 export function updateValueWithConfirmationInvalidation(
   state: SemanticQuestionState,
   nextValue: CaptureValue,
 ): SemanticQuestionState {
-  if (Object.is(state.value, nextValue)) return { ...state };
+  if (captureValuesEqual(state.value, nextValue)) return { ...state };
 
   return {
     ...state,
