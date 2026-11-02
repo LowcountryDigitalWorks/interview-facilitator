@@ -14,6 +14,7 @@ The facilitator is designed to keep a real conversation natural while quietly tr
 - Answered / Already Known / Skip / N/A / Must Confirm status model
 - known-fact provenance
 - recent local sessions and resume
+- bounded upgrades from pinned session schema 1.1 to 1.2 and from legacy 1.0 through the pinned 1.1 intermediate
 - exact JSON import/export
 - deterministic Markdown generation from canonical JSON
 - client-safe read-back separated from internal notes
@@ -36,6 +37,8 @@ npm run dev
 Public source, tests, screenshots, and demos must use synthetic/public-safe data only. Never commit credentials, tokens, private Drive identifiers, real client interview records, PHI, CUI, payment data, or customer secrets.
 
 Local interview data is stored in IndexedDB. Cache Storage is reserved for the application shell. Browser storage can still be removed by browser/device/user policy, so JSON export remains the explicit backup path.
+
+Session schema 1.2 is the only current load/import format and records the rule-semantics version in the pinned pack snapshot. Pinned 1.1 is accepted only by the explicit local upgrade path; it is validated under its historical rules, archived unchanged, and upgraded to 1.2 without rewriting its interview content. The 1.0 path uses its historical pack and a temporary 1.1 intermediate before producing 1.2. Unsupported pack/rule versions in recognizable versioned rows (including future numeric schema versions) are eligible for an internal recovery backup only when the row has a nonempty session ID and can be serialized losslessly as bounded JSON. Recovery backups are limited to 2 MB of output, 256 KB per string, 1 MB of total strings, 100 levels of nesting, and 100,000 values. Unsupported rows that exceed these limits or cannot be serialized losslessly remain stored and unchanged.
 
 Pack identity uses the browser's built-in Web Crypto. That API is available in a secure context (HTTPS or localhost). Opening the app over plain HTTP on another device on the LAN cannot compute the pack digest.
 

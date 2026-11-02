@@ -7,6 +7,7 @@ describe('readSessionList', () => {
       kind: 'ready',
       sessions: [],
       unreadableCount: 0,
+      rows: [],
     });
   });
 
@@ -24,6 +25,6 @@ describe('readSessionList', () => {
     const row = { sessionId: 'synthetic-session' } as never;
     const result = await readSessionList(async () => ({ sessions: [row], unreadableCount: 2 }));
 
-    expect(result).toEqual({ kind: 'ready', sessions: [row], unreadableCount: 2 });
+    expect(result).toEqual({ kind: 'ready', sessions: [row], unreadableCount: 2, rows: [] });
   });
 });

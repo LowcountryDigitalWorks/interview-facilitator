@@ -77,7 +77,20 @@ describe('pinned pack identity', () => {
     const restored = await validateSessionRecord(JSON.parse(serializeSession(session)));
     expect(restored.packSnapshot).toEqual(session.packSnapshot);
     expect(restored.packIdentity).toEqual(session.packIdentity);
-    expect(restored.sessionSchemaVersion).toBe('1.1.0');
+    expect(restored.sessionSchemaVersion).toBe('1.2.0');
+    expect(restored.packSnapshot.ruleSemanticsVersion).toBe('condition-equals-v1');
+  });
+
+  it('includes rule semantics in pack identity and rejects unsupported semantics', async () => {
+    const session = await createPinnedSession(pack, { clientLabel: 'Synthetic Client' });
+    expect(session.sessionSchemaVersion).toBe('1.2.0');
+    expect(session.packSnapshot.ruleSemanticsVersion).toBe('condition-equals-v1');
+    const changed = structuredClone(session.packSnapshot);
+    changed.ruleSemanticsVersion = 'condition-equals-v1' as const;
+    const baseline = await sha256Hex(canonicalizeJson(changed));
+    const altered = { ...changed, ruleSemanticsVersion: 'condition-equals-v2' };
+    expect(await sha256Hex(canonicalizeJson(altered))).not.toBe(baseline);
+    expect(() => validateSessionShape({ ...session, packSnapshot: altered })).toThrow(/unsupported rule semantics/i);
   });
 
   it('rejects unsupported canonical values instead of dropping them', () => {

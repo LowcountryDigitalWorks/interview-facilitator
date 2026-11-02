@@ -31,6 +31,7 @@ export interface Section {
 
 export interface InterviewPackSnapshot {
   packSchemaVersion: '1.0.0';
+  ruleSemanticsVersion?: 'condition-equals-v1';
   packId: string;
   packVersion: string;
   title: string;
@@ -55,7 +56,7 @@ export interface QuestionState {
 }
 
 export interface InterviewSession {
-  sessionSchemaVersion: '1.1.0';
+  sessionSchemaVersion: '1.1.0' | '1.2.0';
   sessionId: string;
   interviewPackId: string;
   interviewPackVersion: string;
@@ -94,7 +95,7 @@ export function assemblePinnedSession(
   const timestamp = now.toISOString();
   const answers = Object.fromEntries(snapshot.questions.map((question) => [question.id, { value: null, status: null, note: '' }])) as Record<string, QuestionState>;
   return {
-    sessionSchemaVersion: '1.1.0',
+    sessionSchemaVersion: '1.2.0',
     sessionId: crypto.randomUUID(),
     interviewPackId: snapshot.packId,
     interviewPackVersion: snapshot.packVersion,
@@ -231,11 +232,13 @@ function validateSnapshotFact(value: unknown): KnownFact {
 
 export function validatePackSnapshot(value: unknown): InterviewPackSnapshot {
   const record = requireRecord(value, 'Pack snapshot');
-  requireOnlyKeys(record, ['packSchemaVersion', 'packId', 'packVersion', 'title', 'description', 'sections', 'questions', 'knownFacts'], 'Pack snapshot');
+  requireOnlyKeys(record, ['packSchemaVersion', 'ruleSemanticsVersion', 'packId', 'packVersion', 'title', 'description', 'sections', 'questions', 'knownFacts'], 'Pack snapshot');
   if (record.packSchemaVersion !== '1.0.0') throw new Error('Unsupported pack snapshot schema version.');
+  if (record.ruleSemanticsVersion !== undefined && record.ruleSemanticsVersion !== 'condition-equals-v1') throw new Error('Unsupported rule semantics version.');
   if (!Array.isArray(record.sections) || !Array.isArray(record.questions) || !Array.isArray(record.knownFacts)) throw new Error('Pack snapshot collections are invalid.');
   return {
     packSchemaVersion: '1.0.0',
+    ...(record.ruleSemanticsVersion === undefined ? {} : { ruleSemanticsVersion: record.ruleSemanticsVersion }),
     packId: requireString(record, 'packId'),
     packVersion: requireString(record, 'packVersion'),
     title: requireString(record, 'title'),
@@ -254,11 +257,12 @@ export function validatePackIdentity(value: unknown): PackIdentity {
   return { algorithm: 'SHA-256', canonicalization: 'ldw-json-c14n-v1', digest: record.digest };
 }
 
-export function validateSessionShape(value: unknown): InterviewSession {
+function validatePinnedSessionShape(value: unknown, schemaVersion: '1.1.0' | '1.2.0'): InterviewSession {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Session JSON must be an object.');
   const record = value as Record<string, unknown>;
   if (record.sessionSchemaVersion === '1.0.0') throw new Error('Unsupported legacy session schema 1.0.0. This record has no pinned pack snapshot and was not migrated or deleted.');
-  if (record.sessionSchemaVersion !== '1.1.0') throw new Error('Unsupported session schema version.');
+  if (record.sessionSchemaVersion !== schemaVersion) throw new Error(`Session schema must be ${schemaVersion}.`);
+  if (schemaVersion === '1.2.0' && (record.packSnapshot as Record<string, unknown> | null)?.ruleSemanticsVersion !== 'condition-equals-v1') throw new Error('Unsupported rule semantics version.');
   if (!record.answers || typeof record.answers !== 'object' || Array.isArray(record.answers)) throw new Error('Session answers are missing or invalid.');
   if (!Array.isArray(record.knownFacts)) throw new Error('Session known facts are invalid.');
 
@@ -268,7 +272,7 @@ export function validateSessionShape(value: unknown): InterviewSession {
   }));
 
   return {
-    sessionSchemaVersion: '1.1.0',
+    sessionSchemaVersion: schemaVersion,
     sessionId: requireString(record, 'sessionId'),
     interviewPackId: requireString(record, 'interviewPackId'),
     interviewPackVersion: requireString(record, 'interviewPackVersion'),
@@ -284,6 +288,20 @@ export function validateSessionShape(value: unknown): InterviewSession {
     packSnapshot: validatePackSnapshot(record.packSnapshot),
     packIdentity: validatePackIdentity(record.packIdentity),
   };
+}
+
+export function validateSessionShape(value: unknown): InterviewSession {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Session JSON must be an object.');
+  const schemaVersion = (value as Record<string, unknown>).sessionSchemaVersion;
+  if (schemaVersion !== '1.2.0') {
+    if (schemaVersion === '1.0.0') throw new Error('Unsupported legacy session schema 1.0.0. This record has no pinned pack snapshot and was not migrated or deleted.');
+    throw new Error('Unsupported session schema version.');
+  }
+  return validatePinnedSessionShape(value, '1.2.0');
+}
+
+export function validateHistoricalPinned11Shape(value: unknown): InterviewSession {
+  return validatePinnedSessionShape(value, '1.1.0');
 }
 
 export function validateSessionForPack(session: InterviewSession): void {

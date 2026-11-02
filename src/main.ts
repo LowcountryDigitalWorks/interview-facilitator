@@ -3,7 +3,7 @@ import type { AnswerStatus, InterviewSession, Question } from './domain';
 import { coverage, nextVisibleQuestion, relevantKnownFacts, sessionPack, visibleQuestions } from './domain';
 import { createPinnedSession, validateSessionRecord } from './pack-identity';
 import { generalDiscoveryPack as pack } from './pack';
-import { deleteSession, listSessions, loadSession, requestPersistentStorage, saveSession } from './storage';
+import { deleteSession, exportRecoveryBackup, listSessions, loadSession, migrateLegacySession, requestPersistentStorage, saveSession } from './storage';
 import { serializeSession, sessionToMarkdown } from './markdown';
 import { formatConnectivityLabel, formatSaveLabel, type PersistenceState, type SaveState } from './indicators';
 import { SessionAutosaveCoordinator } from './autosave';
@@ -159,6 +159,7 @@ async function renderHome(): Promise<void> {
   const storageError = listState.kind === 'error';
   const recent = listState.kind === 'ready' ? listState.sessions : [];
   const unreadableCount = listState.kind === 'ready' ? listState.unreadableCount : 0;
+  const storedRows = listState.kind === 'ready' ? listState.rows : [];
   if (storageError) console.error('Unable to read local interviews.', listState.error);
 
   app.innerHTML = `
@@ -187,6 +188,9 @@ async function renderHome(): Promise<void> {
               <strong>${unreadableCount} local interview${unreadableCount === 1 ? '' : 's'} could not be read.</strong>
               <p>${unreadableCount === 1 ? 'It was' : 'They were'} not deleted.</p>
             </div>` : ''}
+            ${storedRows.filter((row) => row.classification === 'legacy-migratable').map((row) => `<div class="known-preview"><strong>Older interview format</strong><p>This interview can be upgraded while preserving its original record.</p><button class="secondary" data-upgrade-id="${escapeHtml(row.sessionId)}">Upgrade</button></div>`).join('')}
+            ${storedRows.filter((row) => row.classification === 'unsupported-recoverable').map((row) => `<div class="known-preview"><strong>Unsupported interview format</strong><p>Back up this internal recovery data. It is not a client interview artifact.</p><button class="secondary" data-recovery-id="${escapeHtml(row.sessionId)}">Download recovery backup</button></div>`).join('')}
+            ${storedRows.filter((row) => row.classification === 'malformed-unreadable').map((row) => `<div class="known-preview" role="status"><strong>An interview record could not be read.</strong><p>It remains stored and was left unchanged.</p>${row.recoveryAvailable ? `<button class="secondary" data-recovery-id="${escapeHtml(row.sessionId)}">Download recovery backup</button>` : ''}</div>`).join('')}
             ${recent.length ? recent.map((item) => `
               <button class="session-card" data-session-id="${escapeHtml(item.sessionId)}">
                 <span><strong>${escapeHtml(item.clientLabel)}</strong><small>${escapeHtml(item.interviewMode)} · updated ${escapeHtml(new Date(item.updatedAt).toLocaleString())}</small></span>
@@ -203,6 +207,34 @@ async function renderHome(): Promise<void> {
     if (!session) return;
     download(`${session.clientLabel.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-interview.json`, serializeSession(session), 'application/json');
   });
+  app.querySelectorAll<HTMLElement>('[data-upgrade-id]').forEach((button) => button.addEventListener('click', async () => {
+    if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+    button.disabled = true;
+    try {
+      const result = await migrateLegacySession(button.dataset.upgradeId ?? '');
+      if (result.kind === 'migrated' || result.kind === 'already-migrated') { homeNotice = null; await renderHome(); }
+      else {
+        const detail = 'reason' in result ? ` ${result.reason}` : ` (${result.kind})`;
+        homeNotice = { kind: 'read', message: `Upgrade did not complete.${detail} The original interview and any prior recovery record were preserved.` };
+        await renderHome();
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? ` ${error.message}` : '';
+      homeNotice = { kind: 'read', message: `Upgrade failed.${detail} The original interview and any prior recovery record were preserved.` };
+      await renderHome();
+    } finally {
+      button.disabled = false;
+    }
+  }));
+  app.querySelectorAll<HTMLElement>('[data-recovery-id]').forEach((button) => button.addEventListener('click', async () => {
+    try {
+      const contents = await exportRecoveryBackup(button.dataset.recoveryId ?? '');
+      download('interview-facilitator-recovery-backup.json', contents, 'application/json');
+    } catch (error) {
+      homeNotice = { kind: 'read', message: error instanceof Error ? error.message : 'Recovery backup could not be created. The stored interview was left unchanged.' };
+      await renderHome();
+    }
+  }));
 
   if (!storageError) {
     app.querySelector('[data-action="new"]')?.addEventListener('click', () => { homeNotice = null; view = 'new'; render(); });

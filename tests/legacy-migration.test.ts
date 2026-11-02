@@ -1,13 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { generalDiscoveryPack100 } from '../src/historical-packs/general-discovery-1.0.0';
-import { canonicalizeJson, createPinnedSession } from '../src/pack-identity';
+import { canonicalizeJson, createPinnedSession, sha256Hex, validateHistoricalPinned11Record, validateSessionRecord } from '../src/pack-identity';
 import { generalDiscoveryPack } from '../src/pack';
 import {
   INDEXED_DB_LAYOUT_VERSION,
   LEGACY_TO_PINNED_MIGRATION_ID,
   RULE_SEMANTICS_VERSION,
   legacyArchiveKey,
+  migratePinned11To12,
   migrationRegistry,
+  planCurrentMigration,
   planLegacyMigration,
 } from '../src/session-migration';
 import { LEGACY_ARCHIVE_STORE, SESSIONS_STORE, listSessions, migrateLegacySession } from '../src/storage';
@@ -188,6 +190,14 @@ function seedArchive(memory: ReturnType<typeof installMigrationDatabase>, row: u
   expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.get(legacyArchiveKey(SESSION_ID))).toBe(row);
 }
 
+async function pinned11Record() {
+  const session = await createPinnedSession(generalDiscoveryPack, { clientLabel: 'Synthetic Client' }, new Date('2026-10-31T12:00:00.000Z'));
+  session.sessionSchemaVersion = '1.1.0';
+  delete session.packSnapshot.ruleSemanticsVersion;
+  session.packIdentity.digest = await sha256Hex(canonicalizeJson(session.packSnapshot));
+  return session;
+}
+
 describe('legacy 1.0 to pinned 1.1 migration', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -279,7 +289,8 @@ describe('legacy 1.0 to pinned 1.1 migration', () => {
     expect(memory.stores.has(LEGACY_ARCHIVE_STORE)).toBe(true);
     expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size).toBe(0);
     expect(listed.sessions).toHaveLength(0);
-    expect(listed.unreadableCount).toBe(1);
+    expect(listed.unreadableCount).toBe(0);
+    expect(listed.rows?.map((row) => row.classification)).toEqual(['legacy-migratable']);
     expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(source);
   });
 
@@ -293,10 +304,127 @@ describe('legacy 1.0 to pinned 1.1 migration', () => {
     const current = memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID);
     const archived = memory.stores.get(LEGACY_ARCHIVE_STORE)?.get(legacyArchiveKey(SESSION_ID));
     expect(current).toEqual(result.session);
+    expect(result.session.sessionSchemaVersion).toBe('1.2.0');
+    expect(result.session.packSnapshot.ruleSemanticsVersion).toBe(RULE_SEMANTICS_VERSION);
     expect(archived).toEqual(source);
     expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size).toBe(1);
     expect(result.session.createdAt).toBe(source.createdAt);
     expect(result.session.updatedAt).toBe(source.updatedAt);
+  });
+
+  it('migrates persisted 1.1 through storage and archives the untouched source', async () => {
+    const memory = installMigrationDatabase();
+    const source = await pinned11Record();
+    source.sessionId = SESSION_ID;
+    seedLegacy(memory, source);
+    const result = await migrateLegacySession(SESSION_ID);
+    expect(result.kind).toBe('migrated');
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toMatchObject({ sessionSchemaVersion: '1.2.0' });
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.get(legacyArchiveKey(SESSION_ID, '1.1.0', 'pinned-1.1-to-1.2'))).toEqual(source);
+    expect(legacyArchiveKey(SESSION_ID, '1.0.0', 'legacy-1.0-to-1.1')).not.toBe(legacyArchiveKey(SESSION_ID, '1.1.0', 'pinned-1.1-to-1.2'));
+    const repeat = await migrateLegacySession(SESSION_ID);
+    expect(repeat.kind).toBe('already-migrated');
+  });
+
+  it('keeps 1.1 validation explicit and verifies sequential 1.0→1.1→1.2 equivalence', async () => {
+    const historical = await pinned11Record();
+    await expect(validateSessionRecord(historical)).rejects.toThrow(/unsupported session schema/i);
+    await expect(validateHistoricalPinned11Record(historical)).resolves.toMatchObject({ sessionSchemaVersion: '1.1.0' });
+
+    const source10 = legacyRecord();
+    const intermediate = await planLegacyMigration(source10);
+    const sequential = intermediate.kind === 'ready' ? await migratePinned11To12(intermediate.session) : intermediate;
+    const direct = await planCurrentMigration(source10);
+    expect(sequential.kind).toBe('ready');
+    expect(direct.kind).toBe('ready');
+    if (sequential.kind === 'ready' && direct.kind === 'ready') {
+      expect(canonicalizeJson(sequential.session)).toBe(canonicalizeJson(direct.session));
+    }
+  });
+
+  it('preserves an identical 1.1 archive and conflicts on a different one', async () => {
+    const sameMemory = installMigrationDatabase();
+    const source = await pinned11Record();
+    source.sessionId = SESSION_ID;
+    seedLegacy(sameMemory, source);
+    const archiveKey = legacyArchiveKey(SESSION_ID, '1.1.0', 'pinned-1.1-to-1.2');
+    const identicalArchive = structuredClone(source);
+    sameMemory.stores.set(LEGACY_ARCHIVE_STORE, new Map([[archiveKey, identicalArchive]]));
+    const migrated = await migrateLegacySession(SESSION_ID);
+    expect(migrated.kind).toBe('migrated');
+    expect(sameMemory.stores.get(LEGACY_ARCHIVE_STORE)?.get(archiveKey)).toBe(identicalArchive);
+
+    const conflictMemory = installMigrationDatabase();
+    seedLegacy(conflictMemory, source);
+    const conflictingArchive = { ...structuredClone(source), runningNotes: 'Other original source.' };
+    conflictMemory.stores.set(LEGACY_ARCHIVE_STORE, new Map([[archiveKey, conflictingArchive]]));
+    const result = await migrateLegacySession(SESSION_ID);
+    expect(result.kind).toBe('conflict');
+    expect(conflictMemory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(source);
+    expect(conflictMemory.stores.get(LEGACY_ARCHIVE_STORE)?.get(archiveKey)).toBe(conflictingArchive);
+  });
+
+  it('does not overwrite a 1.1 source changed before its transaction', async () => {
+    const source = await pinned11Record();
+    source.sessionId = SESSION_ID;
+    const changed = { ...structuredClone(source), runningNotes: 'Changed before commit.' };
+    const memory = installMigrationDatabase({ swapSecondRead: changed });
+    seedLegacy(memory, source);
+    const result = await migrateLegacySession(SESSION_ID);
+    expect(result.kind).toBe('stale');
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(source);
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size ?? 0).toBe(0);
+  });
+
+  it('prefers the latest 1.1 source archive when both migration archives exist', async () => {
+    const memory = installMigrationDatabase();
+    const source10 = legacyRecord();
+    seedLegacy(memory, source10);
+    const first = await migrateLegacySession(SESSION_ID);
+    expect(first.kind).toBe('migrated');
+    const current = memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID) as Awaited<ReturnType<typeof createPinnedSession>>;
+    const edited11 = structuredClone(current);
+    edited11.sessionSchemaVersion = '1.1.0';
+    edited11.runningNotes = 'Edited after the first migration.';
+    delete edited11.packSnapshot.ruleSemanticsVersion;
+    edited11.packIdentity.digest = await sha256Hex(canonicalizeJson(edited11.packSnapshot));
+    seedLegacy(memory, edited11);
+    const second = await migrateLegacySession(SESSION_ID);
+    expect(second.kind).toBe('migrated');
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.has(legacyArchiveKey(SESSION_ID, '1.0.0', LEGACY_TO_PINNED_MIGRATION_ID))).toBe(true);
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.has(legacyArchiveKey(SESSION_ID, '1.1.0', 'pinned-1.1-to-1.2'))).toBe(true);
+    expect((await migrateLegacySession(SESSION_ID)).kind).toBe('already-migrated');
+  });
+
+  it.each([
+    { fail: 'archive-get' as const },
+    { fail: 'archive-put' as const },
+    { fail: 'session-put' as const },
+    { abortAtCommit: true },
+  ])('preserves a 1.1 source on transaction failure: %j', async (options) => {
+    const memory = installMigrationDatabase(options);
+    const source = await pinned11Record();
+    source.sessionId = SESSION_ID;
+    seedLegacy(memory, source);
+    const result = await migrateLegacySession(SESSION_ID);
+    expect(result.kind).toBe('aborted');
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(source);
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size).toBe(0);
+  });
+
+  it('converts pinned 1.1 deterministically without changing semantic session content', async () => {
+    const source = await pinned11Record();
+    const first = await migratePinned11To12(source);
+    const second = await migratePinned11To12(source);
+    expect(first.kind).toBe('ready');
+    expect(second.kind).toBe('ready');
+    if (first.kind !== 'ready' || second.kind !== 'ready') return;
+    const { sessionSchemaVersion: _firstVersion, packSnapshot: firstSnapshot, packIdentity: _firstIdentity, ...firstState } = first.session;
+    const { sessionSchemaVersion: _secondVersion, packSnapshot: secondSnapshot, packIdentity: _secondIdentity, ...secondState } = second.session;
+    expect(firstState).toEqual(source && (({ sessionSchemaVersion: _version, packSnapshot: _snapshot, packIdentity: _identity, ...state }) => state)(source));
+    expect(secondState).toEqual(firstState);
+    expect(firstSnapshot.ruleSemanticsVersion).toBe(RULE_SEMANTICS_VERSION);
+    expect(canonicalizeJson(first.session)).toBe(canonicalizeJson(second.session));
   });
 
   it.each([
