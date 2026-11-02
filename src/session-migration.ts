@@ -3,7 +3,7 @@ import { generalDiscoveryPack100 } from './historical-packs/general-discovery-1.
 import { assertLegacySessionMatchesPack, parseLegacySession10, type LegacySession10 } from './legacy-session';
 import { canonicalizeJson, pinPackSnapshot, sha256Hex, validateHistoricalPinned11Record, validateSessionRecord } from './pack-identity';
 
-export const INDEXED_DB_LAYOUT_VERSION = 3;
+export const INDEXED_DB_LAYOUT_VERSION = 4;
 export const CURRENT_SESSION_SCHEMA_VERSION = '1.2.0';
 export const PACK_SCHEMA_VERSION = '1.0.0';
 export const RULE_SEMANTICS_VERSION = 'condition-equals-v1';

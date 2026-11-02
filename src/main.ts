@@ -3,12 +3,12 @@ import type { AnswerStatus, InterviewSession, Question } from './domain';
 import { coverage, nextVisibleQuestion, relevantKnownFacts, sessionPack, visibleQuestions } from './domain';
 import { createPinnedSession, validateSessionRecord } from './pack-identity';
 import { generalDiscoveryPack as pack } from './pack';
-import { deleteSession, exportRecoveryBackup, listSessions, loadSession, migrateLegacySession, requestPersistentStorage, RevisionConflictError, saveSession } from './storage';
+import { deleteSession, exportRecoveryBackup, listSessions, loadSession, migrateLegacySession, replaceSessionWithHistory, requestPersistentStorage, RevisionConflictError, saveSession } from './storage';
 import { serializeSession, sessionToMarkdown } from './markdown';
 import { formatConnectivityLabel, formatSaveLabel, type PersistenceState, type SaveState } from './indicators';
 import { SessionAutosaveCoordinator } from './autosave';
 import { readSessionList } from './session-list';
-import { beginSessionSwitch, importSessionReplacement, openStoredSession, SessionSwitchGate, shouldFlushActiveSession, type OpenStoredSessionResult } from './session-durability';
+import { beginSessionSwitch, importSessionWithCollisionHandling, openStoredSession, SessionSwitchGate, shouldFlushActiveSession, type ImportCollisionChoice, type OpenStoredSessionResult } from './session-durability';
 import { enterPresentation, exitPresentation, isPresentationMode, projectReadBack, type PresentationMode } from './presentation';
 import { paintUpdateSlot, startControlledUpdates } from './pwa';
 
@@ -166,6 +166,45 @@ async function openStoredSessionForPack(sessionId: string): Promise<OpenStoredSe
   return result;
 }
 
+function chooseImportCollision(existing: InterviewSession): Promise<ImportCollisionChoice> {
+  return new Promise((resolve) => {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'import-collision-dialog';
+    dialog.setAttribute('aria-labelledby', 'import-collision-title');
+    dialog.innerHTML = `
+      <div class="import-collision-content">
+        <p class="eyebrow">Import collision</p>
+        <h2 id="import-collision-title">This interview already exists on this device.</h2>
+        <p>The imported file has the same session ID as <strong>${escapeHtml(existing.clientLabel)}</strong>, but its interview content is different.</p>
+        <div class="known-preview">
+          <strong>Safest choice: Import as copy</strong>
+          <p>This keeps the current interview unchanged and gives the imported file a new session and revision lineage.</p>
+        </div>
+        <div class="button-row">
+          <button type="button" class="primary" data-import-choice="copy">Import as copy</button>
+          <button type="button" class="secondary" data-import-choice="replace">Replace existing</button>
+          <button type="button" class="secondary" data-import-choice="cancel">Cancel — keep current</button>
+        </div>
+        <p class="helper-text">Replace existing is explicit: the current validated revision is retained in local revision history before the imported content becomes current.</p>
+      </div>`;
+    const settle = (choice: ImportCollisionChoice) => {
+      if (dialog.open) dialog.close();
+      dialog.remove();
+      resolve(choice);
+    };
+    dialog.querySelectorAll<HTMLButtonElement>('[data-import-choice]').forEach((button) => {
+      button.addEventListener('click', () => settle(button.dataset.importChoice as ImportCollisionChoice));
+    });
+    dialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      settle('cancel');
+    }, { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
+    dialog.querySelector<HTMLButtonElement>('[data-import-choice="copy"]')?.focus();
+  });
+}
+
 async function renderHome(): Promise<void> {
   const listState = await readSessionList(listSessions);
   const storageError = listState.kind === 'error';
@@ -271,14 +310,18 @@ async function renderHome(): Promise<void> {
         active: session,
         nextSessionId: imported.sessionId,
         flush: (sessionId) => autosave.flushAndWait(sessionId),
-        proceed: () => importSessionReplacement({
+        proceed: () => importSessionWithCollisionHandling({
           imported,
           flush: (sessionId) => autosave.flushAndWait(sessionId),
           load: loadSession,
-          confirmReplace: () => confirm('A local interview with this session ID already exists. Replace it with the imported file? Cancel keeps the local interview unchanged.'),
+          chooseCollision: chooseImportCollision,
           save: async (value, expectedRevisionId) => {
             await refreshPersistenceState();
             return saveSession(value, expectedRevisionId);
+          },
+          replace: async (value, expectedRevisionId) => {
+            await refreshPersistenceState();
+            return replaceSessionWithHistory(value, expectedRevisionId);
           },
         }),
       });
@@ -288,9 +331,10 @@ async function renderHome(): Promise<void> {
       }
       const result = outcome.value;
 
-      if (result.kind === 'replaced') {
+      if (result.kind === 'imported' || result.kind === 'noop' || result.kind === 'forked' || result.kind === 'replaced') {
         session = result.session;
         homeNotice = null;
+        saveError = null;
         saveState = 'saved';
         presentationMode = exitPresentation();
         view = 'interview';
@@ -305,14 +349,16 @@ async function renderHome(): Promise<void> {
         return;
       }
 
-      console.error('Local import did not replace the saved interview.', result.error);
+      console.error('Local import did not complete.', result.error);
       saveState = 'error';
       homeNotice = {
         kind: 'save',
         sessionId: imported.sessionId,
         message: result.kind === 'aborted-flush'
           ? 'Pending local edits could not be saved, so the imported file was not written. The in-memory interview is unchanged.'
-          : 'The imported file could not be saved. The previously saved local interview was left in place.',
+          : result.error instanceof RevisionConflictError
+            ? 'Another tab changed this interview after the import decision. Import was stopped and the newer local revision was left unchanged.'
+            : 'The imported file could not be saved. Existing local interviews and retained revision history were left unchanged.',
       };
       await renderHome();
     });
@@ -720,10 +766,11 @@ function renderReview(): void {
   app.querySelector('[data-action="delete"]')?.addEventListener('click', async () => {
     if (!session) return;
     if (!confirm('Delete this local interview? Export a backup first if you need one. This cannot be undone.')) return;
-    const sessionId = session.sessionId;
+    const deletingSession = session;
+    const sessionId = deletingSession.sessionId;
     try {
       await autosave.cancelAndWait(sessionId);
-      await deleteSession(sessionId);
+      await deleteSession(sessionId, deletingSession.revisionId);
       if (session?.sessionId === sessionId) session = null;
       presentationMode = exitPresentation();
       view = 'home';

@@ -94,9 +94,11 @@ test('Apply update flushes the dirty edit, activates B, and preserves sentinel s
     const oldShell = await caches.open('interview-facilitator-shell-release-old');
     await oldShell.put('/old', new Response('old-shell'));
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('ldw-interview-facilitator', 3);
+      const request = indexedDB.open('ldw-interview-facilitator', 4);
       request.onupgradeneeded = () => {
         if (!request.result.objectStoreNames.contains('sessions')) request.result.createObjectStore('sessions', { keyPath: 'sessionId' });
+        if (!request.result.objectStoreNames.contains('legacy-session-archive')) request.result.createObjectStore('legacy-session-archive');
+        if (!request.result.objectStoreNames.contains('revision-history')) request.result.createObjectStore('revision-history');
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
@@ -123,7 +125,7 @@ test('Apply update flushes the dirty edit, activates B, and preserves sentinel s
 
   const stored = await page.evaluate(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('ldw-interview-facilitator', 3);
+      const request = indexedDB.open('ldw-interview-facilitator', 4);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -209,7 +211,7 @@ test('a second tab does not auto-reload and can save before moving to B', async 
   await waitForRelease(other, 'release-b');
   const stored = await other.evaluate(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open('ldw-interview-facilitator', 3);
+      const request = indexedDB.open('ldw-interview-facilitator', 4);
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -234,14 +236,23 @@ test('a failed local save blocks activation and leaves B waiting', async ({ page
   await page.getByRole('button', { name: 'Start interview' }).click();
   await publishRelease(page, 'release-b');
   await expect(page.getByText('Update ready')).toBeVisible();
-  await page.evaluate(() => new Promise<void>((resolve, reject) => {
-    const request = indexedDB.open('ldw-interview-facilitator', 4);
-    request.onupgradeneeded = () => {
-      if (request.result.objectStoreNames.contains('sessions')) request.result.deleteObjectStore('sessions');
-    };
-    request.onsuccess = () => { request.result.close(); resolve(); };
-    request.onerror = () => reject(request.error);
-  }));
+  await page.evaluate(async () => {
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.deleteDatabase('ldw-interview-facilitator');
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+      request.onblocked = () => reject(new Error('Database deletion was blocked.'));
+    });
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open('ldw-interview-facilitator', 4);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore('legacy-session-archive');
+        request.result.createObjectStore('revision-history');
+      };
+      request.onsuccess = () => { request.result.close(); resolve(); };
+      request.onerror = () => reject(request.error);
+    });
+  });
   await page.locator('#answer').fill('must-not-activate');
   await expect(page.locator('[data-save-indicator]')).toContainText('Local save failed');
   await page.getByRole('button', { name: 'Apply update' }).click();

@@ -1,4 +1,5 @@
 import type { InterviewSession } from './domain';
+import { forkImportedSession, sessionsSemanticallyEqual } from './session-semantic';
 
 export type OpenStoredSessionResult =
   | { kind: 'opened'; session: InterviewSession }
@@ -6,7 +7,12 @@ export type OpenStoredSessionResult =
   | { kind: 'save-failure'; error: unknown }
   | { kind: 'read-failure'; error: unknown };
 
-export type ImportReplacementResult =
+export type ImportCollisionChoice = 'copy' | 'replace' | 'cancel';
+
+export type ImportSessionResult =
+  | { kind: 'imported'; session: InterviewSession }
+  | { kind: 'noop'; session: InterviewSession }
+  | { kind: 'forked'; session: InterviewSession }
   | { kind: 'replaced'; session: InterviewSession }
   | { kind: 'aborted-flush'; error: unknown }
   | { kind: 'aborted-cancelled' }
@@ -89,13 +95,15 @@ export async function openStoredSession(input: {
   }
 }
 
-export async function importSessionReplacement(input: {
+export async function importSessionWithCollisionHandling(input: {
   imported: InterviewSession;
   flush: (sessionId: string) => Promise<void>;
   load: (sessionId: string) => Promise<InterviewSession | undefined>;
-  confirmReplace: () => boolean;
-  save: (session: InterviewSession, expectedRevisionId: string | null) => Promise<InterviewSession | void>;
-}): Promise<ImportReplacementResult> {
+  chooseCollision: (existing: InterviewSession, imported: InterviewSession) => ImportCollisionChoice | Promise<ImportCollisionChoice>;
+  save: (session: InterviewSession, expectedRevisionId: string | null) => Promise<InterviewSession>;
+  replace: (session: InterviewSession, expectedRevisionId: string) => Promise<InterviewSession>;
+  fork?: (session: InterviewSession) => InterviewSession;
+}): Promise<ImportSessionResult> {
   try {
     await input.flush(input.imported.sessionId);
   } catch (error) {
@@ -109,14 +117,28 @@ export async function importSessionReplacement(input: {
     return { kind: 'aborted-read', error };
   }
 
-  if (existing && !input.confirmReplace()) return { kind: 'aborted-cancelled' };
+  if (!existing) {
+    try {
+      return { kind: 'imported', session: await input.save(input.imported, null) };
+    } catch (error) {
+      return { kind: 'aborted-save', error };
+    }
+  }
+
+  if (sessionsSemanticallyEqual(existing, input.imported)) {
+    return { kind: 'noop', session: existing };
+  }
+
+  const choice = await input.chooseCollision(existing, input.imported);
+  if (choice === 'cancel') return { kind: 'aborted-cancelled' };
 
   try {
-    const saved = await input.save(input.imported, existing?.revisionId ?? null);
-    if (saved) input.imported = saved;
+    if (choice === 'copy') {
+      const fork = (input.fork ?? forkImportedSession)(input.imported);
+      return { kind: 'forked', session: await input.save(fork, null) };
+    }
+    return { kind: 'replaced', session: await input.replace(input.imported, existing.revisionId) };
   } catch (error) {
     return { kind: 'aborted-save', error };
   }
-
-  return { kind: 'replaced', session: input.imported };
 }

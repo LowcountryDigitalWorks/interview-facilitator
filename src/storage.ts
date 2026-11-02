@@ -5,6 +5,7 @@ import { INDEXED_DB_LAYOUT_VERSION, LEGACY_TO_PINNED_MIGRATION_ID, PINNED_11_TO_
 const DB_NAME = 'ldw-interview-facilitator';
 export const SESSIONS_STORE = 'sessions';
 export const LEGACY_ARCHIVE_STORE = 'legacy-session-archive';
+export const REVISION_HISTORY_STORE = 'revision-history';
 const STORE = SESSIONS_STORE;
 const DB_VERSION = INDEXED_DB_LAYOUT_VERSION;
 const MAX_RECOVERY_STRING_BYTES = 256_000;
@@ -157,6 +158,7 @@ function openDb(): Promise<IDBDatabase> {
       const db = request.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'sessionId' });
       if (!db.objectStoreNames.contains(LEGACY_ARCHIVE_STORE)) db.createObjectStore(LEGACY_ARCHIVE_STORE);
+      if (!db.objectStoreNames.contains(REVISION_HISTORY_STORE)) db.createObjectStore(REVISION_HISTORY_STORE);
       if (((event as IDBVersionChangeEvent | undefined)?.oldVersion ?? 0) < 3 && db.objectStoreNames.contains(STORE)) {
         const cursorRequest = request.transaction?.objectStore(STORE).openCursor();
         if (cursorRequest) cursorRequest.onsuccess = () => {
@@ -189,6 +191,101 @@ export class RevisionConflictError extends Error {
   readonly name = 'RevisionConflictError';
   constructor(readonly sessionId: string, readonly expectedRevisionId: string | null, readonly actualRevisionId: string | null) {
     super(`Session ${sessionId} changed in another tab. Reload or fork before saving.`);
+  }
+}
+
+export class RevisionHistoryConflictError extends Error {
+  readonly name = 'RevisionHistoryConflictError';
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+export function revisionHistoryKey(sessionId: string, revisionId: string): string {
+  return canonicalizeJson([sessionId, revisionId]);
+}
+
+function revisionHistorySessionPrefix(sessionId: string): string {
+  const encodedSessionTuple = canonicalizeJson([sessionId]);
+  return `${encodedSessionTuple.slice(0, -1)},`;
+}
+
+export async function replaceSessionWithHistory(imported: InterviewSession, expectedRevisionId: string): Promise<InterviewSession> {
+  validateSessionForPack(imported);
+  await assertPackIdentity(imported);
+  const db = await openDb();
+  try {
+    const rawCurrent = await requestResult(db.transaction(STORE, 'readonly').objectStore(STORE).get(imported.sessionId));
+    if (rawCurrent === undefined) throw new RevisionConflictError(imported.sessionId, expectedRevisionId, null);
+    const validatedCurrent = await validateSessionRecord(rawCurrent);
+    if (validatedCurrent.revisionId !== expectedRevisionId) {
+      throw new RevisionConflictError(imported.sessionId, expectedRevisionId, validatedCurrent.revisionId);
+    }
+    const currentFingerprint = canonicalizeJson(validatedCurrent);
+    const next: InterviewSession = {
+      ...structuredClone(imported),
+      revisionId: crypto.randomUUID(),
+      parentRevisionId: expectedRevisionId,
+    };
+
+    return await new Promise<InterviewSession>((resolve, reject) => {
+      const tx = openTransaction(db, [STORE, REVISION_HISTORY_STORE], 'readwrite');
+      const currentStore = tx.objectStore(STORE);
+      const historyStore = tx.objectStore(REVISION_HISTORY_STORE);
+      let failure: unknown = null;
+      const fail = (error: unknown) => {
+        if (failure !== null) return;
+        failure = error;
+        try { tx.abort(); } catch { /* transaction is already finished */ }
+      };
+      tx.oncomplete = () => failure === null ? resolve(next) : reject(failure);
+      tx.onerror = () => {
+        if (failure === null) failure = tx.error ?? new Error('Unable to replace local session.');
+      };
+      tx.onabort = () => reject(failure ?? tx.error ?? new Error('Local replacement was aborted.'));
+
+      const currentRequest = currentStore.get(imported.sessionId);
+      currentRequest.onerror = () => fail(currentRequest.error ?? new Error('Unable to verify the current revision.'));
+      currentRequest.onsuccess = () => {
+        try {
+          const currentRaw = currentRequest.result as Record<string, unknown> | undefined;
+          const actualRevisionId = typeof currentRaw?.revisionId === 'string' ? currentRaw.revisionId : null;
+          if (actualRevisionId !== expectedRevisionId) {
+            fail(new RevisionConflictError(imported.sessionId, expectedRevisionId, actualRevisionId));
+            return;
+          }
+          if (canonicalizeJson(currentRaw) !== currentFingerprint) {
+            fail(new RevisionHistoryConflictError('The current session changed without a matching revision advance. Replacement was stopped.'));
+            return;
+          }
+
+          const historyKey = revisionHistoryKey(imported.sessionId, expectedRevisionId);
+          const historyRequest = historyStore.get(historyKey);
+          historyRequest.onerror = () => fail(historyRequest.error ?? new Error('Unable to verify revision history.'));
+          historyRequest.onsuccess = () => {
+            try {
+              if (historyRequest.result !== undefined) {
+                if (canonicalizeJson(historyRequest.result) !== currentFingerprint) {
+                  fail(new RevisionHistoryConflictError('Revision history already contains different data for this revision.'));
+                  return;
+                }
+              } else {
+                const historyPut = historyStore.put(structuredClone(validatedCurrent), historyKey);
+                historyPut.onerror = () => fail(historyPut.error ?? new Error('Unable to retain the prior revision.'));
+              }
+              const currentPut = currentStore.put(next);
+              currentPut.onerror = () => fail(currentPut.error ?? new Error('Unable to write the replacement revision.'));
+            } catch (error) {
+              fail(error);
+            }
+          };
+        } catch (error) {
+          fail(error);
+        }
+      };
+    });
+  } finally {
+    db.close();
   }
 }
 
@@ -227,15 +324,63 @@ export async function saveSession(session: InterviewSession, expectedRevisionId:
   }
 }
 
-export async function deleteSession(sessionId: string): Promise<void> {
+export async function deleteSession(sessionId: string, expectedRevisionId: string): Promise<void> {
   const db = await openDb();
   try {
     await new Promise<void>((resolve, reject) => {
-      const tx = writeTransaction(db);
-      tx.objectStore(STORE).delete(sessionId);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error ?? new Error('Unable to delete local session.'));
-      tx.onabort = () => reject(tx.error ?? new Error('Local delete was aborted.'));
+      const tx = openTransaction(db, [STORE, REVISION_HISTORY_STORE, LEGACY_ARCHIVE_STORE], 'readwrite');
+      const currentStore = tx.objectStore(STORE);
+      const historyStore = tx.objectStore(REVISION_HISTORY_STORE);
+      const legacyArchiveStore = tx.objectStore(LEGACY_ARCHIVE_STORE);
+      let failure: unknown = null;
+      const fail = (error: unknown) => {
+        if (failure !== null) return;
+        failure = error;
+        try { tx.abort(); } catch { /* transaction is already finished */ }
+      };
+      tx.oncomplete = () => failure === null ? resolve() : reject(failure);
+      tx.onerror = () => {
+        if (failure === null) failure = tx.error ?? new Error('Unable to delete local session.');
+      };
+      tx.onabort = () => reject(failure ?? tx.error ?? new Error('Local delete was aborted.'));
+
+      const currentRequest = currentStore.get(sessionId);
+      currentRequest.onerror = () => fail(currentRequest.error ?? new Error('Unable to verify the current revision before delete.'));
+      currentRequest.onsuccess = () => {
+        const current = currentRequest.result as { revisionId?: unknown } | undefined;
+        const actualRevisionId = typeof current?.revisionId === 'string' ? current.revisionId : null;
+        if (actualRevisionId !== expectedRevisionId) {
+          fail(new RevisionConflictError(sessionId, expectedRevisionId, actualRevisionId));
+          return;
+        }
+        const deleteCurrent = currentStore.delete(sessionId);
+        deleteCurrent.onerror = () => fail(deleteCurrent.error ?? new Error('Unable to delete the current session.'));
+
+        const historyPrefix = revisionHistorySessionPrefix(sessionId);
+        const historyRange = IDBKeyRange.bound(historyPrefix, `${historyPrefix}\uffff`);
+        const cursorRequest = historyStore.openCursor(historyRange);
+        cursorRequest.onerror = () => fail(cursorRequest.error ?? new Error('Unable to delete retained revision history.'));
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const deleteHistory = cursor.delete();
+          deleteHistory.onerror = () => fail(deleteHistory.error ?? new Error('Unable to delete retained revision history.'));
+          cursor.continue();
+        };
+
+        const archiveCursorRequest = legacyArchiveStore.openCursor();
+        archiveCursorRequest.onerror = () => fail(archiveCursorRequest.error ?? new Error('Unable to delete retained legacy migration archives.'));
+        archiveCursorRequest.onsuccess = () => {
+          const cursor = archiveCursorRequest.result;
+          if (!cursor) return;
+          const archived = cursor.value as { sessionId?: unknown } | undefined;
+          if (archived?.sessionId === sessionId) {
+            const deleteArchive = cursor.delete();
+            deleteArchive.onerror = () => fail(deleteArchive.error ?? new Error('Unable to delete retained legacy migration archive.'));
+          }
+          cursor.continue();
+        };
+      };
     });
   } finally {
     db.close();
