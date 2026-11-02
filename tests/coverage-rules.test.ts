@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Question } from '../src/domain';
-import type { SemanticQuestionState } from '../src/coverage-semantics';
+import type { CaptureSpec, SemanticQuestionState } from '../src/coverage-semantics';
 import {
   EFFECTIVE_EVIDENCE_EQUALS_V2,
   coverageBucketForQuestion,
@@ -19,6 +19,8 @@ function question(id: string, condition?: { questionId: string; equals: string }
     ...(condition ? { condition } : {}),
   };
 }
+
+const yesNoSpec: CaptureSpec = { kind: 'single', options: ['Yes', 'No'] };
 
 function semanticState(input: Partial<SemanticQuestionState> = {}): SemanticQuestionState {
   return {
@@ -165,6 +167,38 @@ describe('multi-level relevance propagation', () => {
     const self = [question('self', { questionId: 'self', equals: 'Yes' })];
     expect(deriveRelevanceMap(self, { self: authoritative('Yes') })).toEqual({ self: 'pending' });
   });
+
+  it('propagates pending through a descendant of a dependency cycle', () => {
+    const cycleWithTail = [
+      question('a', { questionId: 'b', equals: 'Yes' }),
+      question('b', { questionId: 'a', equals: 'Yes' }),
+      question('tail', { questionId: 'a', equals: 'Yes' }),
+    ];
+    expect(deriveRelevanceMap(cycleWithTail, {
+      a: authoritative('Yes'),
+      b: authoritative('Yes'),
+      tail: authoritative('Yes'),
+    })).toEqual({ a: 'pending', b: 'pending', tail: 'pending' });
+  });
+
+  it('propagates pending through descendants of a missing-parent objective', () => {
+    const missingParentChain = [
+      question('child', { questionId: 'missing', equals: 'Yes' }),
+      question('grandchild', { questionId: 'child', equals: 'Yes' }),
+    ];
+    expect(deriveRelevanceMap(missingParentChain, { child: authoritative('Yes') }))
+      .toEqual({ child: 'pending', grandchild: 'pending' });
+  });
+
+  it('derives the same relevance independent of question array order', () => {
+    const states = { root: authoritative('Yes'), child: authoritative('Yes') };
+    const forward = deriveRelevanceMap(chain, states);
+    const reverse = deriveRelevanceMap([...chain].reverse(), states);
+    expect(reverse).toEqual({ grandchild: 'relevant', child: 'relevant', root: 'relevant' });
+    expect(reverse.root).toBe(forward.root);
+    expect(reverse.child).toBe(forward.child);
+    expect(reverse.grandchild).toBe(forward.grandchild);
+  });
 });
 
 describe('reactivation review', () => {
@@ -181,7 +215,7 @@ describe('reactivation review', () => {
       },
       followUp: { action: 'Retained follow-up', owner: 'Interviewer' },
     });
-    const updated = reviewReactivatedState('irrelevant', 'relevant', state);
+    const updated = reviewReactivatedState('irrelevant', 'relevant', state, yesNoSpec);
     expect(updated).toEqual({
       ...state,
       needsConfirmation: true,
@@ -189,7 +223,7 @@ describe('reactivation review', () => {
     });
     expect(updated.value).toBe('Yes');
     expect(updated.source).toBe('client-statement');
-    expect(updated.followUp).toEqual(state.followUp);
+    expect(updated.followUp).toBe(state.followUp);
     expect(state.confirmation).not.toBeNull();
   });
 
@@ -197,7 +231,7 @@ describe('reactivation review', () => {
     'reclassifies reactivated %s state to unresolved review-required while retaining raw value',
     (resolution) => {
       const state = semanticState({ value: 'Yes', resolution, source: 'client-statement' });
-      expect(reviewReactivatedState('irrelevant', 'relevant', state)).toEqual({
+      expect(reviewReactivatedState('irrelevant', 'relevant', state, yesNoSpec)).toEqual({
         ...state,
         resolution: 'unresolved',
         needsConfirmation: true,
@@ -208,14 +242,41 @@ describe('reactivation review', () => {
 
   it('does not manufacture confirmation work for an empty unresolved reactivated state', () => {
     const state = semanticState();
-    const updated = reviewReactivatedState('irrelevant', 'relevant', state);
+    const updated = reviewReactivatedState('irrelevant', 'relevant', state, yesNoSpec);
     expect(updated).toEqual(state);
     expect(updated).not.toBe(state);
   });
 
+  it.each(['', '   '])('does not manufacture review work from non-meaningful retained value %j', (value) => {
+    const state = semanticState({ value });
+    const updated = reviewReactivatedState('irrelevant', 'relevant', state, { kind: 'text' });
+    expect(updated).toEqual(state);
+    expect(updated.needsConfirmation).toBe(false);
+  });
+
+  it('does not treat a source label or follow-up alone as retained evidence', () => {
+    const followUp = { action: 'Future action' };
+    const state = semanticState({ source: 'client-statement', followUp });
+    const updated = reviewReactivatedState('irrelevant', 'relevant', state, yesNoSpec);
+    expect(updated).toEqual(state);
+    expect(updated.needsConfirmation).toBe(false);
+    expect(updated.followUp).toBe(followUp);
+  });
+
+  it('requires review when an unresolved state retains a confirmation reference', () => {
+    const state = semanticState({
+      confirmation: { revisionId: 'prior', confirmedAt: '2026-11-02T20:00:00.000Z', value: 'Yes' },
+    });
+    expect(reviewReactivatedState('irrelevant', 'relevant', state, yesNoSpec)).toEqual({
+      ...state,
+      needsConfirmation: true,
+      confirmation: null,
+    });
+  });
+
   it('requires review for unresolved retained raw evidence on reactivation', () => {
     const state = semanticState({ value: 'Yes' });
-    expect(reviewReactivatedState('irrelevant', 'relevant', state)).toEqual({
+    expect(reviewReactivatedState('irrelevant', 'relevant', state, yesNoSpec)).toEqual({
       ...state,
       needsConfirmation: true,
       confirmation: null,
@@ -228,7 +289,7 @@ describe('reactivation review', () => {
     ['pending', 'relevant'],
   ] as const)('is a semantic no-op for non-reactivation transition %s -> %s', (from, to) => {
     const state = authoritative('Yes');
-    const updated = reviewReactivatedState(from, to, state);
+    const updated = reviewReactivatedState(from, to, state, yesNoSpec);
     expect(updated).toEqual(state);
     expect(updated).not.toBe(state);
   });

@@ -1,6 +1,7 @@
 import type { Question } from './domain';
 import {
   effectiveEvidence,
+  isMeaningfulCaptureValue,
   type CaptureSpec,
   type SemanticQuestionState,
 } from './coverage-semantics';
@@ -92,6 +93,7 @@ export function reviewReactivatedState(
   previousRelevance: Relevance,
   nextRelevance: Relevance,
   state: SemanticQuestionState,
+  spec: CaptureSpec,
 ): SemanticQuestionState {
   if (previousRelevance !== 'irrelevant' || nextRelevance !== 'relevant') return { ...state };
 
@@ -103,7 +105,10 @@ export function reviewReactivatedState(
     return { ...state, resolution: 'unresolved', needsConfirmation: true, confirmation: null };
   }
 
-  const hasRetainedEvidence = state.value !== null || state.confirmation !== null || state.source !== null;
+  // Follow-up metadata and source labels alone are not evidence. For unresolved states,
+  // only a meaningful retained value or a historical/current confirmation reference
+  // creates review work on reactivation.
+  const hasRetainedEvidence = isMeaningfulCaptureValue(spec, state.value) || state.confirmation !== null;
   return hasRetainedEvidence
     ? { ...state, needsConfirmation: true, confirmation: null }
     : { ...state };
