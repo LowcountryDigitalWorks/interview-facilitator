@@ -3,7 +3,7 @@ import { generalDiscoveryPack100 } from './historical-packs/general-discovery-1.
 import { assertLegacySessionMatchesPack, parseLegacySession10, type LegacySession10 } from './legacy-session';
 import { canonicalizeJson, pinPackSnapshot, sha256Hex, validateHistoricalPinned11Record, validateSessionRecord } from './pack-identity';
 
-export const INDEXED_DB_LAYOUT_VERSION = 2;
+export const INDEXED_DB_LAYOUT_VERSION = 3;
 export const CURRENT_SESSION_SCHEMA_VERSION = '1.2.0';
 export const PACK_SCHEMA_VERSION = '1.0.0';
 export const RULE_SEMANTICS_VERSION = 'condition-equals-v1';
@@ -63,6 +63,8 @@ export async function planLegacyMigration(raw: unknown): Promise<MigrationPlan> 
   const session: InterviewSession = {
     sessionSchemaVersion: '1.1.0',
     sessionId: legacy.sessionId,
+    revisionId: `legacy:${legacy.sessionId}`,
+    parentRevisionId: null,
     interviewPackId: migration.historicalPack.packId,
     interviewPackVersion: migration.historicalPack.packVersion,
     clientLabel: legacy.clientLabel,
@@ -93,7 +95,14 @@ export async function migratePinned11To12(raw: unknown): Promise<MigrationPlan> 
       canonicalization: 'ldw-json-c14n-v1' as const,
       digest: await sha256Hex(canonicalizeJson(packSnapshot)),
     };
-    const session: InterviewSession = { ...source, sessionSchemaVersion: CURRENT_SESSION_SCHEMA_VERSION, packSnapshot, packIdentity };
+    const session: InterviewSession = {
+      ...source,
+      sessionSchemaVersion: CURRENT_SESSION_SCHEMA_VERSION,
+      revisionId: `migration:${source.revisionId}:${PINNED_11_TO_12_MIGRATION_ID}`,
+      parentRevisionId: source.revisionId,
+      packSnapshot,
+      packIdentity,
+    };
     return { kind: 'ready', session: await validateSessionRecord(session), fingerprint: canonicalizeJson(raw), raw, sourceSchemaVersion: '1.1.0', migrationId: PINNED_11_TO_12_MIGRATION_ID };
   } catch (error) {
     const reason = error instanceof Error ? error.message : 'Pinned 1.1 session is invalid.';

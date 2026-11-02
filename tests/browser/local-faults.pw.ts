@@ -150,3 +150,114 @@ test('retry after save failure clears stale error UI once the current generation
   await expect(page.locator('[data-save-indicator]')).not.toContainText(/Local save failed/);
   await expect(page.locator('[data-save-alert]')).toHaveText('');
 });
+
+test('two tabs reject a stale revision after the first tab commits', async ({ page }) => {
+  const sessionId = 'synthetic-two-tab-revision-guard';
+  const r1 = await syntheticSession(sessionId, 'Two Tab Revision Proof');
+  r1.currentQuestionId = 'existing-presence';
+  await putRawSession(page, r1);
+  await page.reload();
+  const tabB = await page.context().newPage();
+  try {
+    await tabB.goto('/');
+    const cardA = page.getByRole('button', { name: /Two Tab Revision Proof/ });
+    const cardB = tabB.getByRole('button', { name: /Two Tab Revision Proof/ });
+    await expect(cardA).toBeVisible();
+    await expect(cardB).toBeVisible();
+    await cardA.click();
+    await cardB.click();
+
+    const revisionA = await page.evaluate(async (id) => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open('ldw-interview-facilitator', 3);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const row = await new Promise<{ revisionId: string }>((resolve, reject) => {
+        const request = db.transaction('sessions').objectStore('sessions').get(id);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      db.close();
+      return row.revisionId;
+    }, sessionId);
+    expect(revisionA).toBe(r1.revisionId);
+
+    await page.locator('#answer').fill('Committed by tab A');
+    await expect.poll(async () => readStoredAnswer(page, sessionId)).toBe('Committed by tab A');
+    const revisionBPage = tabB.locator('#answer');
+    await revisionBPage.fill('Stale overwrite from tab B');
+    await expect(tabB.locator('[data-save-indicator]')).toContainText('Local save failed');
+    await expect(tabB.locator('[data-save-alert]')).toContainText('Another tab saved a newer revision');
+
+    const current = await page.evaluate(async (id) => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open('ldw-interview-facilitator', 3);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      const row = await new Promise<{ revisionId: string; parentRevisionId: string | null; answers: Record<string, { value: string | null }> }>((resolve, reject) => {
+        const request = db.transaction('sessions').objectStore('sessions').get(id);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      db.close();
+      return row;
+    }, sessionId);
+    expect(current.revisionId).not.toBe(revisionA);
+    expect(current.parentRevisionId).toBe(revisionA);
+    expect(Object.values(current.answers).some((answer) => answer.value === 'Committed by tab A')).toBe(true);
+    expect(Object.values(current.answers).some((answer) => answer.value === 'Stale overwrite from tab B')).toBe(false);
+  } finally {
+    await tabB.close();
+  }
+});
+
+test('database layout upgrade assigns revision metadata to existing current sessions', async ({ page }) => {
+  const legacy = await syntheticSession('synthetic-revision-layout-upgrade', 'Revision Layout Upgrade');
+  delete (legacy as Partial<InterviewSession>).revisionId;
+  delete (legacy as Partial<InterviewSession>).parentRevisionId;
+  await page.evaluate(async ({ row }) => {
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.deleteDatabase('ldw-interview-facilitator');
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+      request.onblocked = () => reject(new Error('Database deletion was blocked.'));
+    });
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('ldw-interview-facilitator', 2);
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore('sessions', { keyPath: 'sessionId' });
+        request.result.createObjectStore('legacy-session-archive');
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction('sessions', 'readwrite');
+      transaction.objectStore('sessions').put(row);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+    db.close();
+  }, { row: legacy });
+
+  await page.reload();
+  await expect(page.getByRole('button', { name: /Revision Layout Upgrade/ })).toBeVisible();
+  const migrated = await page.evaluate(async (id) => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('ldw-interview-facilitator', 3);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const row = await new Promise<{ revisionId: string; parentRevisionId: string | null }>((resolve, reject) => {
+      const request = db.transaction('sessions').objectStore('sessions').get(id);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return row;
+  }, legacy.sessionId);
+  expect(migrated.revisionId).toMatch(/^[-\w:]+$/);
+  expect(migrated.parentRevisionId).toBeNull();
+});

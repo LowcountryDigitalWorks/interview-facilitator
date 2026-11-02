@@ -94,7 +94,7 @@ export async function importSessionReplacement(input: {
   flush: (sessionId: string) => Promise<void>;
   load: (sessionId: string) => Promise<InterviewSession | undefined>;
   confirmReplace: () => boolean;
-  save: (session: InterviewSession) => Promise<void>;
+  save: (session: InterviewSession, expectedRevisionId: string | null) => Promise<InterviewSession | void>;
 }): Promise<ImportReplacementResult> {
   try {
     await input.flush(input.imported.sessionId);
@@ -112,7 +112,8 @@ export async function importSessionReplacement(input: {
   if (existing && !input.confirmReplace()) return { kind: 'aborted-cancelled' };
 
   try {
-    await input.save(input.imported);
+    const saved = await input.save(input.imported, existing?.revisionId ?? null);
+    if (saved) input.imported = saved;
   } catch (error) {
     return { kind: 'aborted-save', error };
   }

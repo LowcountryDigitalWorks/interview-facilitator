@@ -153,10 +153,24 @@ export async function partitionStoredSessionRows(rows: unknown[]): Promise<Store
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: 'sessionId' });
       if (!db.objectStoreNames.contains(LEGACY_ARCHIVE_STORE)) db.createObjectStore(LEGACY_ARCHIVE_STORE);
+      if (((event as IDBVersionChangeEvent | undefined)?.oldVersion ?? 0) < 3 && db.objectStoreNames.contains(STORE)) {
+        const cursorRequest = request.transaction?.objectStore(STORE).openCursor();
+        if (cursorRequest) cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const row = cursor.value as Record<string, unknown>;
+          if (row.sessionSchemaVersion === '1.2.0' && typeof row.sessionId === 'string') {
+            if (typeof row.revisionId !== 'string' || !row.revisionId.trim()) row.revisionId = crypto.randomUUID();
+            if (row.parentRevisionId === undefined) row.parentRevisionId = null;
+            cursor.update(row);
+          }
+          cursor.continue();
+        };
+      }
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error('Unable to open local storage.'));
@@ -171,18 +185,43 @@ function writeTransaction(db: IDBDatabase): IDBTransaction {
   }
 }
 
-export async function saveSession(session: InterviewSession): Promise<void> {
+export class RevisionConflictError extends Error {
+  readonly name = 'RevisionConflictError';
+  constructor(readonly sessionId: string, readonly expectedRevisionId: string | null, readonly actualRevisionId: string | null) {
+    super(`Session ${sessionId} changed in another tab. Reload or fork before saving.`);
+  }
+}
+
+export async function saveSession(session: InterviewSession, expectedRevisionId: string | null): Promise<InterviewSession> {
   validateSessionForPack(session);
   await assertPackIdentity(session);
   const db = await openDb();
   try {
+    const next: InterviewSession = {
+      ...structuredClone(session),
+      revisionId: crypto.randomUUID(),
+      parentRevisionId: expectedRevisionId,
+    };
     await new Promise<void>((resolve, reject) => {
       const tx = writeTransaction(db);
-      tx.objectStore(STORE).put(session);
-      tx.oncomplete = () => resolve();
+      const store = tx.objectStore(STORE);
+      let conflict: RevisionConflictError | null = null;
+      const currentRequest = store.get(session.sessionId);
+      currentRequest.onsuccess = () => {
+        const current = currentRequest.result as { revisionId?: unknown } | undefined;
+        const actualRevisionId = typeof current?.revisionId === 'string' ? current.revisionId : null;
+        if (actualRevisionId !== expectedRevisionId) {
+          conflict = new RevisionConflictError(session.sessionId, expectedRevisionId, actualRevisionId);
+          return;
+        }
+        store.put(next);
+      };
+      currentRequest.onerror = () => { try { tx.abort(); } catch { /* transaction is already finished */ } };
+      tx.oncomplete = () => conflict ? reject(conflict) : resolve();
       tx.onerror = () => reject(tx.error ?? new Error('Unable to save session.'));
       tx.onabort = () => reject(tx.error ?? new Error('Local save was aborted.'));
     });
+    return next;
   } finally {
     db.close();
   }

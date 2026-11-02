@@ -58,6 +58,8 @@ export interface QuestionState {
 export interface InterviewSession {
   sessionSchemaVersion: '1.1.0' | '1.2.0';
   sessionId: string;
+  revisionId: string;
+  parentRevisionId: string | null;
   interviewPackId: string;
   interviewPackVersion: string;
   clientLabel: string;
@@ -97,6 +99,8 @@ export function assemblePinnedSession(
   return {
     sessionSchemaVersion: '1.2.0',
     sessionId: crypto.randomUUID(),
+    revisionId: crypto.randomUUID(),
+    parentRevisionId: null,
     interviewPackId: snapshot.packId,
     interviewPackVersion: snapshot.packVersion,
     clientLabel: input.clientLabel.trim() || 'Untitled interview',
@@ -263,6 +267,8 @@ function validatePinnedSessionShape(value: unknown, schemaVersion: '1.1.0' | '1.
   if (record.sessionSchemaVersion === '1.0.0') throw new Error('Unsupported legacy session schema 1.0.0. This record has no pinned pack snapshot and was not migrated or deleted.');
   if (record.sessionSchemaVersion !== schemaVersion) throw new Error(`Session schema must be ${schemaVersion}.`);
   if (schemaVersion === '1.2.0' && (record.packSnapshot as Record<string, unknown> | null)?.ruleSemanticsVersion !== 'condition-equals-v1') throw new Error('Unsupported rule semantics version.');
+  if (record.revisionId !== undefined && (typeof record.revisionId !== 'string' || !record.revisionId.trim())) throw new Error('Session revision ID is invalid.');
+  if (record.parentRevisionId !== undefined && record.parentRevisionId !== null && (typeof record.parentRevisionId !== 'string' || !record.parentRevisionId.trim())) throw new Error('Session parent revision ID is invalid.');
   if (!record.answers || typeof record.answers !== 'object' || Array.isArray(record.answers)) throw new Error('Session answers are missing or invalid.');
   if (!Array.isArray(record.knownFacts)) throw new Error('Session known facts are invalid.');
 
@@ -274,6 +280,8 @@ function validatePinnedSessionShape(value: unknown, schemaVersion: '1.1.0' | '1.
   return {
     sessionSchemaVersion: schemaVersion,
     sessionId: requireString(record, 'sessionId'),
+    revisionId: typeof record.revisionId === 'string' && record.revisionId.trim() ? record.revisionId : `legacy:${requireString(record, 'sessionId')}`,
+    parentRevisionId: record.parentRevisionId === null || record.parentRevisionId === undefined ? null : requireString(record, 'parentRevisionId'),
     interviewPackId: requireString(record, 'interviewPackId'),
     interviewPackVersion: requireString(record, 'interviewPackVersion'),
     clientLabel: requireString(record, 'clientLabel'),

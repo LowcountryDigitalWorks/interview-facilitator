@@ -5,6 +5,7 @@ import { generalDiscoveryPack } from '../src/pack';
 import {
   INDEXED_DB_LAYOUT_VERSION,
   LEGACY_TO_PINNED_MIGRATION_ID,
+  PINNED_11_TO_12_MIGRATION_ID,
   RULE_SEMANTICS_VERSION,
   legacyArchiveKey,
   migratePinned11To12,
@@ -204,7 +205,7 @@ describe('legacy 1.0 to pinned 1.1 migration', () => {
   });
 
   it('keeps compatibility versions independent and uses the archived pack identity', () => {
-    expect(INDEXED_DB_LAYOUT_VERSION).toBe(2);
+    expect(INDEXED_DB_LAYOUT_VERSION).toBe(3);
     expect(migrationRegistry).toHaveLength(1);
     expect(migrationRegistry[0]).toMatchObject({
       sourceSessionSchemaVersion: '1.0.0',
@@ -285,7 +286,7 @@ describe('legacy 1.0 to pinned 1.1 migration', () => {
     const source = legacyRecord();
     seedLegacy(memory, source);
     const listed = await listSessions();
-    expect(memory.version()).toBe(2);
+    expect(memory.version()).toBe(3);
     expect(memory.stores.has(LEGACY_ARCHIVE_STORE)).toBe(true);
     expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size).toBe(0);
     expect(listed.sessions).toHaveLength(0);
@@ -419,10 +420,12 @@ describe('legacy 1.0 to pinned 1.1 migration', () => {
     expect(first.kind).toBe('ready');
     expect(second.kind).toBe('ready');
     if (first.kind !== 'ready' || second.kind !== 'ready') return;
-    const { sessionSchemaVersion: _firstVersion, packSnapshot: firstSnapshot, packIdentity: _firstIdentity, ...firstState } = first.session;
-    const { sessionSchemaVersion: _secondVersion, packSnapshot: secondSnapshot, packIdentity: _secondIdentity, ...secondState } = second.session;
-    expect(firstState).toEqual(source && (({ sessionSchemaVersion: _version, packSnapshot: _snapshot, packIdentity: _identity, ...state }) => state)(source));
+    const { sessionSchemaVersion: _firstVersion, packSnapshot: firstSnapshot, packIdentity: _firstIdentity, revisionId: _firstRevision, parentRevisionId: _firstParent, ...firstState } = first.session;
+    const { sessionSchemaVersion: _secondVersion, packSnapshot: secondSnapshot, packIdentity: _secondIdentity, revisionId: _secondRevision, parentRevisionId: _secondParent, ...secondState } = second.session;
+    expect(firstState).toEqual(source && (({ sessionSchemaVersion: _version, packSnapshot: _snapshot, packIdentity: _identity, revisionId: _revision, parentRevisionId: _parent, ...state }) => state)(source));
     expect(secondState).toEqual(firstState);
+    expect(first.session.parentRevisionId).toBe(source.revisionId);
+    expect(first.session.revisionId).toBe(`migration:${source.revisionId}:${PINNED_11_TO_12_MIGRATION_ID}`);
     expect(firstSnapshot.ruleSemanticsVersion).toBe(RULE_SEMANTICS_VERSION);
     expect(canonicalizeJson(first.session)).toBe(canonicalizeJson(second.session));
   });

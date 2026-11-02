@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { touch } from '../src/domain';
 import { createPinnedSession } from '../src/pack-identity';
 import { generalDiscoveryPack as pack } from '../src/pack';
-import { saveSession } from '../src/storage';
+import { RevisionConflictError, saveSession } from '../src/storage';
 
 function installMemoryDatabase(): Map<string, unknown> {
   const rows = new Map<string, unknown>();
@@ -20,6 +20,14 @@ function installMemoryDatabase(): Map<string, unknown> {
               error: null,
               objectStore() {
                 return {
+                  get(sessionId: string) {
+                    const request = { result: rows.get(sessionId), onsuccess: null as null | (() => void), onerror: null as null | (() => void) };
+                    queueMicrotask(() => {
+                      request.onsuccess?.();
+                      queueMicrotask(() => tx.oncomplete?.());
+                    });
+                    return request;
+                  },
                   put(value: { sessionId: string }) {
                     rows.set(value.sessionId, structuredClone(value));
                     queueMicrotask(() => tx.oncomplete?.());
@@ -51,16 +59,17 @@ describe('saveSession pack identity gate', () => {
     const rows = installMemoryDatabase();
     const session = await createPinnedSession(pack, { clientLabel: 'Synthetic Client' }, new Date('2026-10-31T12:00:00.000Z'));
     const digest = session.packIdentity.digest;
-    await saveSession(session);
+    const first = await saveSession(session, null);
 
     const edited = touch(structuredClone(session), new Date('2026-10-31T12:05:00.000Z'));
     edited.answers['primary-goal']!.value = 'A saved answer.';
     edited.answers['primary-goal']!.note = 'A saved note.';
-    await saveSession(edited);
+    const saved = await saveSession(edited, first.revisionId);
 
     expect(edited.packIdentity).toEqual(session.packIdentity);
     expect(edited.packSnapshot).toEqual(session.packSnapshot);
     expect(edited.packIdentity.digest).toBe(digest);
+    expect(saved).toMatchObject({ revisionId: expect.any(String), parentRevisionId: first.revisionId });
     expect(rows.get(session.sessionId)).toMatchObject({
       updatedAt: '2026-10-31T12:05:00.000Z',
       answers: { 'primary-goal': { value: 'A saved answer.', note: 'A saved note.' } },
@@ -71,11 +80,11 @@ describe('saveSession pack identity gate', () => {
   it('rejects a tampered snapshot before replacing the stored row', async () => {
     const rows = installMemoryDatabase();
     const session = await createPinnedSession(pack, { clientLabel: 'Synthetic Client' }, new Date('2026-10-31T12:00:00.000Z'));
-    await saveSession(session);
+    await saveSession(session, null);
     const tampered = structuredClone(session);
     tampered.packSnapshot.questions[0]!.prompt = 'Drifted prompt';
 
-    await expect(saveSession(tampered)).rejects.toThrow(/digest/i);
+    await expect(saveSession(tampered, session.revisionId)).rejects.toThrow(/digest/i);
     const stored = rows.get(session.sessionId) as { packSnapshot: { questions: Array<{ prompt: string }> } };
     expect(stored.packSnapshot.questions[0]?.prompt).toBe(session.packSnapshot.questions[0]?.prompt);
   });
@@ -83,11 +92,25 @@ describe('saveSession pack identity gate', () => {
   it('rejects a tampered digest before replacing the stored row', async () => {
     const rows = installMemoryDatabase();
     const session = await createPinnedSession(pack, { clientLabel: 'Synthetic Client' }, new Date('2026-10-31T12:00:00.000Z'));
-    await saveSession(session);
+    const saved = await saveSession(session, null);
     const tampered = structuredClone(session);
     tampered.packIdentity.digest = 'c'.repeat(64);
 
-    await expect(saveSession(tampered)).rejects.toThrow(/digest/i);
+    await expect(saveSession(tampered, saved.revisionId)).rejects.toThrow(/digest/i);
     expect((rows.get(session.sessionId) as { packIdentity: { digest: string } }).packIdentity.digest).toBe(session.packIdentity.digest);
+  });
+
+  it('rejects a stale expected revision without mutating the current row', async () => {
+    const rows = installMemoryDatabase();
+    const initial = await createPinnedSession(pack, { clientLabel: 'Synthetic Client' }, new Date('2026-10-31T12:00:00.000Z'));
+    const r1 = await saveSession(initial, null);
+    const a = touch(structuredClone(r1), new Date('2026-10-31T12:01:00.000Z'));
+    a.runningNotes = 'Tab A';
+    const r2 = await saveSession(a, r1.revisionId);
+    const b = touch(structuredClone(r1), new Date('2026-10-31T12:02:00.000Z'));
+    b.runningNotes = 'Stale tab B';
+
+    await expect(saveSession(b, r1.revisionId)).rejects.toBeInstanceOf(RevisionConflictError);
+    expect(rows.get(initial.sessionId)).toMatchObject({ revisionId: r2.revisionId, runningNotes: 'Tab A' });
   });
 });

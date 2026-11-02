@@ -3,7 +3,7 @@ import type { AnswerStatus, InterviewSession, Question } from './domain';
 import { coverage, nextVisibleQuestion, relevantKnownFacts, sessionPack, visibleQuestions } from './domain';
 import { createPinnedSession, validateSessionRecord } from './pack-identity';
 import { generalDiscoveryPack as pack } from './pack';
-import { deleteSession, exportRecoveryBackup, listSessions, loadSession, migrateLegacySession, requestPersistentStorage, saveSession } from './storage';
+import { deleteSession, exportRecoveryBackup, listSessions, loadSession, migrateLegacySession, requestPersistentStorage, RevisionConflictError, saveSession } from './storage';
 import { serializeSession, sessionToMarkdown } from './markdown';
 import { formatConnectivityLabel, formatSaveLabel, type PersistenceState, type SaveState } from './indicators';
 import { SessionAutosaveCoordinator } from './autosave';
@@ -21,6 +21,7 @@ type View = 'home' | 'new' | 'interview' | 'review';
 let view: View = 'home';
 let session: InterviewSession | null = null;
 let saveState: SaveState = 'saved';
+let saveError: unknown = null;
 let persistenceState: PersistenceState = 'unknown';
 let offlineReady = false;
 let presentationMode: PresentationMode = 'private';
@@ -80,17 +81,22 @@ function scheduleSave(): void {
   autosave.schedule(session, {
     onScheduled: (sessionId) => {
       if (session?.sessionId !== sessionId) return;
+      saveError = null;
       saveState = 'saving';
     },
     onSaved: (sessionId, savedSession) => {
       if (session?.sessionId !== sessionId) return;
       session.updatedAt = savedSession.updatedAt;
+      session.revisionId = savedSession.revisionId;
+      session.parentRevisionId = savedSession.parentRevisionId;
+      saveError = null;
       saveState = 'saved';
       updateStateIndicators();
     },
     onError: (sessionId, error) => {
       console.error('Local save failed.', error);
       if (session?.sessionId !== sessionId) return;
+      saveError = error;
       saveState = 'error';
       updateStateIndicators();
     }
@@ -99,6 +105,12 @@ function scheduleSave(): void {
 
 function saveLabel(): string {
   return formatSaveLabel(saveState, persistenceState);
+}
+
+function saveAlertMessage(): string {
+  if (saveState !== 'error') return '';
+  if (saveError instanceof RevisionConflictError) return 'Another tab saved a newer revision. Reload to use it; export a backup before leaving to preserve this tab’s unsaved edits.';
+  return 'Local save failed. Export a backup or retry before leaving this interview.';
 }
 
 function connectivityLabel(): string {
@@ -111,7 +123,7 @@ function updateStateIndicators(): void {
     element.classList.toggle('danger', saveState === 'error');
   });
   app.querySelectorAll<HTMLElement>('[data-save-alert]').forEach((element) => {
-    element.textContent = saveState === 'error' ? 'Local save failed. Export a backup or retry before leaving this interview.' : '';
+    element.textContent = saveAlertMessage();
   });
   app.querySelectorAll<HTMLElement>('[data-connectivity-indicator]').forEach((element) => {
     element.textContent = connectivityLabel();
@@ -264,9 +276,9 @@ async function renderHome(): Promise<void> {
           flush: (sessionId) => autosave.flushAndWait(sessionId),
           load: loadSession,
           confirmReplace: () => confirm('A local interview with this session ID already exists. Replace it with the imported file? Cancel keeps the local interview unchanged.'),
-          save: async (value) => {
+          save: async (value, expectedRevisionId) => {
             await refreshPersistenceState();
-            await saveSession(value);
+            return saveSession(value, expectedRevisionId);
           },
         }),
       });
@@ -357,12 +369,15 @@ async function renderHome(): Promise<void> {
 
 async function showOutgoingSaveFailure(error: unknown): Promise<void> {
   console.error('Local save failed.', error);
+  saveError = error;
   if (!session) return;
   saveState = 'error';
   homeNotice = {
     kind: 'save',
     sessionId: session.sessionId,
-    message: 'The latest edits could not be saved on this device. Switching was stopped so this interview stays available to return to or export. No other local interview was changed.',
+    message: error instanceof RevisionConflictError
+      ? 'Another tab saved a newer revision. Reload to use it; export this active backup before leaving to preserve this tab’s unsaved edits. Switching was stopped.'
+      : 'The latest edits could not be saved on this device. Switching was stopped so this interview stays available to return to or export. No other local interview was changed.',
   };
   view = 'home';
   await renderHome();
@@ -408,8 +423,7 @@ function renderNew(): void {
           flush: (id) => autosave.flushAndWait(id),
           proceed: async () => {
             await refreshPersistenceState();
-            await saveSession(next);
-            return next;
+            return saveSession(next, null);
           },
         });
         if (outcome.kind === 'save-failure') {
@@ -454,7 +468,7 @@ function renderInterview(): void {
     <header class="app-header cockpit-header">
       <div><strong>${escapeHtml(session.clientLabel)}</strong><span>${escapeHtml(sessionPack(session).title)}</span></div>
       <div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator aria-live="off">${escapeHtml(saveLabel())}</span>${presenting ? '<span class="state-pill">Presentation view</span><button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : `<span class="state-pill header-connectivity" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span><button class="secondary small header-presentation" data-action="enter-presentation">Presentation view</button><button class="icon-button header-export" data-action="export" aria-label="Export JSON backup">⇩</button>`}${updateSlotMarkup()}</div>
-      <span class="sr-only" role="alert" data-save-alert>${saveState === 'error' ? 'Local save failed. Export a backup or retry before leaving this interview.' : ''}</span>
+      <span class="sr-only" role="alert" data-save-alert>${escapeHtml(saveAlertMessage())}</span>
       <span class="sr-only" role="status" aria-live="polite" data-connectivity-status></span>
     </header>
     <main id="main" class="cockpit" ${presenting ? 'style="display:block"' : ''}>
@@ -672,7 +686,7 @@ function renderReview(): void {
   const questions = visibleQuestions(sessionPack(session), session);
   const presenting = isPresentationMode(presentationMode);
   app.innerHTML = `
-    <header class="app-header"><div><strong>${escapeHtml(session.clientLabel)}</strong><span>${presenting ? 'Presentation read-back' : 'Private review'}</span></div><div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator>${escapeHtml(saveLabel())}</span>${presenting ? '<button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : '<button class="secondary small" data-action="enter-presentation">Presentation view</button>'}${updateSlotMarkup()}</div><span class="sr-only" role="alert" data-save-alert>${saveState === 'error' ? 'Local save failed. Export a backup or retry before leaving this interview.' : ''}</span></header>
+    <header class="app-header"><div><strong>${escapeHtml(session.clientLabel)}</strong><span>${presenting ? 'Presentation read-back' : 'Private review'}</span></div><div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator>${escapeHtml(saveLabel())}</span>${presenting ? '<button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : '<button class="secondary small" data-action="enter-presentation">Presentation view</button>'}${updateSlotMarkup()}</div><span class="sr-only" role="alert" data-save-alert>${escapeHtml(saveAlertMessage())}</span></header>
     <main id="main" class="review-shell">
       <button class="text-button" data-action="return">← Return to interview</button>
       <p class="eyebrow">Read-back</p><h1 id="review-title" tabindex="-1">Read back what matters before ending the conversation.</h1>
