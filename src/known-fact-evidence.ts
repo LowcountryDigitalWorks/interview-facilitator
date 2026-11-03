@@ -54,7 +54,7 @@ function optionalText(value: unknown, name: string): string | undefined {
 
 function timestamp(value: unknown, name: string): string {
   const raw = text(value, name);
-  if (!/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$/.test(raw) ||
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(raw) ||
       !Number.isFinite(Date.parse(raw)) || new Date(raw).toISOString() !== raw) {
     throw new Error(`${name} must be a valid canonical UTC timestamp.`);
   }
