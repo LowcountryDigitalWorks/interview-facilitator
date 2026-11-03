@@ -1,6 +1,7 @@
 import { validateSessionForPack, type InterviewSession } from './domain';
 import { canonicalizeJson, assertPackIdentity, validateSessionRecord } from './pack-identity';
 import { INDEXED_DB_LAYOUT_VERSION, LEGACY_TO_PINNED_MIGRATION_ID, PINNED_11_TO_12_MIGRATION_ID, legacyArchiveKey, planCurrentMigration } from './session-migration';
+import { PINNED_12_TO_13_MIGRATION_ID, planSemanticMigration, type SemanticInterviewSession } from './semantic-session';
 
 const DB_NAME = 'ldw-interview-facilitator';
 export const SESSIONS_STORE = 'sessions';
@@ -535,6 +536,93 @@ function commitLegacyMigration(db: IDBDatabase, sessionId: string, session: Inte
       }
     };
   });
+}
+
+export type SemanticMigrationResult =
+  | { kind: 'migrated'; session: SemanticInterviewSession }
+  | { kind: 'already-migrated'; session: SemanticInterviewSession }
+  | { kind: 'missing' | 'stale' | 'aborted' }
+  | { kind: 'unsupported' | 'invalid' | 'conflict'; reason: string };
+
+/**
+ * 33C1 migration entry point. It is intentionally not wired into list/open/autosave yet;
+ * 33C2 owns activation after the 1.3 writer/projection path is accepted.
+ */
+export async function migrateSession12To13(sessionId: string): Promise<SemanticMigrationResult> {
+  const db = await openDb();
+  try {
+    const raw = await requestResult(db.transaction(STORE, 'readonly').objectStore(STORE).get(sessionId));
+    if (raw === undefined) return { kind: 'missing' };
+    const plan = await planSemanticMigration(raw);
+    if (plan.kind === 'unsupported' || plan.kind === 'invalid') return plan;
+    if (plan.kind === 'current') return await confirmSemanticAlreadyMigrated(db, sessionId, plan.session);
+    return await new Promise<SemanticMigrationResult>((resolve) => {
+      const tx = openTransaction(db, [STORE, LEGACY_ARCHIVE_STORE], 'readwrite');
+      let failure: SemanticMigrationResult | null = null;
+      const fail = (result: SemanticMigrationResult) => {
+        if (failure !== null) return;
+        failure = result;
+        try { tx.abort(); } catch { /* already finished */ }
+      };
+      tx.oncomplete = () => resolve({ kind: 'migrated', session: plan.session });
+      tx.onerror = () => { if (failure === null) failure = { kind: 'aborted' }; };
+      tx.onabort = () => resolve(failure ?? { kind: 'aborted' });
+      const currentRequest = tx.objectStore(STORE).get(sessionId);
+      currentRequest.onerror = () => fail({ kind: 'aborted' });
+      currentRequest.onsuccess = () => {
+        try {
+          if (canonicalizeJson(currentRequest.result) !== plan.fingerprint) {
+            fail({ kind: 'stale' });
+            return;
+          }
+          const key = legacyArchiveKey(sessionId, plan.sourceSchemaVersion, PINNED_12_TO_13_MIGRATION_ID);
+          const archiveStore = tx.objectStore(LEGACY_ARCHIVE_STORE);
+          const archiveRequest = archiveStore.get(key);
+          archiveRequest.onerror = () => fail({ kind: 'aborted' });
+          archiveRequest.onsuccess = () => {
+            try {
+              if (archiveRequest.result !== undefined && canonicalizeJson(archiveRequest.result) !== plan.fingerprint) {
+                fail({ kind: 'conflict', reason: 'An existing archive contains different pinned 1.2 data.' });
+                return;
+              }
+              if (archiveRequest.result === undefined) {
+                const archivePut = archiveStore.put(structuredClone(plan.raw), key);
+                archivePut.onerror = () => fail({ kind: 'aborted' });
+              }
+              const put = tx.objectStore(STORE).put(plan.session);
+              put.onerror = () => fail({ kind: 'aborted' });
+            } catch {
+              fail({ kind: 'aborted' });
+            }
+          };
+        } catch {
+          fail({ kind: 'aborted' });
+        }
+      };
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function confirmSemanticAlreadyMigrated(
+  db: IDBDatabase,
+  sessionId: string,
+  current: SemanticInterviewSession,
+): Promise<SemanticMigrationResult> {
+  const key = legacyArchiveKey(sessionId, '1.2.0', PINNED_12_TO_13_MIGRATION_ID);
+  const archived = await requestResult(db.transaction(LEGACY_ARCHIVE_STORE, 'readonly').objectStore(LEGACY_ARCHIVE_STORE).get(key));
+  if (archived === undefined) {
+    return { kind: 'conflict', reason: 'Current semantic session has no retained pinned 1.2 migration source.' };
+  }
+  const replay = await planSemanticMigration(archived);
+  if (replay.kind !== 'ready') {
+    return { kind: 'conflict', reason: 'Retained pinned 1.2 migration source cannot be replayed.' };
+  }
+  if (canonicalizeJson(replay.session) !== canonicalizeJson(current)) {
+    return { kind: 'conflict', reason: 'Retained pinned 1.2 migration source does not match the current semantic session.' };
+  }
+  return { kind: 'already-migrated', session: current };
 }
 
 export async function requestPersistentStorage(): Promise<boolean | null> {
