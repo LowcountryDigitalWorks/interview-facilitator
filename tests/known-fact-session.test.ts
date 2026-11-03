@@ -124,6 +124,31 @@ describe('#34A2A explicit 1.4 known-fact envelope', () => {
     await expect(validateKnownFactSession14Record(forged)).rejects.toThrow(/require confirmation/i);
   });
 
+  it('migrates already-skipped 1.3 known-fact answers without reviving cleared confirmation', async () => {
+    const original = await semantic13();
+    const question = original.packSnapshot.questions.find((item) => item.id === 'existing-presence')!;
+    for (const [status, disposition] of [['SKIP', 'deferred'], ['N_A', 'not-applicable']] as const) {
+      const source = structuredClone(original);
+      source.answers['existing-presence'] = {
+        ...source.answers['existing-presence']!,
+        value: SOURCE.value, source: 'accepted-known-fact',
+        resolution: 'captured', needsConfirmation: true,
+      };
+      source.answers['existing-presence'] = applyStatusControl(question, source.answers['existing-presence']!, status);
+      const fingerprint = canonicalizeJson(source);
+      expect(source.answers['existing-presence']).toMatchObject({
+        source: 'accepted-known-fact', resolution: disposition, needsConfirmation: false,
+      });
+      const upgraded = await migrateSemantic13ToKnownFact14(source);
+      expect(canonicalizeJson(source)).toBe(fingerprint);
+      expect(upgraded.answers['existing-presence']).toMatchObject({
+        source: 'accepted-known-fact', resolution: disposition, needsConfirmation: false,
+      });
+      expect(upgraded.knownFactAnswerLinks['existing-presence']).toEqual({ kind: 'legacy-unverified' });
+      await expect(validateKnownFactSession14Record(upgraded)).resolves.toBeDefined();
+    }
+  });
+
   it('allows Skip and N/A to preserve a legacy source tag without active confirmation truth', async () => {
     const old = await semantic13();
     old.answers['existing-presence'] = {
