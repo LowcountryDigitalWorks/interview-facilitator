@@ -168,7 +168,7 @@ export async function migrateSemantic13ToKnownFact14(raw: unknown): Promise<Know
     // A 1.3 source tag has no durable acceptance ID. Preserve its value and
     // note but never fabricate acceptance history or authoritative coverage.
     knownFactAnswerLinks[questionId] = { kind: 'legacy-unverified' };
-    answer.needsConfirmation = true;
+    if (answer.resolution === 'captured') answer.needsConfirmation = true;
   }
   const converted: KnownFactSession14 = {
     ...structuredClone(source),
