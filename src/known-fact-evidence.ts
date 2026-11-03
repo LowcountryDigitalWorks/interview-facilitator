@@ -226,6 +226,7 @@ export function projectAcceptedKnownFact(
     answer: {
       ...existingAnswer,
       ...changed,
+      value: fact.value,
       resolution: 'captured',
       source: 'accepted-known-fact',
       needsConfirmation: true,
