@@ -224,6 +224,7 @@ export function projectAcceptedKnownFact(
   const changed = updateValueWithConfirmationInvalidation(existingAnswer, fact.value);
   return {
     answer: {
+      ...existingAnswer,
       ...changed,
       resolution: 'captured',
       source: 'accepted-known-fact',
