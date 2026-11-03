@@ -107,6 +107,20 @@ describe('#34A2A explicit 1.4 known-fact envelope', () => {
     expect(canonicalizeJson(source)).toBe(before);
   });
 
+  it('distinguishes future nested rule and pack schemas from invalid data', async () => {
+    const ruleFuture = structuredClone(await semantic13()) as unknown as {
+      packSnapshot: { ruleSemanticsVersion: string };
+    };
+    ruleFuture.packSnapshot.ruleSemanticsVersion = 'future-rule-semantics';
+    expect(await planKnownFactMigration(ruleFuture)).toMatchObject({ kind: 'unsupported' });
+
+    const packFuture = structuredClone(await migrateSemantic13ToKnownFact14(await semantic13())) as unknown as {
+      packSnapshot: { packSchemaVersion: string };
+    };
+    packFuture.packSnapshot.packSchemaVersion = '9.0.0';
+    expect(await planKnownFactMigration(packFuture)).toMatchObject({ kind: 'unsupported' });
+  });
+
   it('fails closed on invalid 1.3 sources and preserves all source bytes in memory', async () => {
     const source = await semantic13();
     source.answers['existing-presence']!.resolution = 'captured';
