@@ -111,6 +111,7 @@ export function validateKnownFactLedger(input: unknown): KnownFactLedger {
       const previous = byId.get(fact.supersedesFactId);
       if (!previous || superseded.has(previous.id)) throw new Error('Invalid known fact correction lineage.');
       if (fact.questionId !== previous.questionId) throw new Error('Correction cannot silently change question attribution.');
+      if (fact.label !== previous.label) throw new Error('Correction cannot silently change fact label.');
       superseded.add(previous.id);
     }
     facts.push(fact);
@@ -234,7 +235,7 @@ export function projectAcceptedKnownFact(
       value: fact.value,
       resolution: 'captured',
       source: 'accepted-known-fact',
-      needsConfirmation: true,
+      needsConfirmation: changed.needsConfirmation,
       confirmation: null,
     },
     factId: fact.id,
