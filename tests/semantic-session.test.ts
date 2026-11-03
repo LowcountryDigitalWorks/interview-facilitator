@@ -3,6 +3,7 @@ import { canonicalizeJson, createPinnedSession, sha256Hex } from '../src/pack-id
 import { generalDiscoveryPack } from '../src/pack';
 import { EFFECTIVE_EVIDENCE_EQUALS_V2 } from '../src/coverage-rules';
 import {
+  createSemanticSession,
   migratePinned12To13,
   PINNED_12_TO_13_MIGRATION_ID,
   planSemanticMigration,
@@ -232,4 +233,45 @@ describe('semantic session 1.3 migration', () => {
     session.packIdentity.digest = '0'.repeat(64);
     await expect(validateSemanticSessionRecord(session)).rejects.toThrow(/identity digest/i);
   });
-});
+
+  it('creates an isolated canonical 1.3 session with v2 identity and exact answer keys', async () => {
+    const inputPack = structuredClone(generalDiscoveryPack);
+    const firstPrompt = inputPack.questions[0]!.prompt;
+    const created = await createSemanticSession(
+      inputPack,
+      { clientLabel: 'Synthetic fresh session', interviewerLabel: 'Synthetic interviewer', interviewMode: 'Conversation' },
+      new Date('2026-11-03T05:00:00.000Z'),
+    );
+
+    expect(created.sessionSchemaVersion).toBe(SEMANTIC_SESSION_SCHEMA_VERSION);
+    expect(created.packSnapshot.ruleSemanticsVersion).toBe(EFFECTIVE_EVIDENCE_EQUALS_V2);
+    expect(created.parentRevisionId).toBeNull();
+    expect(created.createdAt).toBe('2026-11-03T05:00:00.000Z');
+    expect(Object.keys(created.answers).sort()).toEqual(created.packSnapshot.questions.map((question) => question.id).sort());
+    for (const answer of Object.values(created.answers)) {
+      expect(answer).toMatchObject({
+        value: null,
+        resolution: 'unresolved',
+        source: null,
+        needsConfirmation: false,
+        confirmation: null,
+        followUp: null,
+        note: '',
+      });
+    }
+
+    const expectedV2Digest = await sha256Hex(canonicalizeJson(created.packSnapshot));
+    const v1Snapshot = { ...structuredClone(created.packSnapshot), ruleSemanticsVersion: 'condition-equals-v1' as const };
+    const v1Digest = await sha256Hex(canonicalizeJson(v1Snapshot));
+    expect(created.packIdentity).toEqual({
+      algorithm: 'SHA-256',
+      canonicalization: 'ldw-json-c14n-v1',
+      digest: expectedV2Digest,
+    });
+    expect(created.packIdentity.digest).not.toBe(v1Digest);
+
+    inputPack.questions[0]!.prompt = 'Mutated caller-owned prompt';
+    inputPack.knownFacts[0]!.value = 'Mutated caller-owned fact';
+    expect(created.packSnapshot.questions[0]!.prompt).toBe(firstPrompt);
+    expect(created.packSnapshot.knownFacts[0]!.value).not.toBe('Mutated caller-owned fact');
+  });});
