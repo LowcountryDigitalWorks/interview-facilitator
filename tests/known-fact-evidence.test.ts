@@ -124,7 +124,7 @@ describe('#34A1 immutable known-fact evidence domain', () => {
       followUp: { action: 'Ask about migration', owner: 'Interviewer' },
     };
     const before = canonicalizeJson(existing);
-    const projected = projectAcceptedKnownFact(ledger, 'accept-a', { kind: 'text' }, existing);
+    const projected = projectAcceptedKnownFact(ledger, 'accept-a', 'hosting-preference', { kind: 'text' }, existing);
     expect(projected).toEqual({
       factId: 'fact-a',
       acceptanceId: 'accept-a',
@@ -140,14 +140,16 @@ describe('#34A1 immutable known-fact evidence domain', () => {
 
   it('disallows capturing a value when question options do not permit it or source was superseded', () => {
     const ledger = accepted();
-    expect(() => projectAcceptedKnownFact(ledger, 'accept-a', { kind: 'single', options: ['Yes', 'No'] }, emptyAnswer())).toThrow(/meaningful/i);
-    expect(projectAcceptedKnownFact(ledger, 'accept-a', { kind: 'single', options: ['Managed hosting'] }, emptyAnswer()).answer.resolution).toBe('captured');
+    expect(() => projectAcceptedKnownFact(ledger, 'accept-a', 'hosting-preference', { kind: 'single', options: ['Yes', 'No'] }, emptyAnswer())).toThrow(/meaningful/i);
+    expect(() => projectAcceptedKnownFact(ledger, 'accept-a', 'unrelated-question', { kind: 'text' }, emptyAnswer())).toThrow(/another question/i);
+    expect(() => projectAcceptedKnownFact(ledger, 'accept-a', '   ', { kind: 'text' }, emptyAnswer())).toThrow(/nonempty/i);
+    expect(projectAcceptedKnownFact(ledger, 'accept-a', 'hosting-preference', { kind: 'single', options: ['Managed hosting'] }, emptyAnswer()).answer.resolution).toBe('captured');
     const corrected = correctKnownFact(ledger, {
       id: 'fact-b', supersedesFactId: 'fact-a', value: 'Cloud',
       provenance: 'Corrected source', expectedRevisionId: 'rev-2', currentRevisionId: 'rev-2',
     });
-    expect(() => projectAcceptedKnownFact(corrected, 'accept-a', { kind: 'text' }, emptyAnswer())).toThrow(/superseded/i);
-    expect(() => projectAcceptedKnownFact(ledger, 'missing', { kind: 'text' }, emptyAnswer())).toThrow(/unknown/i);
+    expect(() => projectAcceptedKnownFact(corrected, 'accept-a', 'hosting-preference', { kind: 'text' }, emptyAnswer())).toThrow(/superseded/i);
+    expect(() => projectAcceptedKnownFact(ledger, 'missing', 'hosting-preference', { kind: 'text' }, emptyAnswer())).toThrow(/unknown/i);
   });
 
   it('rejects blank, duplicate or unsupported evidence, invalid timestamps, and absent provenance', () => {
