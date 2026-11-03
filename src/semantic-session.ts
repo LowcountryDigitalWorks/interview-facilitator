@@ -1,6 +1,7 @@
 import {
   validatePackSnapshot,
   type InterviewSession,
+  type InterviewPack,
   type InterviewPackSnapshot,
   type PackIdentity,
   type Question,
@@ -189,6 +190,59 @@ export async function validateSemanticSessionRecord(value: unknown): Promise<Sem
       digest: packIdentityRecord.digest,
     },
   };
+}
+
+export async function createSemanticSession(
+  pack: InterviewPack,
+  input: { clientLabel: string; interviewerLabel?: string; interviewMode?: string },
+  now = new Date(),
+): Promise<SemanticInterviewSession> {
+  const timestamp = now.toISOString();
+  const packSnapshot: SemanticPackSnapshot = {
+    packSchemaVersion: pack.packSchemaVersion,
+    ruleSemanticsVersion: EFFECTIVE_EVIDENCE_EQUALS_V2,
+    packId: pack.packId,
+    packVersion: pack.packVersion,
+    title: pack.title,
+    description: pack.description,
+    sections: structuredClone(pack.sections),
+    questions: structuredClone(pack.questions),
+    knownFacts: structuredClone(pack.knownFacts),
+  };
+  const packIdentity: PackIdentity = {
+    algorithm: 'SHA-256',
+    canonicalization: 'ldw-json-c14n-v1',
+    digest: await sha256Hex(canonicalizeJson(packSnapshot)),
+  };
+  const answers = Object.fromEntries(packSnapshot.questions.map((question) => [question.id, {
+    value: null,
+    resolution: 'unresolved',
+    source: null,
+    needsConfirmation: false,
+    confirmation: null,
+    followUp: null,
+    note: '',
+  } satisfies SemanticAnswerState])) as Record<string, SemanticAnswerState>;
+  const session: SemanticInterviewSession = {
+    sessionSchemaVersion: SEMANTIC_SESSION_SCHEMA_VERSION,
+    sessionId: crypto.randomUUID(),
+    revisionId: crypto.randomUUID(),
+    parentRevisionId: null,
+    interviewPackId: packSnapshot.packId,
+    interviewPackVersion: packSnapshot.packVersion,
+    clientLabel: input.clientLabel.trim() || 'Untitled interview',
+    interviewerLabel: input.interviewerLabel?.trim() ?? '',
+    interviewMode: input.interviewMode?.trim() || 'Conversation',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    currentQuestionId: packSnapshot.questions[0]?.id ?? '',
+    knownFacts: structuredClone(packSnapshot.knownFacts),
+    answers,
+    runningNotes: '',
+    packSnapshot,
+    packIdentity,
+  };
+  return validateSemanticSessionRecord(session);
 }
 
 export async function migratePinned12To13(raw: unknown): Promise<SemanticInterviewSession> {
