@@ -14,9 +14,15 @@ import { EFFECTIVE_EVIDENCE_EQUALS_V2 } from './coverage-rules';
 export const KNOWN_FACT_SESSION_SCHEMA_VERSION = '1.4.0' as const;
 export const SEMANTIC_13_TO_KNOWN_FACT_14_MIGRATION_ID = 'semantic-1.3-to-known-fact-1.4' as const;
 
+export type KnownFactAnswerLink =
+  | { kind: 'accepted'; factId: string; acceptanceId: string }
+  | { kind: 'legacy-unverified' };
+
 export interface KnownFactSession14 extends Omit<SemanticInterviewSession, 'sessionSchemaVersion'> {
   sessionSchemaVersion: typeof KNOWN_FACT_SESSION_SCHEMA_VERSION;
   knownFactLedger: KnownFactLedger;
+  /** Question-scoped provenance links. Legacy 1.3 evidence is explicitly not a verified acceptance. */
+  knownFactAnswerLinks: Record<string, KnownFactAnswerLink>;
 }
 
 function sourceFactView(fact: KnownFactEvidence): KnownFact {
@@ -48,6 +54,73 @@ function assertSourceRoots(sourceFacts: readonly KnownFact[], ledger: KnownFactL
   }
 }
 
+function validateAnswerLinks(
+  raw: unknown,
+  session: SemanticInterviewSession,
+  ledger: KnownFactLedger,
+): Record<string, KnownFactAnswerLink> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('Known-fact answer links must be a record.');
+  }
+  const links = raw as Record<string, unknown>;
+  const checked: Record<string, KnownFactAnswerLink> = {};
+  const facts = new Map(ledger.facts.map((fact) => [fact.id, fact]));
+  const acceptances = new Map(ledger.acceptances.map((event) => [event.id, event]));
+
+  for (const [questionId, rawLink] of Object.entries(links)) {
+    const answer = session.answers[questionId];
+    if (!answer || answer.source !== 'accepted-known-fact') {
+      throw new Error('Known-fact answer link must target an accepted-known-fact question.');
+    }
+    if (!rawLink || typeof rawLink !== 'object' || Array.isArray(rawLink)) {
+      throw new Error('Known-fact answer link is invalid.');
+    }
+    const link = rawLink as Record<string, unknown>;
+    if (link.kind === 'legacy-unverified') {
+      if (Object.keys(link).some((key) => key !== 'kind')) {
+        throw new Error('Legacy unverified link contains an unsupported field.');
+      }
+      if (!answer.needsConfirmation) {
+        throw new Error('Legacy unverified accepted-known-fact evidence must require confirmation.');
+      }
+      checked[questionId] = { kind: 'legacy-unverified' };
+      continue;
+    }
+    if (link.kind !== 'accepted'
+      || Object.keys(link).some((key) => !['kind', 'factId', 'acceptanceId'].includes(key))) {
+      throw new Error('Accepted known-fact answer link is invalid.');
+    }
+    if (typeof link.factId !== 'string' || !link.factId.trim()
+      || typeof link.acceptanceId !== 'string' || !link.acceptanceId.trim()) {
+      throw new Error('Accepted known-fact answer link requires nonempty fact and acceptance IDs.');
+    }
+    const fact = facts.get(link.factId);
+    const acceptance = acceptances.get(link.acceptanceId);
+    if (!fact || !acceptance || acceptance.factId !== fact.id
+      || acceptance.valueSnapshot !== answer.value) {
+      throw new Error('Accepted known-fact answer value is not backed by its acceptance snapshot.');
+    }
+    if (fact.questionId !== undefined && fact.questionId !== questionId) {
+      throw new Error('Accepted known-fact answer link has incorrect question attribution.');
+    }
+    if (!answer.needsConfirmation && ledger.facts.some((item) => item.supersedesFactId === fact.id)) {
+      throw new Error('Superseded known-fact answer must require confirmation.');
+    }
+    checked[questionId] = {
+      kind: 'accepted',
+      factId: fact.id,
+      acceptanceId: acceptance.id,
+    };
+  }
+  for (const [questionId, answer] of Object.entries(session.answers)) {
+    if (answer.source === 'accepted-known-fact'
+      && !Object.prototype.hasOwnProperty.call(checked, questionId)) {
+      throw new Error('Accepted-known-fact answer is missing its evidence link.');
+    }
+  }
+  return checked;
+}
+
 /**
  * Closed 1.4 validator delegates every pre-existing session/pack/answer rule to
  * the accepted 1.3 validator, then adds ledger validation and source identity.
@@ -58,21 +131,24 @@ export async function validateKnownFactSession14Record(raw: unknown): Promise<Kn
   if (input.sessionSchemaVersion !== KNOWN_FACT_SESSION_SCHEMA_VERSION) {
     throw new Error('Unsupported known-fact session schema version.');
   }
-  if (!Object.prototype.hasOwnProperty.call(input, 'knownFactLedger')) {
-    throw new Error('Known-fact session ledger is required.');
+  if (!Object.prototype.hasOwnProperty.call(input, 'knownFactLedger')
+    || !Object.prototype.hasOwnProperty.call(input, 'knownFactAnswerLinks')) {
+    throw new Error('Known-fact session ledger and answer links are required.');
   }
-  // Explicitly strip only the new field before delegating. Unrecognized fields
-  // continue to fail via the canonical 1.3 closed-key validator.
-  const { knownFactLedger, ...base } = input;
+  // Strip only explicitly versioned 1.4 fields; canonical 1.3 validation
+  // continues to reject all other unsupported session fields.
+  const { knownFactLedger, knownFactAnswerLinks, ...base } = input;
   const semantic = await validateSemanticSessionRecord({
     ...base, sessionSchemaVersion: '1.3.0',
   });
   const ledger = validateKnownFactLedger(knownFactLedger);
   assertSourceRoots(semantic.knownFacts, ledger);
+  const links = validateAnswerLinks(knownFactAnswerLinks, semantic, ledger);
   return {
     ...semantic,
     sessionSchemaVersion: KNOWN_FACT_SESSION_SCHEMA_VERSION,
     knownFactLedger: ledger,
+    knownFactAnswerLinks: links,
   };
 }
 
@@ -84,12 +160,23 @@ export async function validateKnownFactSession14Record(raw: unknown): Promise<Kn
 export async function migrateSemantic13ToKnownFact14(raw: unknown): Promise<KnownFactSession14> {
   const source = await validateSemanticSessionRecord(raw);
   const ledger = createKnownFactLedger(source.knownFacts);
+  const knownFactAnswerLinks: Record<string, KnownFactAnswerLink> = {};
+  const answers = structuredClone(source.answers);
+  for (const [questionId, answer] of Object.entries(answers)) {
+    if (answer.source !== 'accepted-known-fact') continue;
+    // A 1.3 source tag has no durable acceptance ID. Preserve its value and
+    // note but never fabricate acceptance history or authoritative coverage.
+    knownFactAnswerLinks[questionId] = { kind: 'legacy-unverified' };
+    answer.needsConfirmation = true;
+  }
   const converted: KnownFactSession14 = {
     ...structuredClone(source),
+    answers,
     sessionSchemaVersion: KNOWN_FACT_SESSION_SCHEMA_VERSION,
     revisionId: `migration:${source.revisionId}:${SEMANTIC_13_TO_KNOWN_FACT_14_MIGRATION_ID}`,
     parentRevisionId: source.revisionId,
     knownFactLedger: ledger,
+    knownFactAnswerLinks,
   };
   return validateKnownFactSession14Record(converted);
 }
