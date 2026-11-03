@@ -812,7 +812,7 @@ function renderReview(): void {
     <main id="main" class="review-shell">
       <button class="text-button" data-action="return">← Return to interview</button>
       <p class="eyebrow">Read-back</p><h1 id="review-title" tabindex="-1">Read back what matters before ending the conversation.</h1>
-      ${presenting ? '' : `<div class="review-stats"><span>${stats.resolved} resolved</span><span>${stats.remaining} currently not resolved</span><span>${stats.mustConfirm} must confirm</span></div>`}
+      ${presenting ? '' : `<div class="review-stats"><span>${stats.resolved} current</span><span>${stats.notApplicable} N/A</span><span>${stats.remaining} currently remaining</span><span>${stats.mustConfirm} must confirm</span></div>`}
       ${sessionPack(session).sections.map((section) => {
         const sectionQuestions = questions.filter((question) => question.sectionId === section.id);
         if (!sectionQuestions.length) return '';

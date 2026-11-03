@@ -251,6 +251,12 @@ test('N/A coverage is visible in summaries and counts toward disposed mobile cov
   await expect(page.locator('[data-coverage-resolved]')).toContainText('0 current');
   await expect(page.locator('[data-coverage-resolved]')).toContainText('1 N/A');
   await expect(page.locator('[data-coverage-mobile]')).toHaveText('Coverage 1/5');
+
+  await advanceToQuestion(page, 'What absolutely has to be true for the first version to feel successful?');
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.locator('.review-stats')).toContainText('0 current');
+  await expect(page.locator('.review-stats')).toContainText('1 N/A');
 });
 
 test('single-choice answer keeps focus when conditional visibility is unchanged', async ({ page }) => {
