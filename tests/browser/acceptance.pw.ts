@@ -202,6 +202,35 @@ async function advanceToQuestion(page: Page, prompt: string): Promise<void> {
   }
 }
 
+test('pending conditional evidence is read back as Open rather than Current', async ({ page }) => {
+  await page.goto('/');
+  const row = await syntheticSession('synthetic-pending-readback');
+  row.currentQuestionId = 'must-have';
+  row.answers['needs-booking'] = {
+    value: 'Yes', resolution: 'not-applicable', source: 'client-statement', needsConfirmation: false,
+    confirmation: null, followUp: null, note: '',
+  };
+  row.answers['booking-process'] = {
+    value: 'Retained pending booking detail', resolution: 'captured', source: 'client-statement', needsConfirmation: false,
+    confirmation: null, followUp: null, note: '',
+  };
+  await putRawSession(page, row);
+  await page.reload();
+
+  await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
+  await page.getByRole('button', { name: 'Presentation view' }).click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+
+  const presentationRow = page.locator('.summary-row', { hasText: 'How should booking or scheduling work?' });
+  await expect(presentationRow).toContainText('Retained pending booking detail');
+  await expect(presentationRow.locator('small')).toHaveText('Open');
+  await expect(presentationRow.locator('small')).not.toHaveText('Current');
+
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  const privateRow = page.locator('.summary-row', { hasText: 'How should booking or scheduling work?' });
+  await expect(privateRow.locator('small')).toHaveText('Open');
+});
+
 test('Interview cockpit meets axe floor on the active question view', async ({ page }) => {
   await startFreshInterview(page);
   const results = await new AxeBuilder({ page }).analyze();

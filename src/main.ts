@@ -820,7 +820,16 @@ function renderReview(): void {
           const state = session!.answers[question.id] ?? blankSemanticState();
           const projected = projectSemanticReadBack(question, state);
           const valueLabel = presenting ? projected.valueLabel : (state.value?.trim() || 'No answer recorded');
-          const statusLabel = presenting ? projected.statusLabel : semanticStatusLabel(question, state);
+          const bucket = buckets[question.id] ?? 'open';
+          const statusLabel = bucket === 'current'
+            ? semanticStatusLabel(question, state)
+            : bucket === 'needs-confirmation'
+              ? 'Needs confirmation'
+              : bucket === 'not-applicable'
+                ? 'Not applicable'
+                : state.resolution === 'deferred'
+                  ? 'Deferred'
+                  : 'Open';
           return `<div class="summary-row"><div><strong>${escapeHtml(question.prompt)}</strong><p>${escapeHtml(valueLabel)}</p><small>${escapeHtml(statusLabel)}</small></div><button class="text-button" data-change="${escapeHtml(question.id)}" aria-label="Change ${escapeHtml(question.prompt)}">Change</button></div>`;
         }).join('')}</section>`;
       }).join('')}
