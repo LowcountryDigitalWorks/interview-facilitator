@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { generalDiscoveryPack } from '../src/pack';
 import { canonicalizeJson } from '../src/pack-identity';
 import { createSemanticSession, validateSemanticSessionRecord } from '../src/semantic-session';
-import { acceptKnownFact, correctKnownFact } from '../src/known-fact-evidence';
+import { acceptKnownFact, correctKnownFact, projectAcceptedKnownFact } from '../src/known-fact-evidence';
 import {
   KNOWN_FACT_SESSION_SCHEMA_VERSION,
   SEMANTIC_13_TO_KNOWN_FACT_14_MIGRATION_ID,
@@ -50,6 +50,7 @@ describe('#34A2A explicit 1.4 known-fact envelope', () => {
     expect(upgraded.answers).toEqual(before.answers);
     expect(upgraded.knownFacts).toEqual(before.knownFacts);
     expect(upgraded.knownFactLedger).toEqual({ facts: [SOURCE], acceptances: [] });
+    expect(upgraded.knownFactAnswerLinks).toEqual({});
   });
 
   it('offers an exact source fingerprint and one-transition plan rather than automatic storage changes', async () => {
@@ -95,6 +96,100 @@ describe('#34A2A explicit 1.4 known-fact envelope', () => {
       id: 'accepted-event-1', factId: SOURCE.id, revisionId: input.revisionId,
       acceptedAt: AT, valueSnapshot: 'Current site',
     }]);
+  });
+
+  it('marks unproven legacy 1.3 accepted sources as needing confirmation without fabricating an event', async () => {
+    const source = await semantic13();
+    source.answers['existing-presence'] = {
+      ...source.answers['existing-presence']!,
+      value: SOURCE.value,
+      resolution: 'captured',
+      source: 'accepted-known-fact',
+      needsConfirmation: false,
+    };
+    const before = canonicalizeJson(source);
+    const migrated = await migrateSemantic13ToKnownFact14(source);
+    expect(canonicalizeJson(source)).toBe(before);
+    expect(migrated.knownFactLedger.acceptances).toEqual([]);
+    expect(migrated.knownFactAnswerLinks['existing-presence']).toEqual({ kind: 'legacy-unverified' });
+    expect(migrated.answers['existing-presence']).toMatchObject({
+      value: SOURCE.value,
+      source: 'accepted-known-fact',
+      needsConfirmation: true,
+    });
+    await expect(validateKnownFactSession14Record(migrated)).resolves.toBeDefined();
+    const forged = structuredClone(migrated);
+    forged.answers['existing-presence']!.needsConfirmation = false;
+    await expect(validateKnownFactSession14Record(forged)).rejects.toThrow(/require confirmation/i);
+  });
+
+  it('persists a question-scoped acceptance reference and refuses missing or mismatched provenance', async () => {
+    const input = await migrateSemantic13ToKnownFact14(await semantic13());
+    input.knownFactLedger = acceptKnownFact(input.knownFactLedger, {
+      id: 'accept-fact', factId: SOURCE.id,
+      expectedRevisionId: input.revisionId, currentRevisionId: input.revisionId, acceptedAt: AT,
+    });
+    const projection = projectAcceptedKnownFact(
+      input.knownFactLedger, 'accept-fact', 'existing-presence',
+      { kind: 'text' }, input.answers['existing-presence']!,
+    );
+    input.answers['existing-presence'] = { ...input.answers['existing-presence']!, ...projection.answer };
+    input.knownFactAnswerLinks['existing-presence'] = {
+      kind: 'accepted', factId: projection.factId, acceptanceId: projection.acceptanceId,
+    };
+    const restored = await validateKnownFactSession14Record(JSON.parse(canonicalizeJson(input)));
+    expect(restored.knownFactAnswerLinks['existing-presence']).toEqual({
+      kind: 'accepted', factId: SOURCE.id, acceptanceId: 'accept-fact',
+    });
+    expect(restored.answers['existing-presence']!.needsConfirmation).toBe(false);
+
+    const unlinked = structuredClone(input);
+    delete unlinked.knownFactAnswerLinks['existing-presence'];
+    await expect(validateKnownFactSession14Record(unlinked)).rejects.toThrow(/missing its evidence link/i);
+
+    const wrongAcceptance = structuredClone(input);
+    wrongAcceptance.knownFactAnswerLinks['existing-presence'] = {
+      kind: 'accepted', factId: SOURCE.id, acceptanceId: 'not-real',
+    };
+    await expect(validateKnownFactSession14Record(wrongAcceptance)).rejects.toThrow(/acceptance snapshot/i);
+
+    const changedAnswer = structuredClone(input);
+    changedAnswer.answers['existing-presence']!.value = 'Unexpected new value';
+    await expect(validateKnownFactSession14Record(changedAnswer)).rejects.toThrow(/acceptance snapshot/i);
+
+    const detached = structuredClone(input);
+    detached.answers['existing-presence']!.source = 'client-statement';
+    await expect(validateKnownFactSession14Record(detached)).rejects.toThrow(/must target/i);
+
+    const extra = structuredClone(input);
+    extra.knownFactAnswerLinks['existing-presence'] = {
+      kind: 'accepted', factId: SOURCE.id, acceptanceId: 'accept-fact', debug: true,
+    } as unknown as typeof extra.knownFactAnswerLinks['existing-presence'];
+    await expect(validateKnownFactSession14Record(extra)).rejects.toThrow(/link is invalid/i);
+  });
+
+  it('requires review of a linked answer when its accepted fact is superseded', async () => {
+    const input = await migrateSemantic13ToKnownFact14(await semantic13());
+    input.knownFactLedger = acceptKnownFact(input.knownFactLedger, {
+      id: 'accept-old', factId: SOURCE.id, expectedRevisionId: input.revisionId,
+      currentRevisionId: input.revisionId, acceptedAt: AT,
+    });
+    input.answers['existing-presence'] = {
+      ...input.answers['existing-presence']!,
+      value: SOURCE.value, source: 'accepted-known-fact',
+      resolution: 'captured', needsConfirmation: false,
+    };
+    input.knownFactAnswerLinks['existing-presence'] = {
+      kind: 'accepted', factId: SOURCE.id, acceptanceId: 'accept-old',
+    };
+    input.knownFactLedger = correctKnownFact(input.knownFactLedger, {
+      id: 'successor', supersedesFactId: SOURCE.id,
+      value: 'New platform', provenance: 'Synthetic corrected evidence',
+      expectedRevisionId: input.revisionId, currentRevisionId: input.revisionId,
+    });
+    await expect(validateKnownFactSession14Record(input)).rejects.toThrow(/superseded/i);
+    input.answers['existing-presence']!.needsConfirmation = true;
+    await expect(validateKnownFactSession14Record(input)).resolves.toBeDefined();
   });
 
   it('rejects invalid, missing and future versions without modifying the supplied source', async () => {
@@ -169,7 +264,10 @@ describe('#34A2A explicit 1.4 known-fact envelope', () => {
     const upgraded = await migrateSemantic13ToKnownFact14(await semantic13());
     const withoutLedger = { ...upgraded } as Partial<typeof upgraded>;
     delete withoutLedger.knownFactLedger;
-    await expect(validateKnownFactSession14Record(withoutLedger)).rejects.toThrow(/ledger is required/i);
+    await expect(validateKnownFactSession14Record(withoutLedger)).rejects.toThrow(/ledger and answer links are required/i);
+    const withoutLinks = { ...upgraded } as Partial<typeof upgraded>;
+    delete withoutLinks.knownFactAnswerLinks;
+    await expect(validateKnownFactSession14Record(withoutLinks)).rejects.toThrow(/answer links are required/i);
     await expect(validateKnownFactSession14Record({ ...upgraded, extraneous: true })).rejects.toThrow(/unsupported field/i);
     await expect(validateSemanticSessionRecord(upgraded)).rejects.toThrow(/unsupported|schema/i);
   });
