@@ -4,6 +4,7 @@ import { generalDiscoveryPack } from '../src/pack';
 import { createSemanticSession, type SemanticInterviewSession } from '../src/semantic-session';
 import { applyValueEdit } from '../src/live-session';
 import { importSessionWithCollisionHandling } from '../src/session-durability';
+import { forkImportedSession, sessionsSemanticallyEqual } from '../src/session-semantic';
 
 async function semanticSession(): Promise<SemanticInterviewSession> {
   return createSemanticSession(
@@ -68,5 +69,54 @@ describe('semantic durability plumbing', () => {
     expect(saveCalls).toBe(0);
     expect(replaceCalls).toBe(0);
     if (result.kind === 'noop') expect(result.session.revisionId).toBe('local-revision');
+  });
+
+  it('treats every semantic answer dimension as content rather than revision metadata', async () => {
+    const baseline = await semanticSession();
+    const changed = structuredClone(baseline);
+    changed.answers['primary-goal'] = {
+      ...changed.answers['primary-goal']!,
+      value: 'Same visible value',
+      resolution: 'captured',
+      source: 'client-statement',
+      needsConfirmation: true,
+      confirmation: null,
+      followUp: { action: 'Confirm with client' },
+      note: 'Private note',
+    };
+    expect(sessionsSemanticallyEqual(baseline, changed)).toBe(false);
+
+    const transportOnly = structuredClone(changed);
+    transportOnly.revisionId = 'different-local-revision';
+    transportOnly.parentRevisionId = 'different-parent';
+    transportOnly.updatedAt = '2026-11-03T04:30:00.000Z';
+    expect(sessionsSemanticallyEqual(changed, transportOnly)).toBe(true);
+  });
+
+  it('forks a semantic import with new local lineage while preserving all semantic fields', async () => {
+    const imported = await semanticSession();
+    imported.answers['primary-goal'] = {
+      ...imported.answers['primary-goal']!,
+      value: 'Preserved fork content',
+      resolution: 'captured',
+      source: 'client-statement',
+      needsConfirmation: true,
+      followUp: { action: 'Retain this follow-up', owner: 'Synthetic owner' },
+      note: 'Retain this note',
+    };
+    const forked = forkImportedSession(imported, {
+      sessionId: 'forked-semantic-session',
+      revisionId: 'forked-semantic-revision',
+      updatedAt: '2026-11-03T05:00:00.000Z',
+    });
+    expect(forked).toMatchObject({
+      sessionId: 'forked-semantic-session',
+      revisionId: 'forked-semantic-revision',
+      parentRevisionId: null,
+      updatedAt: '2026-11-03T05:00:00.000Z',
+    });
+    expect(forked.answers).toEqual(imported.answers);
+    expect(forked.packSnapshot).toEqual(imported.packSnapshot);
+    expect(forked.packIdentity).toEqual(imported.packIdentity);
   });
 });

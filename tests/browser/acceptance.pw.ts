@@ -1,8 +1,9 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 import type { InterviewSession } from '../../src/domain';
-import { canonicalizeJson, sha256Hex, validateSessionRecord } from '../../src/pack-identity';
-import { syntheticPinnedSession } from './synthetic-session';
+import { canonicalizeJson, sha256Hex } from '../../src/pack-identity';
+import { validateSemanticSessionRecord, type SemanticInterviewSession } from '../../src/semantic-session';
+import { syntheticPinned12Session, syntheticSemanticSession } from './synthetic-session';
 
 const DB_NAME = 'ldw-interview-facilitator';
 const STORE = 'sessions';
@@ -73,8 +74,8 @@ async function readStorageSnapshot(page: Page): Promise<{ rows: unknown[]; archi
   }, { dbName: DB_NAME });
 }
 
-function syntheticSession(sessionId = 'synthetic-valid-session'): Promise<InterviewSession> {
-  return syntheticPinnedSession({ sessionId });
+function syntheticSession(sessionId = 'synthetic-valid-session'): Promise<SemanticInterviewSession> {
+  return syntheticSemanticSession({ sessionId });
 }
 
 test.beforeEach(async ({ page }) => {
@@ -143,9 +144,9 @@ test('Presentation read-back stays public across Change and masks retained defer
   await page.goto('/');
   const row = await syntheticSession('synthetic-presentation-session');
   row.currentQuestionId = 'must-have';
-  row.answers['existing-presence'] = { value: 'stale internal detail', status: 'SKIP', note: 'private question note' };
-  row.answers['primary-goal'] = { value: 'stale not-applicable detail', status: 'N_A', note: '' };
-  row.answers['must-have'] = { value: 'Public launch requirement', status: 'ANSWERED', note: '' };
+  row.answers['existing-presence'] = { value: 'stale internal detail', resolution: 'deferred', source: 'client-statement', needsConfirmation: false, confirmation: null, followUp: null, note: 'private question note' };
+  row.answers['primary-goal'] = { value: 'stale not-applicable detail', resolution: 'not-applicable', source: 'client-statement', needsConfirmation: false, confirmation: null, followUp: null, note: '' };
+  row.answers['must-have'] = { value: 'Public launch requirement', resolution: 'captured', source: 'client-statement', needsConfirmation: false, confirmation: null, followUp: null, note: '' };
   row.runningNotes = 'private running note';
   await putRawSession(page, row);
   await page.reload();
@@ -201,6 +202,35 @@ async function advanceToQuestion(page: Page, prompt: string): Promise<void> {
   }
 }
 
+test('pending conditional evidence is read back as Open rather than Current', async ({ page }) => {
+  await page.goto('/');
+  const row = await syntheticSession('synthetic-pending-readback');
+  row.currentQuestionId = 'must-have';
+  row.answers['needs-booking'] = {
+    value: 'Yes', resolution: 'not-applicable', source: 'client-statement', needsConfirmation: false,
+    confirmation: null, followUp: null, note: '',
+  };
+  row.answers['booking-process'] = {
+    value: 'Retained pending booking detail', resolution: 'captured', source: 'client-statement', needsConfirmation: false,
+    confirmation: null, followUp: null, note: '',
+  };
+  await putRawSession(page, row);
+  await page.reload();
+
+  await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
+  await page.getByRole('button', { name: 'Presentation view' }).click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+
+  const presentationRow = page.locator('.summary-row', { hasText: 'How should booking or scheduling work?' });
+  await expect(presentationRow).toContainText('Retained pending booking detail');
+  await expect(presentationRow.locator('small')).toHaveText('Open');
+  await expect(presentationRow.locator('small')).not.toHaveText('Current');
+
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  const privateRow = page.locator('.summary-row', { hasText: 'How should booking or scheduling work?' });
+  await expect(privateRow.locator('small')).toHaveText('Open');
+});
+
 test('Interview cockpit meets axe floor on the active question view', async ({ page }) => {
   await startFreshInterview(page);
   const results = await new AxeBuilder({ page }).analyze();
@@ -217,6 +247,7 @@ test('textarea answer exposes prompt and helper in its accessible name and descr
 
 test('status radio keeps focus and node identity through autosave update', async ({ page }) => {
   await startFreshInterview(page);
+  await page.locator('#answer').fill('Current state summary');
   const answered = page.locator('label.status-chip', { hasText: 'Answered' }).locator('input');
   await page.locator('label.status-chip', { hasText: 'Answered' }).click();
   await page.waitForTimeout(280);
@@ -226,6 +257,35 @@ test('status radio keeps focus and node identity through autosave update', async
   await page.waitForTimeout(280);
   await expect(answered).toBeFocused();
   expect(await answered.evaluate((element) => element.outerHTML)).toBe(nodeId);
+});
+
+test('status chips are re-derived from persisted semantic state after status and answer edits', async ({ page }) => {
+  await startFreshInterview(page);
+  const alreadyKnown = page.locator('label.status-chip', { hasText: 'Already known' }).locator('input');
+  const answered = page.locator('label.status-chip', { hasText: 'Answered' }).locator('input');
+
+  await page.locator('label.status-chip', { hasText: 'Already known' }).click();
+  await expect(alreadyKnown).not.toBeChecked();
+  await expect(page.locator('input[name="status"]:checked')).toHaveCount(0);
+
+  await page.locator('#answer').fill('Client supplied current state');
+  await expect(answered).toBeChecked();
+  await expect(page.locator('label.status-chip', { hasText: 'Answered' })).toHaveClass(/selected/);
+});
+
+test('N/A coverage is visible in summaries and counts toward disposed mobile coverage', async ({ page }) => {
+  await startFreshInterview(page);
+  await page.locator('label.status-chip', { hasText: 'N/A' }).click();
+
+  await expect(page.locator('[data-coverage-resolved]')).toContainText('0 current');
+  await expect(page.locator('[data-coverage-resolved]')).toContainText('1 N/A');
+  await expect(page.locator('[data-coverage-mobile]')).toHaveText('Coverage 1/5');
+
+  await advanceToQuestion(page, 'What absolutely has to be true for the first version to feel successful?');
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.locator('.review-stats')).toContainText('0 current');
+  await expect(page.locator('.review-stats')).toContainText('1 N/A');
 });
 
 test('single-choice answer keeps focus when conditional visibility is unchanged', async ({ page }) => {
@@ -252,6 +312,46 @@ test('single-choice answer rerenders when conditional visibility changes', async
   await page.locator('fieldset.choice-group input[value="No"]').check();
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByRole('heading', { name: 'What absolutely has to be true for the first version to feel successful?', level: 1 })).toBeVisible();
+});
+
+test('semantic branching keeps pending visible, ignores deferred/N-A raw values, and reviews reactivated evidence', async ({ page }) => {
+  await startFreshInterview(page, 'Semantic Branching Test');
+  await advanceToQuestion(page, 'Do people need to request or book time?');
+
+  // Unknown parent evidence is pending, so the dependent objective remains visible rather than collapsing to No.
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { name: 'How should booking or scheduling work?', level: 1 })).toBeVisible();
+  await page.locator('#answer').fill('Retained booking detail');
+  await page.locator('[data-action="back"]').click();
+
+  // Authoritative No makes the child irrelevant.
+  await page.locator('fieldset.choice-group input[value="No"]').check();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { name: 'What absolutely has to be true for the first version to feel successful?', level: 1 })).toBeVisible();
+  await page.locator('[data-action="back"]').click();
+
+  // Reactivating Yes restores the retained value for human review, not silent completion.
+  await page.locator('fieldset.choice-group input[value="Yes"]').check();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { name: 'How should booking or scheduling work?', level: 1 })).toBeVisible();
+  await expect(page.locator('#answer')).toHaveValue('Retained booking detail');
+  await expect(page.locator('label.status-chip', { hasText: 'Must confirm' }).locator('input')).toBeChecked();
+  await page.locator('[data-action="back"]').click();
+
+  // A retained raw Yes under N/A is not effective evidence. Unknown/pending is not implicit No,
+  // so the child remains visible but its coverage bucket must be open rather than confirmed.
+  await page.locator('fieldset.choice-group input[value="Yes"]').check();
+  await page.locator('label.status-chip', { hasText: 'N/A' }).click();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { name: 'How should booking or scheduling work?', level: 1 })).toBeVisible();
+  await expect(page.locator('[data-question-id="booking-process"]')).not.toHaveClass(/confirm/);
+  await page.locator('[data-action="back"]').click();
+
+  // Deferred behaves the same way: retained raw Yes remains pending/non-authoritative.
+  await page.locator('label.status-chip', { hasText: 'Skip' }).click();
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { name: 'How should booking or scheduling work?', level: 1 })).toBeVisible();
+  await expect(page.locator('[data-question-id="booking-process"]')).not.toHaveClass(/confirm/);
 });
 
 test('Continue and Back land focus on the next or previous answer control', async ({ page }) => {
@@ -300,7 +400,7 @@ test('320px phone coverage and context panels expose dialog semantics and isolat
 test('review Change control keeps contextual accessible name', async ({ page }) => {
   await page.goto('/');
   const row = await syntheticSession('synthetic-review-a11y');
-  row.answers['existing-presence'] = { value: 'Baseline answer', status: 'ANSWERED', note: '' };
+  row.answers['existing-presence'] = { value: 'Baseline answer', resolution: 'captured', source: 'client-statement', needsConfirmation: false, confirmation: null, followUp: null, note: '' };
   row.currentQuestionId = 'must-have';
   await putRawSession(page, row);
   await page.reload();
@@ -312,8 +412,7 @@ test('review Change control keeps contextual accessible name', async ({ page }) 
 test('mixed Home records support explicit upgrade and recovery backup', async ({ page }) => {
   await page.goto('/');
   const current = await syntheticSession('synthetic-current-mixed');
-  const legacy = structuredClone(current);
-  legacy.sessionId = 'synthetic-legacy-mixed';
+  const legacy = await syntheticPinned12Session({ sessionId: 'synthetic-legacy-mixed' });
   legacy.sessionSchemaVersion = '1.1.0';
   delete legacy.packSnapshot.ruleSemanticsVersion;
   legacy.packIdentity.digest = await sha256Hex(canonicalizeJson(legacy.packSnapshot));
@@ -355,14 +454,22 @@ test('mixed Home records support explicit upgrade and recovery backup', async ({
     const db = await new Promise<IDBDatabase>((resolve, reject) => { const request = indexedDB.open('ldw-interview-facilitator', 4); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
     const transaction = db.transaction(['sessions', 'legacy-session-archive']);
     const read = (storeName: string, key: IDBValidKey) => new Promise<unknown>((resolve, reject) => { const request = transaction.objectStore(storeName).get(key); request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
-    const values = { active: await read('sessions', sessionId), archive: await read('legacy-session-archive', `${sessionId}|1.1.0|pinned-1.1-to-1.2`) };
+    const values = {
+      active: await read('sessions', sessionId),
+      archive11: await read('legacy-session-archive', `${sessionId}|1.1.0|pinned-1.1-to-1.2`),
+      archive12: await read('legacy-session-archive', `${sessionId}|1.2.0|pinned-1.2-to-1.3`),
+    };
     db.close(); return values;
   }, legacy.sessionId);
-  expect(upgraded.active).toMatchObject({ sessionSchemaVersion: '1.2.0', packSnapshot: { ruleSemanticsVersion: 'condition-equals-v1' } });
-  expect((upgraded.active as InterviewSession).revisionId).not.toBe((currentBefore as InterviewSession).revisionId);
-  expect((upgraded.active as InterviewSession).parentRevisionId).toBe((currentBefore as InterviewSession).revisionId);
-  expect(await validateSessionRecord(upgraded.active)).toEqual(upgraded.active);
-  expect(upgraded.archive).toEqual(legacy);
+  expect(upgraded.active).toMatchObject({ sessionSchemaVersion: '1.3.0', packSnapshot: { ruleSemanticsVersion: 'effective-evidence-equals-v2' } });
+  expect(upgraded.archive11).toEqual(legacy);
+  expect(upgraded.archive12).toMatchObject({
+    sessionSchemaVersion: '1.2.0',
+    parentRevisionId: (currentBefore as InterviewSession).revisionId,
+    packSnapshot: { ruleSemanticsVersion: 'condition-equals-v1' },
+  });
+  expect((upgraded.active as SemanticInterviewSession).parentRevisionId).toBe((upgraded.archive12 as InterviewSession).revisionId);
+  expect(await validateSemanticSessionRecord(upgraded.active)).toEqual(upgraded.active);
   const download = page.waitForEvent('download');
   await page.locator('[data-recovery-id="synthetic-future-mixed"]').click();
   const recoveryDownload = await download;
@@ -389,14 +496,18 @@ test('mixed Home records support explicit upgrade and recovery backup', async ({
 
   const snapshot = await readStorageSnapshot(page);
   expect(snapshot.rows).toHaveLength(5);
-  expect(snapshot.archives).toHaveLength(1);
-  expect(snapshot.archiveKeys).toEqual(['synthetic-legacy-mixed|1.1.0|pinned-1.1-to-1.2']);
+  expect(snapshot.archives).toHaveLength(2);
+  expect(snapshot.archiveKeys).toEqual([
+    'synthetic-legacy-mixed|1.1.0|pinned-1.1-to-1.2',
+    'synthetic-legacy-mixed|1.2.0|pinned-1.2-to-1.3',
+  ]);
   expect(snapshot.rows).toContainEqual(current);
   expect(snapshot.rows).toContainEqual(unsupported);
   expect(snapshot.rows).toContainEqual(malformed);
   expect(snapshot.rows).toContainEqual(unsafeMalformed);
   expect(snapshot.rows).toContainEqual(upgraded.active);
-  expect(snapshot.archives[0]).toEqual(legacy);
+  expect(snapshot.archives).toContainEqual(legacy);
+  expect(snapshot.archives).toContainEqual(upgraded.archive12);
 
   const healthyCurrentCard = page.locator('[data-session-id="synthetic-current-mixed"]');
   await expect(healthyCurrentCard).toBeVisible();
@@ -410,7 +521,7 @@ test('mixed Home records support explicit upgrade and recovery backup', async ({
 
 test('failed legacy upgrade aborts its transaction and preserves source and archive', async ({ page }) => {
   await page.goto('/');
-  const legacy = await syntheticSession('synthetic-legacy-abort');
+  const legacy = await syntheticPinned12Session({ sessionId: 'synthetic-legacy-abort' });
   legacy.sessionSchemaVersion = '1.1.0';
   delete legacy.packSnapshot.ruleSemanticsVersion;
   legacy.packIdentity.digest = await sha256Hex(canonicalizeJson(legacy.packSnapshot));

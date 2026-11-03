@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { validateSessionShape } from '../src/domain';
 import { createPinnedSession } from '../src/pack-identity';
 import { generalDiscoveryPack as pack } from '../src/pack';
-import { serializeSession, sessionToMarkdown } from '../src/markdown';
+import { semanticSessionToMarkdown, serializeSession, sessionToMarkdown } from '../src/markdown';
+import { createSemanticSession, validateSemanticSessionRecord } from '../src/semantic-session';
 
 describe('deterministic exports', () => {
   it('preserves semantic session state through JSON round trip', async () => {
@@ -57,5 +58,45 @@ describe('deterministic exports', () => {
     (session.answers['primary-goal'] as unknown as { note: unknown }).note = 42;
 
     expect(() => sessionToMarkdown(session)).not.toThrow();
+  });
+
+  it('round-trips canonical 1.3 JSON without losing semantic answer dimensions', async () => {
+    const session = await createSemanticSession(pack, { clientLabel: 'Semantic Client' }, new Date('2026-11-03T05:00:00Z'));
+    session.answers['primary-goal'] = {
+      value: 'Ship the semantic activation.',
+      resolution: 'captured',
+      source: 'client-statement',
+      needsConfirmation: true,
+      confirmation: null,
+      followUp: { action: 'Confirm scope', owner: 'Interviewer' },
+      note: 'Internal semantic note.',
+    };
+    const restored = await validateSemanticSessionRecord(JSON.parse(serializeSession(session)));
+    expect(restored).toEqual(session);
+  });
+
+  it('labels retained non-effective values and inactive evidence clearly in canonical 1.3 Markdown', async () => {
+    const session = await createSemanticSession(pack, { clientLabel: 'Semantic Markdown' }, new Date('2026-11-03T05:00:00Z'));
+    session.answers['needs-booking'] = {
+      value: 'No', resolution: 'captured', source: 'client-statement', needsConfirmation: false,
+      confirmation: null, followUp: null, note: '',
+    };
+    session.answers['booking-process'] = {
+      value: 'Retained booking detail', resolution: 'deferred', source: 'client-statement', needsConfirmation: false,
+      confirmation: null, followUp: { action: 'Revisit only if booking returns' }, note: 'Inactive internal note.',
+    };
+    session.answers['primary-goal'] = {
+      value: 'Retained N/A detail', resolution: 'not-applicable', source: 'client-statement', needsConfirmation: false,
+      confirmation: null, followUp: null, note: '',
+    };
+
+    const markdown = semanticSessionToMarkdown(session);
+    expect(markdown).toContain('## Inactive / hidden preserved answers');
+    expect(markdown).toContain('Retained booking detail');
+    expect(markdown).toContain('**Retained internal value (not effective evidence):**');
+    expect(markdown).toContain('**Status:** Deferred');
+    expect(markdown).toContain('**Status:** Not applicable');
+    expect(markdown).toContain('Inactive internal note.');
+    expect(markdown).toBe(semanticSessionToMarkdown(session));
   });
 });

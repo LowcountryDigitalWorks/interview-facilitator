@@ -127,6 +127,33 @@ describe('live semantic session adapter', () => {
     expect(current.answers[child.id]).toMatchObject({ value: 'Old scheduling process', resolution: 'captured', needsConfirmation: true, confirmation: null });
   });
 
+  it('recomputes cascading relevance while reviewing nested reactivation', async () => {
+    const current = await session();
+    const parent = current.packSnapshot.questions.find((question) => question.id === 'needs-booking')!;
+    const child = current.packSnapshot.questions.find((question) => question.id === 'booking-process')!;
+    const grandchild = current.packSnapshot.questions.find((question) => question.id === 'must-have')!;
+    grandchild.condition = { questionId: child.id, equals: 'Portal' };
+
+    current.answers[parent.id] = applyValueEdit(parent, current.answers[parent.id]!, 'No');
+    current.answers[child.id] = state({ value: 'Email', resolution: 'captured', source: 'client-statement' });
+    current.answers[grandchild.id] = state({ value: 'Retained must-have', resolution: 'captured', source: 'client-statement' });
+    const before = relevanceMap(current);
+    expect(before[child.id]).toBe('irrelevant');
+    expect(before[grandchild.id]).toBe('irrelevant');
+
+    current.answers[parent.id] = applyValueEdit(parent, current.answers[parent.id]!, 'Yes');
+    applyReactivationReviews(current, before);
+
+    expect(current.answers[child.id]).toMatchObject({ needsConfirmation: true, confirmation: null });
+    expect(relevanceMap(current)[grandchild.id]).toBe('pending');
+    expect(current.answers[grandchild.id]).toMatchObject({
+      value: 'Retained must-have',
+      resolution: 'captured',
+      needsConfirmation: true,
+      confirmation: null,
+    });
+  });
+
   it('uses exclusive semantic coverage buckets and navigation', async () => {
     const current = await session();
     const first = current.packSnapshot.questions[0]!;
@@ -186,6 +213,24 @@ describe('live semantic session adapter', () => {
       resolution: 'captured',
       source: 'client-statement',
       needsConfirmation: false,
+      confirmation: null,
+    });
+
+    const confirmedKnown = state({
+      value: 'Confirmed known context',
+      resolution: 'captured',
+      source: 'accepted-known-fact',
+      confirmation: {
+        revisionId: 'rev-known-confirmed',
+        confirmedAt: '2026-11-02T12:03:00.000Z',
+        value: 'Confirmed known context',
+      },
+    });
+    expect(applyValueEdit(question, confirmedKnown, 'Client correction after confirmation')).toMatchObject({
+      value: 'Client correction after confirmation',
+      resolution: 'captured',
+      source: 'client-statement',
+      needsConfirmation: true,
       confirmation: null,
     });
   });
@@ -259,4 +304,5 @@ describe('live semantic session adapter', () => {
     expect(relevanceMap(current)[child.id]).toBe('irrelevant');
     expect(nextVisibleQuestion(current, child.id, 1)?.id).toBe(firstVisible.id);
     expect(nextVisibleQuestion(current, child.id, -1)?.id).toBe(firstVisible.id);
-  });});
+  });
+});

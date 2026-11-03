@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { touch } from '../src/domain';
-import { createPinnedSession } from '../src/pack-identity';
+import { applyValueEdit } from '../src/live-session';
 import { generalDiscoveryPack as pack } from '../src/pack';
+import { createSemanticSession } from '../src/semantic-session';
 import { RevisionConflictError, saveSession } from '../src/storage';
 
 function installMemoryDatabase(): Map<string, unknown> {
@@ -50,20 +50,22 @@ function installMemoryDatabase(): Map<string, unknown> {
   return rows;
 }
 
-describe('saveSession pack identity gate', () => {
+describe('saveSession semantic pack identity and revision gate', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it('saves a valid pinned session and keeps ordinary answer edits without changing pack identity', async () => {
+  it('saves a valid 1.3 session and keeps semantic answer edits without changing pack identity', async () => {
     const rows = installMemoryDatabase();
-    const session = await createPinnedSession(pack, { clientLabel: 'Synthetic Client' }, new Date('2026-10-31T12:00:00.000Z'));
+    const session = await createSemanticSession(pack, { clientLabel: 'Synthetic Client' }, new Date('2026-10-31T12:00:00.000Z'));
     const digest = session.packIdentity.digest;
     const first = await saveSession(session, null);
 
-    const edited = touch(structuredClone(session), new Date('2026-10-31T12:05:00.000Z'));
-    edited.answers['primary-goal']!.value = 'A saved answer.';
-    edited.answers['primary-goal']!.note = 'A saved note.';
+    const edited = structuredClone(first);
+    edited.updatedAt = '2026-10-31T12:05:00.000Z';
+    const question = edited.packSnapshot.questions.find((item) => item.id === 'primary-goal')!;
+    edited.answers[question.id] = applyValueEdit(question, edited.answers[question.id]!, 'A saved answer.');
+    edited.answers[question.id]!.note = 'A saved note.';
     const saved = await saveSession(edited, first.revisionId);
 
     expect(edited.packIdentity).toEqual(session.packIdentity);
@@ -72,28 +74,36 @@ describe('saveSession pack identity gate', () => {
     expect(saved).toMatchObject({ revisionId: expect.any(String), parentRevisionId: first.revisionId });
     expect(rows.get(session.sessionId)).toMatchObject({
       updatedAt: '2026-10-31T12:05:00.000Z',
-      answers: { 'primary-goal': { value: 'A saved answer.', note: 'A saved note.' } },
+      answers: {
+        'primary-goal': {
+          value: 'A saved answer.',
+          resolution: 'captured',
+          source: 'client-statement',
+          needsConfirmation: false,
+          note: 'A saved note.',
+        },
+      },
       packIdentity: { digest },
     });
   });
 
   it('rejects a tampered snapshot before replacing the stored row', async () => {
     const rows = installMemoryDatabase();
-    const session = await createPinnedSession(pack, { clientLabel: 'Synthetic Client' }, new Date('2026-10-31T12:00:00.000Z'));
-    await saveSession(session, null);
-    const tampered = structuredClone(session);
+    const session = await createSemanticSession(pack, { clientLabel: 'Synthetic Client' }, new Date('2026-10-31T12:00:00.000Z'));
+    const first = await saveSession(session, null);
+    const tampered = structuredClone(first);
     tampered.packSnapshot.questions[0]!.prompt = 'Drifted prompt';
 
-    await expect(saveSession(tampered, session.revisionId)).rejects.toThrow(/digest/i);
+    await expect(saveSession(tampered, first.revisionId)).rejects.toThrow(/digest/i);
     const stored = rows.get(session.sessionId) as { packSnapshot: { questions: Array<{ prompt: string }> } };
     expect(stored.packSnapshot.questions[0]?.prompt).toBe(session.packSnapshot.questions[0]?.prompt);
   });
 
   it('rejects a tampered digest before replacing the stored row', async () => {
     const rows = installMemoryDatabase();
-    const session = await createPinnedSession(pack, { clientLabel: 'Synthetic Client' }, new Date('2026-10-31T12:00:00.000Z'));
+    const session = await createSemanticSession(pack, { clientLabel: 'Synthetic Client' }, new Date('2026-10-31T12:00:00.000Z'));
     const saved = await saveSession(session, null);
-    const tampered = structuredClone(session);
+    const tampered = structuredClone(saved);
     tampered.packIdentity.digest = 'c'.repeat(64);
 
     await expect(saveSession(tampered, saved.revisionId)).rejects.toThrow(/digest/i);
@@ -102,12 +112,14 @@ describe('saveSession pack identity gate', () => {
 
   it('rejects a stale expected revision without mutating the current row', async () => {
     const rows = installMemoryDatabase();
-    const initial = await createPinnedSession(pack, { clientLabel: 'Synthetic Client' }, new Date('2026-10-31T12:00:00.000Z'));
+    const initial = await createSemanticSession(pack, { clientLabel: 'Synthetic Client' }, new Date('2026-10-31T12:00:00.000Z'));
     const r1 = await saveSession(initial, null);
-    const a = touch(structuredClone(r1), new Date('2026-10-31T12:01:00.000Z'));
+    const a = structuredClone(r1);
+    a.updatedAt = '2026-10-31T12:01:00.000Z';
     a.runningNotes = 'Tab A';
     const r2 = await saveSession(a, r1.revisionId);
-    const b = touch(structuredClone(r1), new Date('2026-10-31T12:02:00.000Z'));
+    const b = structuredClone(r1);
+    b.updatedAt = '2026-10-31T12:02:00.000Z';
     b.runningNotes = 'Stale tab B';
 
     await expect(saveSession(b, r1.revisionId)).rejects.toBeInstanceOf(RevisionConflictError);

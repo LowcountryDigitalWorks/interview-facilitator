@@ -166,12 +166,11 @@ export function applyValueEdit(
   }
 
   // A user-entered correction is no longer evidence from the previously accepted known fact.
+  // Preserve confirmation invalidation/tentative truth already derived by the value update.
   if (state.resolution === 'captured' && state.source === 'accepted-known-fact') {
     return {
       ...updated,
       source: 'client-statement',
-      needsConfirmation: false,
-      confirmation: null,
     };
   }
 
@@ -187,9 +186,19 @@ export function applyReactivationReviews(
   session: SemanticInterviewSession,
   before: Readonly<Record<string, Relevance>>,
 ): void {
-  const after = relevanceMap(session);
-  for (const question of session.packSnapshot.questions) {
-    if (before[question.id] !== 'irrelevant' || after[question.id] === 'irrelevant') continue;
+  const reviewedIds = new Set<string>();
+  while (reviewedIds.size < session.packSnapshot.questions.length) {
+    // Reviewing one reactivated answer can make its descendants pending by turning previously
+    // authoritative retained evidence into tentative evidence. Recompute after every mutation so
+    // a descendant that leaves `irrelevant` during this cascade cannot escape review.
+    const after = relevanceMap(session);
+    const question = session.packSnapshot.questions.find((candidate) =>
+      !reviewedIds.has(candidate.id)
+      && before[candidate.id] === 'irrelevant'
+      && after[candidate.id] !== 'irrelevant');
+    if (!question) break;
+    reviewedIds.add(question.id);
+
     const state = session.answers[question.id];
     if (!state) continue;
     const reviewed = reviewReactivatedState(

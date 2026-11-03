@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { validateSessionForPack } from '../src/domain';
 import { canonicalizeJson, createPinnedSession, sha256Hex } from '../src/pack-identity';
 import { generalDiscoveryPack as pack } from '../src/pack';
+import { createSemanticSession } from '../src/semantic-session';
 import { buildRecoveryBackup, buildUnsupportedRecoveryBackup, classifyStoredSessionRows, exportRecoveryBackup, partitionStoredSessionRows } from '../src/storage';
 import { openStoredSession } from '../src/session-durability';
 
@@ -9,10 +10,8 @@ describe('stored session quarantine', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('classifies current, migratable, recoverable, and malformed rows without changing them', async () => {
-    const current = await createPinnedSession(pack, { clientLabel: 'Current' });
-    const legacy = { ...structuredClone(current), sessionSchemaVersion: '1.1.0' };
-    delete legacy.packSnapshot.ruleSemanticsVersion;
-    legacy.packIdentity.digest = await sha256Hex(canonicalizeJson(legacy.packSnapshot));
+    const current = await createSemanticSession(pack, { clientLabel: 'Current' });
+    const legacy = await createPinnedSession(pack, { clientLabel: 'Pinned 1.2' });
     const unsupported = { sessionId: 'future', sessionSchemaVersion: '9.0.0', unknownPayload: { retained: true } };
     const malformed = { nope: true };
     const before = structuredClone([current, legacy, unsupported, malformed]);
@@ -63,28 +62,31 @@ describe('stored session quarantine', () => {
     }
   });
 
-  it('recovers versioned rows with a nonempty id and safe JSON data', async () => {
-    const current = await createPinnedSession(pack, { clientLabel: 'Current' });
-    const unsupportedRules = { ...structuredClone(current), sessionId: 'unsupported-rules', packSnapshot: { ...structuredClone(current.packSnapshot), ruleSemanticsVersion: 'condition-equals-v2' } };
+  it('recovers recognizable versioned rows with a nonempty id and safe JSON data', async () => {
+    const current = await createSemanticSession(pack, { clientLabel: 'Current' });
+    const pinned12 = await createPinnedSession(pack, { clientLabel: 'Historical' });
+    const unsupportedRules = { ...structuredClone(current), sessionId: 'unsupported-rules', packSnapshot: { ...structuredClone(current.packSnapshot), ruleSemanticsVersion: 'effective-evidence-equals-v3' } };
+    unsupportedRules.packIdentity.digest = await sha256Hex(canonicalizeJson(unsupportedRules.packSnapshot));
     const unsupportedPack = { ...structuredClone(current), sessionId: 'unsupported-pack', packSnapshot: { ...structuredClone(current.packSnapshot), packSchemaVersion: '2.0.0' } };
-    const unsupported11 = structuredClone(current) as unknown as Record<string, unknown>;
-    const unsupported11Snapshot = structuredClone(current.packSnapshot) as unknown as Record<string, unknown>;
+    unsupportedPack.packIdentity.digest = await sha256Hex(canonicalizeJson(unsupportedPack.packSnapshot));
+    const unsupported11 = structuredClone(pinned12) as unknown as Record<string, unknown>;
+    const unsupported11Snapshot = structuredClone(pinned12.packSnapshot) as unknown as Record<string, unknown>;
     unsupported11.sessionId = 'unsupported-11';
     unsupported11.sessionSchemaVersion = '1.1.0';
     unsupported11Snapshot.packSchemaVersion = '2.0.0';
     delete unsupported11Snapshot.ruleSemanticsVersion;
     unsupported11.packSnapshot = unsupported11Snapshot;
     const missingMetadata = { ...structuredClone(current), sessionId: 'missing-metadata', packSnapshot: { ...structuredClone(current.packSnapshot) } };
-    delete missingMetadata.packSnapshot.ruleSemanticsVersion;
+    delete (missingMetadata.packSnapshot as { ruleSemanticsVersion?: string }).ruleSemanticsVersion;
     const futureSchema = { sessionId: 'future-schema', sessionSchemaVersion: '9.0.0', unknownField: ['preserved'] };
     const missingId = { ...unsupportedRules, sessionId: '   ' };
     const classified = await classifyStoredSessionRows([unsupportedRules, unsupportedPack, unsupported11, missingMetadata, futureSchema, missingId]);
     expect(classified.map((row) => row.classification)).toEqual([
-      'unsupported-recoverable', 'unsupported-recoverable', 'unsupported-recoverable', 'malformed-unreadable', 'unsupported-recoverable', 'malformed-unreadable',
+      'unsupported-recoverable', 'unsupported-recoverable', 'unsupported-recoverable', 'unsupported-recoverable', 'unsupported-recoverable', 'malformed-unreadable',
     ]);
   });
-  it('returns healthy rows and counts malformed records without throwing', async () => {
-    const good = await createPinnedSession(pack, { clientLabel: 'Good Client' }, new Date('2026-10-31T12:00:00Z'));
+  it('returns healthy current 1.3 rows and counts malformed records without throwing', async () => {
+    const good = await createSemanticSession(pack, { clientLabel: 'Good Client' }, new Date('2026-10-31T12:00:00Z'));
     const malformed = { sessionId: 'bad-row', updatedAt: '2026-10-31T12:00:00.000Z' };
     const result = await partitionStoredSessionRows([good, malformed]);
     expect(result.unreadableCount).toBe(1);
@@ -93,14 +95,11 @@ describe('stored session quarantine', () => {
   });
 
   it('offers raw recovery for serializable integrity failures and counts only malformed rows as unreadable', async () => {
-    const current = await createPinnedSession(pack, { clientLabel: 'Quarantined' });
+    const current = await createSemanticSession(pack, { clientLabel: 'Quarantined' });
     const quarantined = structuredClone(current);
     quarantined.packIdentity.digest = '0'.repeat(64);
-    const legacy = structuredClone(current);
+    const legacy = await createPinnedSession(pack, { clientLabel: 'Legacy count' });
     legacy.sessionId = 'legacy-count';
-    legacy.sessionSchemaVersion = '1.1.0';
-    delete legacy.packSnapshot.ruleSemanticsVersion;
-    legacy.packIdentity.digest = await sha256Hex(canonicalizeJson(legacy.packSnapshot));
     const unsupported = { sessionId: 'future-count', sessionSchemaVersion: '9.0.0', unknown: true };
     const unsafe = { sessionId: 'unsafe-row', sessionSchemaVersion: '1.2.0', value: Number.NaN };
     const rows = [quarantined, legacy, unsupported, unsafe];
@@ -142,9 +141,9 @@ describe('stored session quarantine', () => {
     expect([...stored.values()]).toEqual(before);
   });
 
-  it('sorts only validated rows and ignores malformed updatedAt values during partitioning', async () => {
-    const older = await createPinnedSession(pack, { clientLabel: 'Older' }, new Date('2026-10-30T12:00:00Z'));
-    const newer = await createPinnedSession(pack, { clientLabel: 'Newer' }, new Date('2026-10-31T12:00:00Z'));
+  it('sorts only validated current rows and ignores malformed updatedAt values during partitioning', async () => {
+    const older = await createSemanticSession(pack, { clientLabel: 'Older' }, new Date('2026-10-30T12:00:00Z'));
+    const newer = await createSemanticSession(pack, { clientLabel: 'Newer' }, new Date('2026-10-31T12:00:00Z'));
     const missingUpdatedAt = { ...structuredClone(newer), updatedAt: undefined };
     const result = await partitionStoredSessionRows([older, missingUpdatedAt, newer]);
     expect(result.unreadableCount).toBe(1);
