@@ -2,6 +2,7 @@ import { canonicalizeJson } from './pack-identity';
 import { createKnownFactLedger, validateKnownFactLedger, type KnownFactLedger, type KnownFactEvidence } from './known-fact-evidence';
 import { validateSemanticSessionRecord, type SemanticInterviewSession } from './semantic-session';
 import type { KnownFact } from './domain';
+import { EFFECTIVE_EVIDENCE_EQUALS_V2 } from './coverage-rules';
 
 /**
  * Domain-only schema boundary for #34A2A.
@@ -93,6 +94,24 @@ export async function migrateSemantic13ToKnownFact14(raw: unknown): Promise<Know
   return validateKnownFactSession14Record(converted);
 }
 
+/**
+ * Compatibility is about version fields, not error message wording. In particular,
+ * a closed-key error saying "unsupported field" is invalid data, not a future schema.
+ */
+function unsupportedNestedVersionReason(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const pack = (raw as Record<string, unknown>).packSnapshot;
+  if (!pack || typeof pack !== 'object' || Array.isArray(pack)) return null;
+  const snapshot = pack as Record<string, unknown>;
+  if (typeof snapshot.packSchemaVersion === 'string' && snapshot.packSchemaVersion !== '1.0.0') {
+    return 'Unsupported pack snapshot schema version.';
+  }
+  if (typeof snapshot.ruleSemanticsVersion === 'string' && snapshot.ruleSemanticsVersion !== EFFECTIVE_EVIDENCE_EQUALS_V2) {
+    return 'Unsupported semantic rule semantics version.';
+  }
+  return null;
+}
+
 export type KnownFactMigrationPlan =
   | {
     kind: 'ready';
@@ -132,8 +151,9 @@ export async function planKnownFactMigration(raw: unknown): Promise<KnownFactMig
     };
   } catch (error) {
     const reason = error instanceof Error ? error.message : 'Known-fact migration candidate is invalid.';
-    return /unsupported/i.test(reason)
-      ? { kind: 'unsupported', reason }
-      : { kind: 'invalid', reason };
+    const unsupported = unsupportedNestedVersionReason(raw);
+    return unsupported === null
+      ? { kind: 'invalid', reason }
+      : { kind: 'unsupported', reason: unsupported };
   }
 }
