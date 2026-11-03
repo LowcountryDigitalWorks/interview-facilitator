@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { generalDiscoveryPack } from '../src/pack';
 import { canonicalizeJson } from '../src/pack-identity';
+import { applyStatusControl } from '../src/live-session';
 import { createSemanticSession, validateSemanticSessionRecord } from '../src/semantic-session';
 import { acceptKnownFact, correctKnownFact, projectAcceptedKnownFact } from '../src/known-fact-evidence';
 import {
@@ -123,6 +124,32 @@ describe('#34A2A explicit 1.4 known-fact envelope', () => {
     await expect(validateKnownFactSession14Record(forged)).rejects.toThrow(/require confirmation/i);
   });
 
+  it('allows Skip and N/A to preserve a legacy source tag without active confirmation truth', async () => {
+    const old = await semantic13();
+    old.answers['existing-presence'] = {
+      ...old.answers['existing-presence']!,
+      value: SOURCE.value,
+      resolution: 'captured',
+      source: 'accepted-known-fact',
+      needsConfirmation: false,
+    };
+    const migrated = await migrateSemantic13ToKnownFact14(old);
+    const question = migrated.packSnapshot.questions.find((item) => item.id === 'existing-presence')!;
+    for (const [status, expected] of [['SKIP', 'deferred'], ['N_A', 'not-applicable']] as const) {
+      const changed = structuredClone(migrated);
+      changed.answers['existing-presence'] = applyStatusControl(
+        question, changed.answers['existing-presence']!, status,
+      );
+      expect(changed.answers['existing-presence']).toMatchObject({
+        resolution: expected,
+        source: 'accepted-known-fact',
+        needsConfirmation: false,
+      });
+      expect(changed.knownFactAnswerLinks['existing-presence']).toEqual({ kind: 'legacy-unverified' });
+      await expect(validateKnownFactSession14Record(changed)).resolves.toBeDefined();
+    }
+  });
+
   it('persists a question-scoped acceptance reference and refuses missing or mismatched provenance', async () => {
     const input = await migrateSemantic13ToKnownFact14(await semantic13());
     input.knownFactLedger = acceptKnownFact(input.knownFactLedger, {
@@ -188,6 +215,10 @@ describe('#34A2A explicit 1.4 known-fact envelope', () => {
       expectedRevisionId: input.revisionId, currentRevisionId: input.revisionId,
     });
     await expect(validateKnownFactSession14Record(input)).rejects.toThrow(/superseded/i);
+    const deferred = structuredClone(input);
+    deferred.answers['existing-presence']!.resolution = 'deferred';
+    deferred.answers['existing-presence']!.needsConfirmation = false;
+    await expect(validateKnownFactSession14Record(deferred)).resolves.toBeDefined();
     input.answers['existing-presence']!.needsConfirmation = true;
     await expect(validateKnownFactSession14Record(input)).resolves.toBeDefined();
   });
