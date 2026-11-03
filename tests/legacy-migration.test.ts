@@ -56,8 +56,9 @@ function legacyRecord(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put' | 'session-put'; abortWrite?: boolean; abortAtCommit?: boolean; swapSecondRead?: unknown } = {}) {
+function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put' | 'session-put'; abortWrite?: boolean; abortAtCommit?: boolean; swapSecondRead?: unknown; removeSecondRead?: boolean } = {}) {
   const stores = new Map<string, Map<string, unknown>>();
+  const transactions: Array<{ names: string[]; mode: IDBTransactionMode }> = [];
   let version = 0;
   let sessionReads = 0;
   const db = {
@@ -69,6 +70,7 @@ function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put
     close() {},
     transaction(storeNames: string | string[], mode: IDBTransactionMode) {
       const names = Array.isArray(storeNames) ? storeNames : [storeNames];
+      transactions.push({ names: [...names], mode });
       const writes: Array<{ store: string; key: string; value: unknown }> = [];
       let pending = 0;
       let aborted = false;
@@ -98,7 +100,8 @@ function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put
                 let value = store.get(String(key));
                 if (name === SESSIONS_STORE) {
                   sessionReads += 1;
-                  if (sessionReads === 2 && options.swapSecondRead !== undefined) value = options.swapSecondRead;
+                  if (sessionReads === 2 && options.removeSecondRead) value = undefined;
+                  else if (sessionReads === 2 && options.swapSecondRead !== undefined) value = options.swapSecondRead;
                 }
                 request.result = value === undefined ? undefined : structuredClone(value);
                 request.onsuccess?.();
@@ -176,6 +179,7 @@ function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put
   });
   return {
     stores,
+    transactions,
     setVersion(next: number) { version = next; },
     version: () => version,
   };
@@ -592,6 +596,9 @@ describe('legacy 1.0 to pinned 1.1 migration', () => {
       expect(canonicalizeJson(second.session)).toBe(canonicalizeJson(first.session));
     }
     expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size).toBe(1);
+    expect(memory.transactions.filter((tx) => tx.mode === 'readonly'
+      && tx.names.includes(SESSIONS_STORE)
+      && tx.names.includes(LEGACY_ARCHIVE_STORE))).toHaveLength(1);
   });
 
   it('fails closed when a current 1.3 row has no retained 1.2 migration source', async () => {
@@ -627,6 +634,17 @@ describe('legacy 1.0 to pinned 1.1 migration', () => {
     seedLegacy(memory, source);
     const result = await migrateSession12To13(SESSION_ID);
     expect(result.kind).toBe('aborted');
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(source);
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size ?? 0).toBe(0);
+  });
+
+  it('reports stale when the 1.2 source disappears before the migration transaction reread', async () => {
+    const memory = installMigrationDatabase({ removeSecondRead: true });
+    const source = await createPinnedSession(generalDiscoveryPack, { clientLabel: 'Synthetic 1.2' });
+    source.sessionId = SESSION_ID;
+    seedLegacy(memory, source);
+    const result = await migrateSession12To13(SESSION_ID);
+    expect(result.kind).toBe('stale');
     expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(source);
     expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size ?? 0).toBe(0);
   });

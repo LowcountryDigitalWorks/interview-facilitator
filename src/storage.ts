@@ -555,7 +555,7 @@ export async function migrateSession12To13(sessionId: string): Promise<SemanticM
     if (raw === undefined) return { kind: 'missing' };
     const plan = await planSemanticMigration(raw);
     if (plan.kind === 'unsupported' || plan.kind === 'invalid') return plan;
-    if (plan.kind === 'current') return await confirmSemanticAlreadyMigrated(db, sessionId, plan.session);
+    if (plan.kind === 'current') return await confirmSemanticAlreadyMigrated(db, sessionId);
     return await new Promise<SemanticMigrationResult>((resolve) => {
       const tx = openTransaction(db, [STORE, LEGACY_ARCHIVE_STORE], 'readwrite');
       let failure: SemanticMigrationResult | null = null;
@@ -571,7 +571,7 @@ export async function migrateSession12To13(sessionId: string): Promise<SemanticM
       currentRequest.onerror = () => fail({ kind: 'aborted' });
       currentRequest.onsuccess = () => {
         try {
-          if (canonicalizeJson(currentRequest.result) !== plan.fingerprint) {
+          if (currentRequest.result === undefined || canonicalizeJson(currentRequest.result) !== plan.fingerprint) {
             fail({ kind: 'stale' });
             return;
           }
@@ -608,21 +608,31 @@ export async function migrateSession12To13(sessionId: string): Promise<SemanticM
 async function confirmSemanticAlreadyMigrated(
   db: IDBDatabase,
   sessionId: string,
-  current: SemanticInterviewSession,
 ): Promise<SemanticMigrationResult> {
   const key = legacyArchiveKey(sessionId, '1.2.0', PINNED_12_TO_13_MIGRATION_ID);
-  const archived = await requestResult(db.transaction(LEGACY_ARCHIVE_STORE, 'readonly').objectStore(LEGACY_ARCHIVE_STORE).get(key));
+  const tx = openTransaction(db, [STORE, LEGACY_ARCHIVE_STORE], 'readonly');
+  const currentRequest = tx.objectStore(STORE).get(sessionId);
+  const archiveRequest = tx.objectStore(LEGACY_ARCHIVE_STORE).get(key);
+  const [rawCurrent, archived] = await Promise.all([
+    requestResult(currentRequest),
+    requestResult(archiveRequest),
+  ]);
+  if (rawCurrent === undefined) return { kind: 'stale' };
   if (archived === undefined) {
     return { kind: 'conflict', reason: 'Current semantic session has no retained pinned 1.2 migration source.' };
+  }
+  const currentPlan = await planSemanticMigration(rawCurrent);
+  if (currentPlan.kind !== 'current') {
+    return { kind: 'conflict', reason: 'Current semantic session changed while migration history was being verified.' };
   }
   const replay = await planSemanticMigration(archived);
   if (replay.kind !== 'ready') {
     return { kind: 'conflict', reason: 'Retained pinned 1.2 migration source cannot be replayed.' };
   }
-  if (canonicalizeJson(replay.session) !== canonicalizeJson(current)) {
+  if (canonicalizeJson(replay.session) !== canonicalizeJson(currentPlan.session)) {
     return { kind: 'conflict', reason: 'Retained pinned 1.2 migration source does not match the current semantic session.' };
   }
-  return { kind: 'already-migrated', session: current };
+  return { kind: 'already-migrated', session: currentPlan.session };
 }
 
 export async function requestPersistentStorage(): Promise<boolean | null> {

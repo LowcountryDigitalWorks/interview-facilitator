@@ -128,6 +128,28 @@ describe('semantic session 1.3 migration', () => {
     expect(await planSemanticMigration(wrongCurrentRules)).toMatchObject({ kind: 'unsupported' });
   });
 
+  it('requires explicit non-empty revision lineage in canonical 1.3 state', async () => {
+    const missingRevision = await current13() as Partial<SemanticInterviewSession>;
+    delete missingRevision.revisionId;
+    await expect(validateSemanticSessionRecord(missingRevision)).rejects.toThrow(/revisionId/i);
+
+    const emptyRevision = await current13();
+    emptyRevision.revisionId = '   ';
+    await expect(validateSemanticSessionRecord(emptyRevision)).rejects.toThrow(/revisionId/i);
+
+    const missingParent = await current13() as Partial<SemanticInterviewSession>;
+    delete missingParent.parentRevisionId;
+    await expect(validateSemanticSessionRecord(missingParent)).rejects.toThrow(/parentRevisionId/i);
+
+    const emptyParent = await current13();
+    emptyParent.parentRevisionId = '';
+    await expect(validateSemanticSessionRecord(emptyParent)).rejects.toThrow(/parentRevisionId/i);
+
+    const nullParent = await current13();
+    nullParent.parentRevisionId = null;
+    await expect(validateSemanticSessionRecord(nullParent)).resolves.toBeDefined();
+  });
+
   it('rejects unsupported fields and the legacy status field in canonical 1.3 state', async () => {
     const withTopLevelExtra = await current13() as SemanticInterviewSession & { unexpected?: string };
     withTopLevelExtra.unexpected = 'nope';

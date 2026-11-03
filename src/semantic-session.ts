@@ -135,6 +135,12 @@ export async function validateSemanticSessionRecord(value: unknown): Promise<Sem
   const record = requireRecord(value, 'Semantic session');
   requireOnlyKeys(record, SESSION_KEYS, 'Semantic session');
   if (record.sessionSchemaVersion !== SEMANTIC_SESSION_SCHEMA_VERSION) throw new Error('Unsupported semantic session schema version.');
+  requireNonEmptyString(record, 'revisionId', 'Semantic session');
+  if (!Object.prototype.hasOwnProperty.call(record, 'parentRevisionId')) throw new Error('Semantic session parentRevisionId is required.');
+  if (record.parentRevisionId !== null
+    && (typeof record.parentRevisionId !== 'string' || !record.parentRevisionId.trim())) {
+    throw new Error('Semantic session parentRevisionId must be null or a non-empty string.');
+  }
 
   const snapshotRecord = requireRecord(record.packSnapshot, 'Semantic pack snapshot');
   if (snapshotRecord.ruleSemanticsVersion !== EFFECTIVE_EVIDENCE_EQUALS_V2) throw new Error('Unsupported semantic rule semantics version.');
