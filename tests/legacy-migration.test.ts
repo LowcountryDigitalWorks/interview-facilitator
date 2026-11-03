@@ -13,7 +13,8 @@ import {
   planCurrentMigration,
   planLegacyMigration,
 } from '../src/session-migration';
-import { LEGACY_ARCHIVE_STORE, REVISION_HISTORY_STORE, SESSIONS_STORE, listSessions, migrateLegacySession } from '../src/storage';
+import { LEGACY_ARCHIVE_STORE, REVISION_HISTORY_STORE, SESSIONS_STORE, listSessions, migrateLegacySession, migrateSession12To13 } from '../src/storage';
+import { PINNED_12_TO_13_MIGRATION_ID, planSemanticMigration } from '../src/semantic-session';
 
 const SESSION_ID = 'synthetic-legacy-session';
 
@@ -55,8 +56,9 @@ function legacyRecord(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put' | 'session-put'; abortWrite?: boolean; abortAtCommit?: boolean; swapSecondRead?: unknown } = {}) {
+function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put' | 'session-put'; abortWrite?: boolean; abortAtCommit?: boolean; swapSecondRead?: unknown; removeSecondRead?: boolean } = {}) {
   const stores = new Map<string, Map<string, unknown>>();
+  const transactions: Array<{ names: string[]; mode: IDBTransactionMode }> = [];
   let version = 0;
   let sessionReads = 0;
   const db = {
@@ -68,6 +70,7 @@ function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put
     close() {},
     transaction(storeNames: string | string[], mode: IDBTransactionMode) {
       const names = Array.isArray(storeNames) ? storeNames : [storeNames];
+      transactions.push({ names: [...names], mode });
       const writes: Array<{ store: string; key: string; value: unknown }> = [];
       let pending = 0;
       let aborted = false;
@@ -97,7 +100,8 @@ function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put
                 let value = store.get(String(key));
                 if (name === SESSIONS_STORE) {
                   sessionReads += 1;
-                  if (sessionReads === 2 && options.swapSecondRead !== undefined) value = options.swapSecondRead;
+                  if (sessionReads === 2 && options.removeSecondRead) value = undefined;
+                  else if (sessionReads === 2 && options.swapSecondRead !== undefined) value = options.swapSecondRead;
                 }
                 request.result = value === undefined ? undefined : structuredClone(value);
                 request.onsuccess?.();
@@ -175,6 +179,7 @@ function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put
   });
   return {
     stores,
+    transactions,
     setVersion(next: number) { version = next; },
     version: () => version,
   };
@@ -544,6 +549,116 @@ describe('legacy 1.0 to pinned 1.1 migration', () => {
     expect(result.kind).toBe('conflict');
     expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toBe(current);
     expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.get(legacyArchiveKey(SESSION_ID))).toBe(archived);
+  });
+
+  it('keeps 1.0→1.1→1.2→1.3 migration sequential rather than skipping accepted semantics', async () => {
+    const source10 = legacyRecord();
+    const plan12 = await planCurrentMigration(source10);
+    expect(plan12.kind).toBe('ready');
+    if (plan12.kind !== 'ready') return;
+    expect(plan12.session.sessionSchemaVersion).toBe('1.2.0');
+    expect(plan12.session.packSnapshot.ruleSemanticsVersion).toBe('condition-equals-v1');
+    const plan13 = await planSemanticMigration(plan12.session);
+    expect(plan13.kind).toBe('ready');
+    if (plan13.kind !== 'ready') return;
+    expect(plan13.session.sessionSchemaVersion).toBe('1.3.0');
+    expect(plan13.session.parentRevisionId).toBe(plan12.session.revisionId);
+    expect(plan13.session.packSnapshot.ruleSemanticsVersion).toBe('effective-evidence-equals-v2');
+  });
+
+  it('atomically archives an exact 1.2 source while committing dormant 1.3 semantic state', async () => {
+    const memory = installMigrationDatabase();
+    const source = await createPinnedSession(generalDiscoveryPack, { clientLabel: 'Synthetic 1.2' }, new Date('2026-11-02T12:00:00.000Z'));
+    source.sessionId = SESSION_ID;
+    source.answers['existing-presence'] = { value: 'Retained context', status: 'MUST_CONFIRM', note: 'Private note' };
+    seedLegacy(memory, source);
+    const result = await migrateSession12To13(SESSION_ID);
+    expect(result.kind).toBe('migrated');
+    const archiveKey = legacyArchiveKey(SESSION_ID, '1.2.0', PINNED_12_TO_13_MIGRATION_ID);
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.get(archiveKey)).toEqual(source);
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toMatchObject({
+      sessionSchemaVersion: '1.3.0',
+      parentRevisionId: source.revisionId,
+      answers: { 'existing-presence': { value: 'Retained context', resolution: 'captured', needsConfirmation: true, note: 'Private note' } },
+    });
+  });
+
+  it('replays the retained 1.2 archive before reporting an already-migrated 1.3 row', async () => {
+    const memory = installMigrationDatabase();
+    const source = await createPinnedSession(generalDiscoveryPack, { clientLabel: 'Synthetic 1.2' });
+    source.sessionId = SESSION_ID;
+    seedLegacy(memory, source);
+    const first = await migrateSession12To13(SESSION_ID);
+    const second = await migrateSession12To13(SESSION_ID);
+    expect(first.kind).toBe('migrated');
+    expect(second.kind).toBe('already-migrated');
+    if (first.kind === 'migrated' && second.kind === 'already-migrated') {
+      expect(canonicalizeJson(second.session)).toBe(canonicalizeJson(first.session));
+    }
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size).toBe(1);
+    expect(memory.transactions.filter((tx) => tx.mode === 'readonly'
+      && tx.names.includes(SESSIONS_STORE)
+      && tx.names.includes(LEGACY_ARCHIVE_STORE))).toHaveLength(1);
+  });
+
+  it('fails closed when a current 1.3 row has no retained 1.2 migration source', async () => {
+    const memory = installMigrationDatabase();
+    const source = await createPinnedSession(generalDiscoveryPack, { clientLabel: 'Synthetic 1.2' });
+    source.sessionId = SESSION_ID;
+    seedLegacy(memory, source);
+    expect((await migrateSession12To13(SESSION_ID)).kind).toBe('migrated');
+    memory.stores.get(LEGACY_ARCHIVE_STORE)?.clear();
+    expect(await migrateSession12To13(SESSION_ID)).toMatchObject({ kind: 'conflict' });
+  });
+
+  it('fails closed when retained 1.2 history no longer reproduces the current 1.3 row', async () => {
+    const memory = installMigrationDatabase();
+    const source = await createPinnedSession(generalDiscoveryPack, { clientLabel: 'Synthetic 1.2' });
+    source.sessionId = SESSION_ID;
+    seedLegacy(memory, source);
+    expect((await migrateSession12To13(SESSION_ID)).kind).toBe('migrated');
+    const archiveKey = legacyArchiveKey(SESSION_ID, '1.2.0', PINNED_12_TO_13_MIGRATION_ID);
+    memory.stores.get(LEGACY_ARCHIVE_STORE)?.set(archiveKey, { ...structuredClone(source), runningNotes: 'Conflicting retained source.' });
+    expect(await migrateSession12To13(SESSION_ID)).toMatchObject({ kind: 'conflict' });
+  });
+
+  it.each([
+    { fail: 'archive-get' as const },
+    { fail: 'archive-put' as const },
+    { fail: 'session-put' as const },
+    { abortAtCommit: true },
+  ])('rolls back 1.2→1.3 migration on transaction failure: %j', async (options) => {
+    const memory = installMigrationDatabase(options);
+    const source = await createPinnedSession(generalDiscoveryPack, { clientLabel: 'Synthetic 1.2' });
+    source.sessionId = SESSION_ID;
+    seedLegacy(memory, source);
+    const result = await migrateSession12To13(SESSION_ID);
+    expect(result.kind).toBe('aborted');
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(source);
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size ?? 0).toBe(0);
+  });
+
+  it('reports stale when the 1.2 source disappears before the migration transaction reread', async () => {
+    const memory = installMigrationDatabase({ removeSecondRead: true });
+    const source = await createPinnedSession(generalDiscoveryPack, { clientLabel: 'Synthetic 1.2' });
+    source.sessionId = SESSION_ID;
+    seedLegacy(memory, source);
+    const result = await migrateSession12To13(SESSION_ID);
+    expect(result.kind).toBe('stale');
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(source);
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size ?? 0).toBe(0);
+  });
+
+  it('does not commit 1.3 when the 1.2 source changes before the transaction', async () => {
+    const source = await createPinnedSession(generalDiscoveryPack, { clientLabel: 'Synthetic 1.2' });
+    source.sessionId = SESSION_ID;
+    const changed = { ...structuredClone(source), runningNotes: 'Changed before commit.' };
+    const memory = installMigrationDatabase({ swapSecondRead: changed });
+    seedLegacy(memory, source);
+    const result = await migrateSession12To13(SESSION_ID);
+    expect(result.kind).toBe('stale');
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(source);
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size ?? 0).toBe(0);
   });
 
   it('does not rewrite a current session that has no legacy archive', async () => {
