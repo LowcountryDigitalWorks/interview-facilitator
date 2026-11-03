@@ -131,9 +131,9 @@ export async function planKnownFactMigration(raw: unknown): Promise<KnownFactMig
       migrationId: SEMANTIC_13_TO_KNOWN_FACT_14_MIGRATION_ID,
     };
   } catch (error) {
-    return {
-      kind: 'invalid',
-      reason: error instanceof Error ? error.message : 'Known-fact migration candidate is invalid.',
-    };
+    const reason = error instanceof Error ? error.message : 'Known-fact migration candidate is invalid.';
+    return /unsupported/i.test(reason)
+      ? { kind: 'unsupported', reason }
+      : { kind: 'invalid', reason };
   }
 }
