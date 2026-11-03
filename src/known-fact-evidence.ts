@@ -211,6 +211,7 @@ export function correctKnownFact(
 export function projectAcceptedKnownFact(
   source: KnownFactLedger,
   acceptanceId: string,
+  targetQuestionId: string,
   spec: CaptureSpec,
   existingAnswer: SemanticAnswerState,
 ): { answer: SemanticAnswerState; factId: string; acceptanceId: string } {
@@ -218,6 +219,10 @@ export function projectAcceptedKnownFact(
   const acceptance = ledger.acceptances.find((event) => event.id === acceptanceId);
   if (!acceptance) throw new Error('Unknown known fact acceptance.');
   const fact = currentFact(ledger, acceptance.factId);
+  const target = text(targetQuestionId, 'Target question ID');
+  if (fact.questionId !== undefined && fact.questionId !== target) {
+    throw new Error('Known fact is attributed to another question.');
+  }
   if (acceptance.valueSnapshot !== fact.value || !isMeaningfulCaptureValue(spec, fact.value)) {
     throw new Error('Accepted known fact does not contain a meaningful value for this question.');
   }
