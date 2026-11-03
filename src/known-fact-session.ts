@@ -80,8 +80,8 @@ function validateAnswerLinks(
       if (Object.keys(link).some((key) => key !== 'kind')) {
         throw new Error('Legacy unverified link contains an unsupported field.');
       }
-      if (!answer.needsConfirmation) {
-        throw new Error('Legacy unverified accepted-known-fact evidence must require confirmation.');
+      if (answer.resolution === 'captured' && !answer.needsConfirmation) {
+        throw new Error('Legacy unverified captured known-fact evidence must require confirmation.');
       }
       checked[questionId] = { kind: 'legacy-unverified' };
       continue;
@@ -103,7 +103,8 @@ function validateAnswerLinks(
     if (fact.questionId !== undefined && fact.questionId !== questionId) {
       throw new Error('Accepted known-fact answer link has incorrect question attribution.');
     }
-    if (!answer.needsConfirmation && ledger.facts.some((item) => item.supersedesFactId === fact.id)) {
+    if (answer.resolution === 'captured' && !answer.needsConfirmation
+      && ledger.facts.some((item) => item.supersedesFactId === fact.id)) {
       throw new Error('Superseded known-fact answer must require confirmation.');
     }
     checked[questionId] = {
