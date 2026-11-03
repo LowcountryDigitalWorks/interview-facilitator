@@ -545,7 +545,7 @@ function renderInterview(): void {
     <main id="main" class="cockpit" ${presenting ? 'style="display:block"' : ''}>
       ${presenting ? '' : `<aside class="coverage-rail" id="coverage-mobile-panel" aria-labelledby="coverage-panel-title">
         <button class="text-button mobile-panel-close" data-action="close-mobile-panel">Close coverage</button>
-        <div class="rail-heading"><p class="eyebrow" id="coverage-panel-title">Coverage</p><strong data-coverage-resolved>${stats.resolved} resolved</strong><span data-coverage-summary>${stats.remaining} currently remaining · ${stats.mustConfirm} must confirm</span></div>
+        <div class="rail-heading"><p class="eyebrow" id="coverage-panel-title">Coverage</p><strong data-coverage-resolved>${stats.resolved} current · ${stats.notApplicable} N/A</strong><span data-coverage-summary>${stats.remaining} currently remaining · ${stats.mustConfirm} must confirm</span></div>
         ${sessionPack(session).sections.map((item) => {
           const questions = visibleQuestions(session!).filter((candidate) => candidate.sectionId === item.id);
           if (!questions.length) return '';
@@ -554,7 +554,7 @@ function renderInterview(): void {
         }).join('')}
       </aside>`}
       <section class="question-stage">
-        ${presenting ? '<div class="known-preview"><strong>Presentation view</strong><p>Internal notes, provenance, coverage, status controls, and private tools are intentionally excluded. Answer text can still contain sensitive material, so use interviewer judgment while sharing.</p></div>' : `<div class="mobile-tools"><button class="secondary small" type="button" data-action="coverage" id="coverage-mobile-trigger" aria-controls="coverage-mobile-panel" aria-expanded="false" data-coverage-mobile>Coverage ${stats.resolved}/${stats.visible}</button><button class="secondary small" type="button" data-action="context" id="context-mobile-trigger" aria-controls="context-mobile-panel" aria-expanded="false">Context ${facts.length}</button></div>`}
+        ${presenting ? '<div class="known-preview"><strong>Presentation view</strong><p>Internal notes, provenance, coverage, status controls, and private tools are intentionally excluded. Answer text can still contain sensitive material, so use interviewer judgment while sharing.</p></div>' : `<div class="mobile-tools"><button class="secondary small" type="button" data-action="coverage" id="coverage-mobile-trigger" aria-controls="coverage-mobile-panel" aria-expanded="false" data-coverage-mobile>Coverage ${stats.resolved + stats.notApplicable}/${stats.visible}</button><button class="secondary small" type="button" data-action="context" id="context-mobile-trigger" aria-controls="context-mobile-panel" aria-expanded="false">Context ${facts.length}</button></div>`}
         <p class="eyebrow">${escapeHtml(section?.title ?? '')}</p>
         <h1 id="question-prompt">${escapeHtml(question.prompt)}</h1>
         ${question.help ? `<p id="question-help" class="question-help">${escapeHtml(question.help)}</p>` : ''}
@@ -574,9 +574,9 @@ function renderInterview(): void {
     if (!session || presenting) return;
     const latest = coverage(session);
     const latestBuckets = coverageBucketMap(session);
-    app.querySelector<HTMLElement>('[data-coverage-resolved]')?.replaceChildren(document.createTextNode(`${latest.resolved} resolved`));
+    app.querySelector<HTMLElement>('[data-coverage-resolved]')?.replaceChildren(document.createTextNode(`${latest.resolved} current · ${latest.notApplicable} N/A`));
     app.querySelector<HTMLElement>('[data-coverage-summary]')?.replaceChildren(document.createTextNode(`${latest.remaining} currently remaining · ${latest.mustConfirm} must confirm`));
-    app.querySelector<HTMLElement>('[data-coverage-mobile]')?.replaceChildren(document.createTextNode(`Coverage ${latest.resolved}/${latest.visible}`));
+    app.querySelector<HTMLElement>('[data-coverage-mobile]')?.replaceChildren(document.createTextNode(`Coverage ${latest.resolved + latest.notApplicable}/${latest.visible}`));
     app.querySelectorAll<HTMLElement>('[data-section-id]').forEach((sectionElement) => {
       if (!session) return;
       const sectionId = sectionElement.dataset.sectionId ?? '';
@@ -587,6 +587,16 @@ function renderInterview(): void {
     app.querySelectorAll<HTMLElement>('[data-question-id]').forEach((button) => {
       const questionId = button.dataset.questionId ?? '';
       button.classList.toggle('confirm', latestBuckets[questionId] === 'needs-confirmation');
+    });
+  };
+
+  const syncStatusControls = (): void => {
+    if (!session || presenting) return;
+    const selected = statusControlForState(session.answers[question.id] ?? blankSemanticState());
+    app.querySelectorAll<HTMLInputElement>('input[name="status"]').forEach((input) => {
+      const isSelected = input.value === selected;
+      input.checked = isSelected;
+      input.closest<HTMLElement>('.status-chip')?.classList.toggle('selected', isSelected);
     });
   };
 
@@ -650,6 +660,7 @@ function renderInterview(): void {
     const beforeKey = visibleQuestionKey(session);
     commitValue(element.value);
     if (rerenderIfVisibilityChanged(beforeKey, element.value)) return;
+    syncStatusControls();
     updateCoverageSummary();
     queueMicrotask(() => element.focus());
   }));
@@ -659,7 +670,7 @@ function renderInterview(): void {
     const beforeKey = visibleQuestionKey(session);
     commitStatus(element.value as AnswerStatus);
     if (rerenderIfVisibilityChanged(beforeKey)) return;
-    app.querySelectorAll<HTMLElement>('.status-chip').forEach((chip) => chip.classList.toggle('selected', chip.contains(element)));
+    syncStatusControls();
     updateCoverageSummary();
     queueMicrotask(() => element.focus());
   }));
@@ -670,7 +681,10 @@ function renderInterview(): void {
     const textarea = app.querySelector<HTMLTextAreaElement>('#answer');
     const input = app.querySelector<HTMLInputElement>('#answer');
     commitValue(textarea?.value ?? input?.value ?? null);
-    if (!rerenderIfVisibilityChanged(beforeKey)) updateCoverageSummary();
+    if (!rerenderIfVisibilityChanged(beforeKey)) {
+      syncStatusControls();
+      updateCoverageSummary();
+    }
   });
   app.querySelector<HTMLTextAreaElement>('#question-note')?.addEventListener('input', () => { syncPrivateNotes(); scheduleSave(); });
   app.querySelector<HTMLTextAreaElement>('#running-notes')?.addEventListener('input', () => { syncPrivateNotes(); scheduleSave(); });

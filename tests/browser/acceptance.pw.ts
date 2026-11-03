@@ -218,6 +218,7 @@ test('textarea answer exposes prompt and helper in its accessible name and descr
 
 test('status radio keeps focus and node identity through autosave update', async ({ page }) => {
   await startFreshInterview(page);
+  await page.locator('#answer').fill('Current state summary');
   const answered = page.locator('label.status-chip', { hasText: 'Answered' }).locator('input');
   await page.locator('label.status-chip', { hasText: 'Answered' }).click();
   await page.waitForTimeout(280);
@@ -227,6 +228,29 @@ test('status radio keeps focus and node identity through autosave update', async
   await page.waitForTimeout(280);
   await expect(answered).toBeFocused();
   expect(await answered.evaluate((element) => element.outerHTML)).toBe(nodeId);
+});
+
+test('status chips are re-derived from persisted semantic state after status and answer edits', async ({ page }) => {
+  await startFreshInterview(page);
+  const alreadyKnown = page.locator('label.status-chip', { hasText: 'Already known' }).locator('input');
+  const answered = page.locator('label.status-chip', { hasText: 'Answered' }).locator('input');
+
+  await page.locator('label.status-chip', { hasText: 'Already known' }).click();
+  await expect(alreadyKnown).not.toBeChecked();
+  await expect(page.locator('input[name="status"]:checked')).toHaveCount(0);
+
+  await page.locator('#answer').fill('Client supplied current state');
+  await expect(answered).toBeChecked();
+  await expect(page.locator('label.status-chip', { hasText: 'Answered' })).toHaveClass(/selected/);
+});
+
+test('N/A coverage is visible in summaries and counts toward disposed mobile coverage', async ({ page }) => {
+  await startFreshInterview(page);
+  await page.locator('label.status-chip', { hasText: 'N/A' }).click();
+
+  await expect(page.locator('[data-coverage-resolved]')).toContainText('0 current');
+  await expect(page.locator('[data-coverage-resolved]')).toContainText('1 N/A');
+  await expect(page.locator('[data-coverage-mobile]')).toHaveText('Coverage 1/5');
 });
 
 test('single-choice answer keeps focus when conditional visibility is unchanged', async ({ page }) => {
