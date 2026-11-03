@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { canonicalizeJson } from '../src/pack-identity';
+import { effectiveEvidence } from '../src/coverage-semantics';
 import {
   acceptKnownFact,
   correctKnownFact,
@@ -144,6 +145,9 @@ describe('#34A1 immutable known-fact evidence domain', () => {
     expect(() => projectAcceptedKnownFact(ledger, 'accept-a', 'unrelated-question', { kind: 'text' }, emptyAnswer())).toThrow(/another question/i);
     expect(() => projectAcceptedKnownFact(ledger, 'accept-a', '   ', { kind: 'text' }, emptyAnswer())).toThrow(/nonempty/i);
     expect(projectAcceptedKnownFact(ledger, 'accept-a', 'hosting-preference', { kind: 'single', options: ['Managed hosting'] }, emptyAnswer()).answer.resolution).toBe('captured');
+    const projection = projectAcceptedKnownFact(ledger, 'accept-a', 'hosting-preference', { kind: 'text' }, emptyAnswer());
+    expect(projection.answer.needsConfirmation).toBe(false);
+    expect(effectiveEvidence({ kind: 'text' }, projection.answer).strength).toBe('authoritative');
     const corrected = correctKnownFact(ledger, {
       id: 'fact-b', supersedesFactId: 'fact-a', value: 'Cloud',
       provenance: 'Corrected source', expectedRevisionId: 'rev-2', currentRevisionId: 'rev-2',
@@ -163,6 +167,10 @@ describe('#34A1 immutable known-fact evidence domain', () => {
   });
 
   it('cannot change question attribution or attach a forward/cyclic supersession reference', () => {
+    expect(() => validateKnownFactLedger({
+      facts: [FACT, { ...FACT, id: 'fact-b', label: 'Different name', supersedesFactId: 'fact-a' }],
+      acceptances: [],
+    })).toThrow(/fact label/i);
     expect(() => validateKnownFactLedger({
       facts: [FACT, { ...FACT, id: 'fact-b', questionId: 'unrelated', supersedesFactId: 'fact-a' }],
       acceptances: [],
