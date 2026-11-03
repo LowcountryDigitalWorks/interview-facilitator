@@ -1,9 +1,9 @@
 import type { InterviewSession } from './domain';
-import { touch } from './domain';
+import type { RevisionedSession } from './session-semantic';
 
-export interface AutosaveHooks {
+export interface AutosaveHooks<T extends RevisionedSession> {
   onScheduled?: (sessionId: string) => void;
-  onSaved?: (sessionId: string, savedSession: InterviewSession) => void;
+  onSaved?: (sessionId: string, savedSession: T) => void;
   onError?: (sessionId: string, error: unknown) => void;
 }
 
@@ -14,20 +14,20 @@ interface PendingTimer {
   run: () => void;
 }
 
-export class SessionAutosaveCoordinator {
+export class SessionAutosaveCoordinator<T extends RevisionedSession = InterviewSession> {
   private readonly timers = new Map<string, PendingTimer>();
   private readonly generations = new Map<string, number>();
   private readonly tails = new Map<string, Promise<void>>();
   private readonly errors = new Map<string, unknown>();
-  private readonly liveSessions = new Map<string, InterviewSession>();
+  private readonly liveSessions = new Map<string, T>();
   private readonly expectedRevisions = new Map<string, string | null>();
 
   constructor(
-    private readonly persist: (session: InterviewSession, expectedRevisionId: string | null) => Promise<InterviewSession | void>,
+    private readonly persist: (session: T, expectedRevisionId: string | null) => Promise<NoInfer<T> | void>,
     private readonly delayMs = 180,
   ) {}
 
-  schedule(session: InterviewSession, hooks: AutosaveHooks = {}): void {
+  schedule(session: T, hooks: AutosaveHooks<T> = {}): void {
     this.liveSessions.set(session.sessionId, session);
     if (!this.timers.has(session.sessionId) && !this.tails.has(session.sessionId)) {
       this.expectedRevisions.set(session.sessionId, session.revisionId);
@@ -37,7 +37,7 @@ export class SessionAutosaveCoordinator {
     this.queue(session, hooks, this.delayMs);
   }
 
-  private queue(session: InterviewSession, hooks: AutosaveHooks, delayMs: number): void {
+  private queue(session: T, hooks: AutosaveHooks<T>, delayMs: number): void {
     const sessionId = session.sessionId;
     const generation = (this.generations.get(sessionId) ?? 0) + 1;
     this.generations.set(sessionId, generation);
@@ -52,7 +52,8 @@ export class SessionAutosaveCoordinator {
       const pending = this.timers.get(sessionId);
       if (pending?.run === run) this.timers.delete(sessionId);
 
-      const snapshot = touch(structuredClone(session));
+      const snapshot = structuredClone(session);
+      snapshot.updatedAt = new Date().toISOString();
       const previous = this.tails.get(sessionId) ?? Promise.resolve();
 
       const operation = previous
@@ -61,7 +62,11 @@ export class SessionAutosaveCoordinator {
           try {
             const expectedRevisionId = this.expectedRevisions.get(sessionId) ?? null;
             const saved = await this.persist(snapshot, expectedRevisionId);
-            const savedSession = saved ?? { ...snapshot, revisionId: crypto.randomUUID(), parentRevisionId: expectedRevisionId };
+            const savedSession = saved ?? {
+              ...snapshot,
+              revisionId: crypto.randomUUID(),
+              parentRevisionId: expectedRevisionId,
+            } as T;
             this.expectedRevisions.set(sessionId, savedSession.revisionId);
             const liveSession = this.liveSessions.get(sessionId);
             if (liveSession) {
