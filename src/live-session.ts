@@ -83,7 +83,8 @@ export function statusControlForState(state: SemanticAnswerState): AnswerStatus 
   if (state.resolution === 'deferred') return 'SKIP';
   if (state.resolution === 'not-applicable') return 'N_A';
   if (state.resolution !== 'captured') return null;
-  if (state.needsConfirmation) return state.source === null ? 'ALREADY_KNOWN' : 'MUST_CONFIRM';
+  if (state.source === null) return 'ALREADY_KNOWN';
+  if (state.needsConfirmation) return 'MUST_CONFIRM';
   if (state.source === 'accepted-known-fact') return 'ALREADY_KNOWN';
   return 'ANSWERED';
 }
@@ -141,18 +142,40 @@ export function applyValueEdit(
   state: SemanticAnswerState,
   nextValue: string | null,
 ): SemanticAnswerState {
-  const updated = updateValueWithConfirmationInvalidation(state, nextValue);
-  if (!isMeaningfulCaptureValue(captureSpecForQuestion(question), nextValue)) {
-    return { ...updated, resolution: 'unresolved' } as SemanticAnswerState;
+  // DOM synchronization can re-read an unchanged value during navigation. A no-op read must not
+  // reclassify an explicit human resolution such as Skip/N/A or unresolved retained evidence.
+  if (state.value === nextValue) return state;
+
+  const updated = updateValueWithConfirmationInvalidation(state, nextValue) as SemanticAnswerState;
+  const meaningful = isMeaningfulCaptureValue(captureSpecForQuestion(question), nextValue);
+
+  if (!meaningful) {
+    return state.resolution === 'captured'
+      ? { ...updated, resolution: 'unresolved' }
+      : updated;
   }
-  if (state.resolution === 'captured') return updated as SemanticAnswerState;
-  return {
-    ...updated,
-    resolution: 'captured',
-    source: 'client-statement',
-    needsConfirmation: false,
-    confirmation: null,
-  } as SemanticAnswerState;
+
+  if (state.resolution === 'unresolved') {
+    return {
+      ...updated,
+      resolution: 'captured',
+      source: 'client-statement',
+      needsConfirmation: false,
+      confirmation: null,
+    };
+  }
+
+  // A user-entered correction is no longer evidence from the previously accepted known fact.
+  if (state.resolution === 'captured' && state.source === 'accepted-known-fact') {
+    return {
+      ...updated,
+      source: 'client-statement',
+      needsConfirmation: false,
+      confirmation: null,
+    };
+  }
+
+  return updated;
 }
 
 /**

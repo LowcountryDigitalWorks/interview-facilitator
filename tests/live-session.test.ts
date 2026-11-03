@@ -147,4 +147,116 @@ describe('live semantic session adapter', () => {
     expect(semanticStatusLabel(question, state({ value: 'Email', resolution: 'captured', source: 'accepted-known-fact' }))).toBe('Known context');
     expect(semanticStatusLabel(question, state({ value: 'Email', resolution: 'deferred', source: 'client-statement' }))).toBe('Deferred');
   });
-});
+
+  it('keeps explicit deferred and N/A resolutions stable across no-op and ordinary value synchronization', async () => {
+    const current = await session();
+    const question = current.packSnapshot.questions.find((item) => item.id === 'primary-goal')!;
+
+    for (const resolution of ['deferred', 'not-applicable'] as const) {
+      const blank = state({ resolution });
+      expect(applyValueEdit(question, blank, null)).toBe(blank);
+
+      const retained = state({ value: 'Retained historical value', resolution, source: 'client-statement' });
+      expect(applyValueEdit(question, retained, 'Retained historical value')).toBe(retained);
+      expect(applyValueEdit(question, retained, 'Updated retained value')).toMatchObject({
+        value: 'Updated retained value',
+        resolution,
+        source: 'client-statement',
+      });
+      expect(applyValueEdit(question, retained, '   ')).toMatchObject({
+        value: '   ',
+        resolution,
+        source: 'client-statement',
+      });
+    }
+  });
+
+  it('reclassifies a corrected accepted known fact as a client statement but leaves a no-op read untouched', async () => {
+    const current = await session();
+    const question = current.packSnapshot.questions.find((item) => item.id === 'existing-presence')!;
+    const known = state({
+      value: 'Known context',
+      resolution: 'captured',
+      source: 'accepted-known-fact',
+    });
+
+    expect(applyValueEdit(question, known, 'Known context')).toBe(known);
+    expect(applyValueEdit(question, known, 'Client correction')).toMatchObject({
+      value: 'Client correction',
+      resolution: 'captured',
+      source: 'client-statement',
+      needsConfirmation: false,
+      confirmation: null,
+    });
+  });
+
+  it('invalidates a current confirmation when a captured client statement changes meaningfully', async () => {
+    const current = await session();
+    const question = current.packSnapshot.questions.find((item) => item.id === 'primary-goal')!;
+    const confirmed = state({
+      value: 'Original goal',
+      resolution: 'captured',
+      source: 'client-statement',
+      confirmation: { revisionId: 'rev-confirmed', confirmedAt: '2026-11-02T12:02:00.000Z', value: 'Original goal' },
+    });
+
+    expect(applyValueEdit(question, confirmed, 'Corrected goal')).toMatchObject({
+      value: 'Corrected goal',
+      resolution: 'captured',
+      source: 'client-statement',
+      needsConfirmation: true,
+      confirmation: null,
+    });
+  });
+
+  it('keeps compatibility status selection aligned with tentative semantic truth', async () => {
+    const current = await session();
+    const question = current.packSnapshot.questions.find((item) => item.id === 'primary-goal')!;
+    const sourceUnknown = state({ value: 'Provisional', resolution: 'captured', source: null, needsConfirmation: false });
+    expect(statusControlForState(sourceUnknown)).toBe('ALREADY_KNOWN');
+    expect(semanticStatusLabel(question, sourceUnknown)).toBe('Needs confirmation');
+
+    for (const status of ['ALREADY_KNOWN', 'MUST_CONFIRM'] as const) {
+      const blank = applyStatusControl(question, state({ value: '   ' }), status);
+      expect(blank).toMatchObject({ resolution: 'unresolved', needsConfirmation: true });
+      expect(statusControlForState(blank)).toBeNull();
+    }
+  });
+
+  it('marks direct reactivation states for review without discarding retained evidence', async () => {
+    const cases: Array<[string, SemanticAnswerState, Partial<SemanticAnswerState>]> = [
+      ['captured', state({ value: 'Retained capture', resolution: 'captured', source: 'client-statement' }), { resolution: 'captured', needsConfirmation: true }],
+      ['deferred', state({ value: 'Retained deferred', resolution: 'deferred', source: 'client-statement' }), { resolution: 'unresolved', needsConfirmation: true }],
+      ['not-applicable', state({ value: 'Retained N/A', resolution: 'not-applicable', source: 'client-statement' }), { resolution: 'unresolved', needsConfirmation: true }],
+      ['unresolved retained', state({ value: 'Retained unresolved', resolution: 'unresolved' }), { resolution: 'unresolved', needsConfirmation: true }],
+      ['unresolved empty', state({ value: null, resolution: 'unresolved' }), { resolution: 'unresolved', needsConfirmation: false }],
+    ];
+
+    for (const [label, childState, expected] of cases) {
+      const current = await session();
+      const parent = current.packSnapshot.questions.find((question) => question.id === 'needs-booking')!;
+      const child = current.packSnapshot.questions.find((question) => question.id === 'booking-process')!;
+      current.answers[parent.id] = applyValueEdit(parent, current.answers[parent.id]!, 'No');
+      current.answers[child.id] = childState;
+      const before = relevanceMap(current);
+      expect(before[child.id], label).toBe('irrelevant');
+
+      current.answers[parent.id] = applyValueEdit(parent, current.answers[parent.id]!, 'Yes');
+      applyReactivationReviews(current, before);
+
+      expect(relevanceMap(current)[child.id], label).toBe('relevant');
+      expect(current.answers[child.id], label).toMatchObject({ value: childState.value, ...expected });
+    }
+  });
+
+  it('falls back to the first visible question when the current question becomes hidden', async () => {
+    const current = await session();
+    const parent = current.packSnapshot.questions.find((question) => question.id === 'needs-booking')!;
+    const child = current.packSnapshot.questions.find((question) => question.id === 'booking-process')!;
+    current.answers[parent.id] = applyValueEdit(parent, current.answers[parent.id]!, 'No');
+    const firstVisible = visibleQuestions(current)[0]!;
+
+    expect(relevanceMap(current)[child.id]).toBe('irrelevant');
+    expect(nextVisibleQuestion(current, child.id, 1)?.id).toBe(firstVisible.id);
+    expect(nextVisibleQuestion(current, child.id, -1)?.id).toBe(firstVisible.id);
+  });});
