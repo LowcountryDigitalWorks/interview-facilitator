@@ -121,6 +121,19 @@ describe('#34A2A explicit 1.4 known-fact envelope', () => {
     expect(await planKnownFactMigration(packFuture)).toMatchObject({ kind: 'unsupported' });
   });
 
+  it('classifies closed-key corruption as invalid even when the error says unsupported field', async () => {
+    const source = await semantic13();
+    expect(await planKnownFactMigration({ ...source, unsupportedField: true })).toMatchObject({ kind: 'invalid' });
+    const upgraded = await migrateSemantic13ToKnownFact14(source);
+    expect(await planKnownFactMigration({ ...upgraded, unsupportedField: true })).toMatchObject({ kind: 'invalid' });
+
+    const answerExtra = structuredClone(upgraded) as unknown as {
+      answers: Record<string, Record<string, unknown>>;
+    };
+    answerExtra.answers['existing-presence']!.unsupportedField = true;
+    expect(await planKnownFactMigration(answerExtra)).toMatchObject({ kind: 'invalid' });
+  });
+
   it('fails closed on invalid 1.3 sources and preserves all source bytes in memory', async () => {
     const source = await semantic13();
     source.answers['existing-presence']!.resolution = 'captured';
