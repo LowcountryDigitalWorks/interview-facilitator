@@ -1,16 +1,28 @@
 import './styles.css';
-import type { AnswerStatus, InterviewSession, Question } from './domain';
-import { coverage, nextVisibleQuestion, relevantKnownFacts, sessionPack, visibleQuestions } from './domain';
-import { createPinnedSession, validateSessionRecord } from './pack-identity';
+import type { AnswerStatus, Question } from './domain';
 import { generalDiscoveryPack as pack } from './pack';
 import { deleteSession, exportRecoveryBackup, listSessions, loadSession, migrateLegacySession, replaceSessionWithHistory, requestPersistentStorage, RevisionConflictError, saveSession } from './storage';
-import { serializeSession, sessionToMarkdown } from './markdown';
+import { semanticSessionToMarkdown, serializeSession } from './markdown';
 import { formatConnectivityLabel, formatSaveLabel, type PersistenceState, type SaveState } from './indicators';
 import { SessionAutosaveCoordinator } from './autosave';
 import { readSessionList } from './session-list';
 import { beginSessionSwitch, importSessionWithCollisionHandling, openStoredSession, SessionSwitchGate, shouldFlushActiveSession, type ImportCollisionChoice, type OpenStoredSessionResult } from './session-durability';
-import { enterPresentation, exitPresentation, isPresentationMode, projectReadBack, type PresentationMode } from './presentation';
+import { enterPresentation, exitPresentation, isPresentationMode, projectSemanticReadBack, type PresentationMode } from './presentation';
 import { paintUpdateSlot, startControlledUpdates } from './pwa';
+import { createSemanticSession, validateSemanticSessionRecord, type SemanticAnswerState, type SemanticInterviewSession } from './semantic-session';
+import {
+  applyReactivationReviews,
+  applyStatusControl,
+  applyValueEdit,
+  coverage,
+  coverageBucketMap,
+  nextVisibleQuestion,
+  relevanceMap,
+  semanticStatusLabel,
+  sessionPack,
+  statusControlForState,
+  visibleQuestions,
+} from './live-session';
 
 const appElement = document.querySelector<HTMLDivElement>('#app');
 if (!appElement) throw new Error('App root not found.');
@@ -19,7 +31,7 @@ const app: HTMLDivElement = appElement;
 type View = 'home' | 'new' | 'interview' | 'review';
 
 let view: View = 'home';
-let session: InterviewSession | null = null;
+let session: SemanticInterviewSession | null = null;
 let saveState: SaveState = 'saved';
 let saveError: unknown = null;
 let persistenceState: PersistenceState = 'unknown';
@@ -64,7 +76,7 @@ function download(filename: string, contents: string, type: string): void {
 function currentQuestion(): Question | undefined {
   if (!session) return undefined;
   const active = session;
-  const questions = visibleQuestions(sessionPack(active), active);
+  const questions = visibleQuestions(active);
   return questions.find((question) => question.id === active.currentQuestionId) ?? questions[0];
 }
 
@@ -144,8 +156,20 @@ function focusPrimaryAnswer(): void {
   queueMicrotask(() => app.querySelector<HTMLElement>('#answer, input[name="answer"]')?.focus());
 }
 
-function visibleQuestionKey(active: InterviewSession): string {
-  return visibleQuestions(sessionPack(active), active).map((item) => item.id).join('\u001f');
+function visibleQuestionKey(active: SemanticInterviewSession): string {
+  return visibleQuestions(active).map((item) => item.id).join('\u001f');
+}
+
+function blankSemanticState(): SemanticAnswerState {
+  return {
+    value: null,
+    resolution: 'unresolved',
+    source: null,
+    needsConfirmation: false,
+    confirmation: null,
+    followUp: null,
+    note: '',
+  };
 }
 
 function setInert(element: Element | null | undefined, inert: boolean): void {
@@ -157,7 +181,7 @@ function focusReviewHeading(): void {
   queueMicrotask(() => app.querySelector<HTMLElement>('#review-title')?.focus());
 }
 
-async function openStoredSessionForPack(sessionId: string): Promise<OpenStoredSessionResult> {
+async function openStoredSessionForPack(sessionId: string): Promise<OpenStoredSessionResult<SemanticInterviewSession>> {
   const result = await openStoredSession({
     sessionId,
     flush: (id) => autosave.flushAndWait(id),
@@ -166,7 +190,7 @@ async function openStoredSessionForPack(sessionId: string): Promise<OpenStoredSe
   return result;
 }
 
-function chooseImportCollision(existing: InterviewSession): Promise<ImportCollisionChoice> {
+function chooseImportCollision(existing: SemanticInterviewSession): Promise<ImportCollisionChoice> {
   return new Promise((resolve) => {
     const dialog = document.createElement('dialog');
     dialog.className = 'import-collision-dialog';
@@ -297,9 +321,9 @@ async function renderHome(): Promise<void> {
     const file = fileInput.files?.[0];
     fileInput.value = '';
     if (!file) return;
-    let imported: InterviewSession;
+    let imported: SemanticInterviewSession;
     try {
-      imported = await validateSessionRecord(JSON.parse(await file.text()));
+      imported = await validateSemanticSessionRecord(JSON.parse(await file.text()));
     } catch (error) {
       alert(error instanceof Error ? error.message : 'Unable to import session.');
       return;
@@ -457,7 +481,7 @@ function renderNew(): void {
     const form = event.currentTarget as HTMLFormElement;
     const data = new FormData(form);
     const gated = await sessionSwitchGate.run(async () => {
-      const next = await createPinnedSession(pack, {
+      const next = await createSemanticSession(pack, {
         clientLabel: String(data.get('clientLabel') ?? ''),
         interviewerLabel: String(data.get('interviewerLabel') ?? ''),
         interviewMode: String(data.get('interviewMode') ?? '')
@@ -504,10 +528,11 @@ function renderInterview(): void {
   const question = currentQuestion();
   if (!question) return;
   if (session.currentQuestionId !== question.id) session.currentQuestionId = question.id;
-  const state = session.answers[question.id] ?? { value: null, status: null, note: '' };
-  const stats = coverage(sessionPack(session), session);
+  const state = session.answers[question.id] ?? blankSemanticState();
+  const stats = coverage(session);
+  const buckets = coverageBucketMap(session);
   const section = sessionPack(session).sections.find((item) => item.id === question.sectionId);
-  const facts = relevantKnownFacts(question, session);
+  const facts = session.knownFacts.filter((fact) => !fact.questionId || fact.questionId === question.id);
   const presenting = isPresentationMode(presentationMode);
 
   app.innerHTML = `
@@ -522,10 +547,10 @@ function renderInterview(): void {
         <button class="text-button mobile-panel-close" data-action="close-mobile-panel">Close coverage</button>
         <div class="rail-heading"><p class="eyebrow" id="coverage-panel-title">Coverage</p><strong data-coverage-resolved>${stats.resolved} resolved</strong><span data-coverage-summary>${stats.remaining} currently remaining · ${stats.mustConfirm} must confirm</span></div>
         ${sessionPack(session).sections.map((item) => {
-          const questions = visibleQuestions(sessionPack(session!), session!).filter((candidate) => candidate.sectionId === item.id);
+          const questions = visibleQuestions(session!).filter((candidate) => candidate.sectionId === item.id);
           if (!questions.length) return '';
-          const done = questions.filter((candidate) => session!.answers[candidate.id]?.status && session!.answers[candidate.id]?.status !== 'MUST_CONFIRM').length;
-          return `<div class="coverage-section" data-section-id="${escapeHtml(item.id)}"><span>${escapeHtml(item.title)}</span><small data-section-count>${done}/${questions.length}</small>${questions.map((candidate) => `<button class="question-dot ${candidate.id === question.id ? 'current' : ''} ${session!.answers[candidate.id]?.status === 'MUST_CONFIRM' ? 'confirm' : ''}" data-question-id="${escapeHtml(candidate.id)}"><span>${escapeHtml(candidate.prompt)}</span></button>`).join('')}</div>`;
+          const done = questions.filter((candidate) => ['current', 'not-applicable'].includes(buckets[candidate.id] ?? 'open')).length;
+          return `<div class="coverage-section" data-section-id="${escapeHtml(item.id)}"><span>${escapeHtml(item.title)}</span><small data-section-count>${done}/${questions.length}</small>${questions.map((candidate) => `<button class="question-dot ${candidate.id === question.id ? 'current' : ''} ${buckets[candidate.id] === 'needs-confirmation' ? 'confirm' : ''}" data-question-id="${escapeHtml(candidate.id)}"><span>${escapeHtml(candidate.prompt)}</span></button>`).join('')}</div>`;
         }).join('')}
       </aside>`}
       <section class="question-stage">
@@ -535,8 +560,8 @@ function renderInterview(): void {
         ${question.help ? `<p id="question-help" class="question-help">${escapeHtml(question.help)}</p>` : ''}
         <div class="answer-block">${answerControl(question, state.value ?? '')}</div>
         ${presenting ? '' : `<label class="notes-label">Question notes <span>internal</span><textarea id="question-note" rows="3" placeholder="Optional interviewer note">${escapeHtml(state.note)}</textarea></label>
-        <fieldset class="status-fieldset"><legend>Question status</legend><div class="status-grid">${statusOptions.map((option) => `<label class="status-chip ${state.status === option.value ? 'selected' : ''}"><input type="radio" name="status" value="${option.value}" ${state.status === option.value ? 'checked' : ''}/><span>${escapeHtml(option.label)}</span></label>`).join('')}</div></fieldset>`}
-        <div class="action-dock"><button class="secondary" data-action="back" ${nextVisibleQuestion(sessionPack(session), session, question.id, -1) ? '' : 'disabled'}>Back</button><button class="primary" data-action="next">${nextVisibleQuestion(sessionPack(session), session, question.id, 1) ? 'Continue' : 'Review interview'}</button></div>
+        <fieldset class="status-fieldset"><legend>Question status</legend><div class="status-grid">${statusOptions.map((option) => { const selected = statusControlForState(state) === option.value; return `<label class="status-chip ${selected ? 'selected' : ''}"><input type="radio" name="status" value="${option.value}" ${selected ? 'checked' : ''}/><span>${escapeHtml(option.label)}</span></label>`; }).join('')}</div></fieldset>`}
+        <div class="action-dock"><button class="secondary" data-action="back" ${nextVisibleQuestion(session, question.id, -1) ? '' : 'disabled'}>Back</button><button class="primary" data-action="next">${nextVisibleQuestion(session, question.id, 1) ? 'Continue' : 'Review interview'}</button></div>
       </section>
       ${presenting ? '' : `<aside class="context-rail" id="context-mobile-panel" aria-labelledby="context-panel-title">
         <button class="text-button mobile-panel-close" data-action="close-mobile-panel">Close context</button>
@@ -547,79 +572,115 @@ function renderInterview(): void {
 
   const updateCoverageSummary = (): void => {
     if (!session || presenting) return;
-    const latest = coverage(sessionPack(session), session);
+    const latest = coverage(session);
+    const latestBuckets = coverageBucketMap(session);
     app.querySelector<HTMLElement>('[data-coverage-resolved]')?.replaceChildren(document.createTextNode(`${latest.resolved} resolved`));
     app.querySelector<HTMLElement>('[data-coverage-summary]')?.replaceChildren(document.createTextNode(`${latest.remaining} currently remaining · ${latest.mustConfirm} must confirm`));
     app.querySelector<HTMLElement>('[data-coverage-mobile]')?.replaceChildren(document.createTextNode(`Coverage ${latest.resolved}/${latest.visible}`));
     app.querySelectorAll<HTMLElement>('[data-section-id]').forEach((sectionElement) => {
+      if (!session) return;
       const sectionId = sectionElement.dataset.sectionId ?? '';
-      const questions = visibleQuestions(sessionPack(session!), session!).filter((candidate) => candidate.sectionId === sectionId);
-      const done = questions.filter((candidate) => session!.answers[candidate.id]?.status && session!.answers[candidate.id]?.status !== 'MUST_CONFIRM').length;
+      const questions = visibleQuestions(session).filter((candidate) => candidate.sectionId === sectionId);
+      const done = questions.filter((candidate) => ['current', 'not-applicable'].includes(latestBuckets[candidate.id] ?? 'open')).length;
       sectionElement.querySelector<HTMLElement>('[data-section-count]')?.replaceChildren(document.createTextNode(`${done}/${questions.length}`));
     });
     app.querySelectorAll<HTMLElement>('[data-question-id]').forEach((button) => {
       const questionId = button.dataset.questionId ?? '';
-      button.classList.toggle('confirm', session!.answers[questionId]?.status === 'MUST_CONFIRM');
+      button.classList.toggle('confirm', latestBuckets[questionId] === 'needs-confirmation');
     });
+  };
+
+  const syncPrivateNotes = (): void => {
+    if (!session || presenting) return;
+    const current = session.answers[question.id] ?? blankSemanticState();
+    current.note = app.querySelector<HTMLTextAreaElement>('#question-note')?.value ?? current.note;
+    session.answers[question.id] = current;
+    session.runningNotes = app.querySelector<HTMLTextAreaElement>('#running-notes')?.value ?? session.runningNotes;
+  };
+
+  const commitValue = (nextValue: string | null): void => {
+    if (!session) return;
+    const before = relevanceMap(session);
+    const current = session.answers[question.id] ?? blankSemanticState();
+    session.answers[question.id] = applyValueEdit(question, current, nextValue);
+    syncPrivateNotes();
+    applyReactivationReviews(session, before);
+    scheduleSave();
+  };
+
+  const commitStatus = (nextStatus: AnswerStatus): void => {
+    if (!session) return;
+    const before = relevanceMap(session);
+    const current = session.answers[question.id] ?? blankSemanticState();
+    session.answers[question.id] = applyStatusControl(question, current, nextStatus);
+    syncPrivateNotes();
+    applyReactivationReviews(session, before);
+    scheduleSave();
   };
 
   const applyAnswer = (): void => {
     if (!session) return;
-    const current = session.answers[question.id] ?? { value: null, status: null, note: '' };
+    const current = session.answers[question.id] ?? blankSemanticState();
     const textarea = app.querySelector<HTMLTextAreaElement>('#answer');
     const input = app.querySelector<HTMLInputElement>('#answer');
     const radio = app.querySelector<HTMLInputElement>('input[name="answer"]:checked');
-    current.value = textarea?.value ?? input?.value ?? radio?.value ?? current.value;
-    if (!presenting) {
-      current.note = app.querySelector<HTMLTextAreaElement>('#question-note')?.value ?? current.note;
-      current.status = (app.querySelector<HTMLInputElement>('input[name="status"]:checked')?.value as AnswerStatus | undefined) ?? current.status;
-      session.runningNotes = app.querySelector<HTMLTextAreaElement>('#running-notes')?.value ?? session.runningNotes;
-    }
-    session.answers[question.id] = current;
-    scheduleSave();
+    const nextValue = textarea?.value ?? input?.value ?? radio?.value ?? current.value;
+    commitValue(nextValue);
+  };
+
+  const rerenderIfVisibilityChanged = (beforeKey: string, preferredRadioValue?: string): boolean => {
+    if (!session) return false;
+    const afterVisible = visibleQuestions(session);
+    const afterKey = afterVisible.map((item) => item.id).join('\u001f');
+    const currentStillVisible = afterVisible.some((item) => item.id === question.id);
+    if (beforeKey === afterKey && currentStillVisible) return false;
+    if (!currentStillVisible) session.currentQuestionId = afterVisible[0]?.id ?? session.currentQuestionId;
+    renderInterview();
+    queueMicrotask(() => {
+      const restored = preferredRadioValue === undefined ? null : Array.from(app.querySelectorAll<HTMLInputElement>('input[name="answer"]'))
+        .find((candidate) => candidate.value === preferredRadioValue);
+      if (restored && session?.currentQuestionId === question.id) restored.focus();
+      else focusPrimaryAnswer();
+    });
+    return true;
   };
 
   app.querySelectorAll<HTMLInputElement>('input[name="answer"]').forEach((element) => element.addEventListener('change', () => {
     if (!session) return;
     const beforeKey = visibleQuestionKey(session);
-    const selected = element.value;
-    const selectedRadio = element;
-    applyAnswer();
-    const afterVisible = visibleQuestions(sessionPack(session), session);
-    const afterKey = afterVisible.map((item) => item.id).join('\u001f');
-    const currentStillVisible = afterVisible.some((item) => item.id === question.id);
-    if (beforeKey === afterKey && currentStillVisible) {
-      updateCoverageSummary();
-      queueMicrotask(() => selectedRadio.focus());
-      return;
-    }
-    if (!currentStillVisible) {
-      session.currentQuestionId = afterVisible.find((item) => item.id === question.id)?.id
-        ?? afterVisible[0]?.id
-        ?? session.currentQuestionId;
-    }
-    renderInterview();
-    queueMicrotask(() => {
-      const restored = Array.from(app.querySelectorAll<HTMLInputElement>('input[name="answer"]'))
-        .find((candidate) => candidate.value === selected);
-      if (restored && session?.currentQuestionId === question.id) restored.focus();
-      else focusPrimaryAnswer();
-    });
+    commitValue(element.value);
+    if (rerenderIfVisibilityChanged(beforeKey, element.value)) return;
+    updateCoverageSummary();
+    queueMicrotask(() => element.focus());
   }));
+
   app.querySelectorAll<HTMLInputElement>('input[name="status"]').forEach((element) => element.addEventListener('change', () => {
-    applyAnswer();
+    if (!session) return;
+    const beforeKey = visibleQuestionKey(session);
+    commitStatus(element.value as AnswerStatus);
+    if (rerenderIfVisibilityChanged(beforeKey)) return;
     app.querySelectorAll<HTMLElement>('.status-chip').forEach((chip) => chip.classList.toggle('selected', chip.contains(element)));
     updateCoverageSummary();
     queueMicrotask(() => element.focus());
   }));
-  app.querySelectorAll<HTMLTextAreaElement>('#answer, #question-note, #running-notes').forEach((element) => element.addEventListener('input', applyAnswer));
+
+  app.querySelector<HTMLElement>('#answer')?.addEventListener('input', () => {
+    if (!session) return;
+    const beforeKey = visibleQuestionKey(session);
+    const textarea = app.querySelector<HTMLTextAreaElement>('#answer');
+    const input = app.querySelector<HTMLInputElement>('#answer');
+    commitValue(textarea?.value ?? input?.value ?? null);
+    if (!rerenderIfVisibilityChanged(beforeKey)) updateCoverageSummary();
+  });
+  app.querySelector<HTMLTextAreaElement>('#question-note')?.addEventListener('input', () => { syncPrivateNotes(); scheduleSave(); });
+  app.querySelector<HTMLTextAreaElement>('#running-notes')?.addEventListener('input', () => { syncPrivateNotes(); scheduleSave(); });
+
   app.querySelectorAll<HTMLElement>('[data-question-id]').forEach((button) => button.addEventListener('click', () => { applyAnswer(); if (session) session.currentQuestionId = button.dataset.questionId ?? session.currentQuestionId; renderInterview(); focusPrimaryAnswer(); }));
-  app.querySelector('[data-action="back"]')?.addEventListener('click', () => { applyAnswer(); const previous = session && nextVisibleQuestion(sessionPack(session), session, question.id, -1); if (previous && session) session.currentQuestionId = previous.id; renderInterview(); focusPrimaryAnswer(); });
-  app.querySelector('[data-action="next"]')?.addEventListener('click', () => { applyAnswer(); const next = session && nextVisibleQuestion(sessionPack(session), session, question.id, 1); if (next && session) { session.currentQuestionId = next.id; renderInterview(); focusPrimaryAnswer(); } else { presentationMode = enterPresentation(); view = 'review'; renderReview(); focusReviewHeading(); } });
+  app.querySelector('[data-action="back"]')?.addEventListener('click', () => { applyAnswer(); const previous = session && nextVisibleQuestion(session, question.id, -1); if (previous && session) session.currentQuestionId = previous.id; renderInterview(); focusPrimaryAnswer(); });
+  app.querySelector('[data-action="next"]')?.addEventListener('click', () => { applyAnswer(); const next = session && nextVisibleQuestion(session, question.id, 1); if (next && session) { session.currentQuestionId = next.id; renderInterview(); focusPrimaryAnswer(); } else { presentationMode = enterPresentation(); view = 'review'; renderReview(); focusReviewHeading(); } });
   app.querySelector('[data-action="enter-presentation"]')?.addEventListener('click', () => { applyAnswer(); presentationMode = enterPresentation(); renderInterview(); focusPrimaryAnswer(); });
   app.querySelector('[data-action="exit-presentation"]')?.addEventListener('click', () => { applyAnswer(); presentationMode = exitPresentation(); renderInterview(); focusPrimaryAnswer(); });
   app.querySelector('[data-action="export"]')?.addEventListener('click', () => { if (session) download(`${session.clientLabel.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-interview.json`, serializeSession(session), 'application/json'); });
-
   let mobileTrigger: HTMLElement | null = null;
   let mobilePanel: HTMLElement | null = null;
   let mobileEscapeHandler: ((event: KeyboardEvent) => void) | null = null;
@@ -728,8 +789,9 @@ function renderInterview(): void {
 
 function renderReview(): void {
   if (!session) { view = 'home'; void render(); return; }
-  const stats = coverage(sessionPack(session), session);
-  const questions = visibleQuestions(sessionPack(session), session);
+  const stats = coverage(session);
+  const questions = visibleQuestions(session);
+  const buckets = coverageBucketMap(session);
   const presenting = isPresentationMode(presentationMode);
   app.innerHTML = `
     <header class="app-header"><div><strong>${escapeHtml(session.clientLabel)}</strong><span>${presenting ? 'Presentation read-back' : 'Private review'}</span></div><div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator>${escapeHtml(saveLabel())}</span>${presenting ? '<button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : '<button class="secondary small" data-action="enter-presentation">Presentation view</button>'}${updateSlotMarkup()}</div><span class="sr-only" role="alert" data-save-alert>${escapeHtml(saveAlertMessage())}</span></header>
@@ -741,14 +803,14 @@ function renderReview(): void {
         const sectionQuestions = questions.filter((question) => question.sectionId === section.id);
         if (!sectionQuestions.length) return '';
         return `<section class="review-section"><h2>${escapeHtml(section.title)}</h2>${sectionQuestions.map((question) => {
-          const state = session!.answers[question.id];
-          const projected = projectReadBack(state?.value ?? null, state?.status ?? null);
-          const valueLabel = presenting ? projected.valueLabel : (state?.value?.trim() || 'No answer recorded');
-          const statusLabel = presenting ? projected.statusLabel : (statusOptions.find((item) => item.value === state?.status)?.label ?? 'Unresolved');
+          const state = session!.answers[question.id] ?? blankSemanticState();
+          const projected = projectSemanticReadBack(question, state);
+          const valueLabel = presenting ? projected.valueLabel : (state.value?.trim() || 'No answer recorded');
+          const statusLabel = presenting ? projected.statusLabel : semanticStatusLabel(question, state);
           return `<div class="summary-row"><div><strong>${escapeHtml(question.prompt)}</strong><p>${escapeHtml(valueLabel)}</p><small>${escapeHtml(statusLabel)}</small></div><button class="text-button" data-change="${escapeHtml(question.id)}" aria-label="Change ${escapeHtml(question.prompt)}">Change</button></div>`;
         }).join('')}</section>`;
       }).join('')}
-      <section class="review-section unresolved"><h2>Needs confirmation</h2>${questions.filter((question) => session!.answers[question.id]?.status === 'MUST_CONFIRM').map((question) => `<p>• ${escapeHtml(question.prompt)}</p>`).join('') || '<p>None.</p>'}</section>
+      <section class="review-section unresolved"><h2>Needs confirmation</h2>${questions.filter((question) => buckets[question.id] === 'needs-confirmation').map((question) => `<p>• ${escapeHtml(question.prompt)}</p>`).join('') || '<p>None.</p>'}</section>
       ${presenting
         ? '<div class="known-preview"><strong>Presentation view</strong><p>Internal notes, provenance, coverage details, delete controls, and internal exports are excluded. This view cannot guarantee that free-text answers themselves contain no sensitive information.</p></div>'
         : '<div class="known-preview"><strong>Private review</strong><p>Internal tools are available here. Use Presentation view before screen sharing or client read-back.</p></div>'}
@@ -761,7 +823,7 @@ function renderReview(): void {
   app.querySelectorAll('[data-action="enter-presentation"]').forEach((button) => button.addEventListener('click', () => { presentationMode = enterPresentation(); renderReview(); focusReviewHeading(); }));
   app.querySelectorAll('[data-action="exit-presentation"]').forEach((button) => button.addEventListener('click', () => { presentationMode = exitPresentation(); renderReview(); focusReviewHeading(); }));
   app.querySelector('[data-action="json"]')?.addEventListener('click', () => { if (session) download('interview.json', serializeSession(session), 'application/json'); });
-  app.querySelector('[data-action="markdown"]')?.addEventListener('click', () => { if (session) download('interview.md', sessionToMarkdown(session), 'text/markdown'); });
+  app.querySelector('[data-action="markdown"]')?.addEventListener('click', () => { if (session) download('interview.md', semanticSessionToMarkdown(session), 'text/markdown'); });
   app.querySelector('[data-action="home"]')?.addEventListener('click', () => { presentationMode = exitPresentation(); view = 'home'; render(); });
   app.querySelector('[data-action="delete"]')?.addEventListener('click', async () => {
     if (!session) return;
@@ -781,7 +843,6 @@ function renderReview(): void {
   });
   paintUpdateSlot();
 }
-
 async function render(): Promise<void> {
   if (view === 'home') return renderHome();
   if (view === 'new') return renderNew();

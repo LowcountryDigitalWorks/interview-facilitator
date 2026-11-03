@@ -10,12 +10,13 @@ The facilitator is designed to keep a real conversation natural while quietly tr
 - installable PWA shell
 - local IndexedDB session persistence
 - one synthetic generic discovery pack
-- deterministic conditional question visibility
-- Answered / Already Known / Skip / N/A / Must Confirm status model
+- deterministic conditional question relevance driven by effective evidence
+- canonical 1.3 answer semantics with separate resolution, evidence source, confirmation, and follow-up state
+- Answered / Already Known / Skip / N/A / Must Confirm compatibility controls over the semantic model
 - known-fact provenance
 - recent local sessions and resume
-- bounded upgrades from pinned session schema 1.1 to 1.2 and from legacy 1.0 through the pinned 1.1 intermediate
-- exact JSON import/export
+- explicit sequential local upgrades from legacy 1.0 → pinned 1.1 → pinned 1.2 → semantic 1.3 with each source archived unchanged
+- exact canonical 1.3 JSON import/export
 - deterministic Markdown generation from canonical JSON
 - client-safe read-back separated from internal notes
 - responsive interviewer cockpit
@@ -38,7 +39,7 @@ Public source, tests, screenshots, and demos must use synthetic/public-safe data
 
 Local interview data is stored in IndexedDB. Cache Storage is reserved for the application shell. Browser storage can still be removed by browser/device/user policy, so JSON export remains the explicit backup path.
 
-Session schema 1.2 is the only current load/import format and records the rule-semantics version in the pinned pack snapshot. Pinned 1.1 is accepted only by the explicit local upgrade path; it is validated under its historical rules, archived unchanged, and upgraded to 1.2 without rewriting its interview content. The 1.0 path uses its historical pack and a temporary 1.1 intermediate before producing 1.2. Unsupported pack/rule versions in recognizable versioned rows (including future numeric schema versions) are eligible for an internal recovery backup only when the row has a nonempty session ID and can be serialized losslessly as bounded JSON. Recovery backups are limited to 2 MB of output, 256 KB per string, 1 MB of total strings, 100 levels of nesting, and 100,000 values. Unsupported rows that exceed these limits or cannot be serialized losslessly remain stored and unchanged.
+Session schema 1.3 is the only current load/import format and records `effective-evidence-equals-v2` independently in the pinned pack snapshot. Older local rows are accepted only by the explicit Upgrade path. Stored upgrades are sequential and fail closed: 1.0 → 1.1, 1.1 → 1.2, then 1.2 → 1.3, with each exact source archived before the next current row is committed. Normal JSON import requires canonical 1.3 rather than silently migrating an imported older record. Unsupported pack/rule versions in recognizable versioned rows (including future numeric schema versions) are eligible for an internal recovery backup only when the row has a nonempty session ID and can be serialized losslessly as bounded JSON. Recovery backups are limited to 2 MB of output, 256 KB per string, 1 MB of total strings, 100 levels of nesting, and 100,000 values. Unsupported rows that exceed these limits or cannot be serialized losslessly remain stored and unchanged.
 
 Pack identity uses the browser's built-in Web Crypto. That API is available in a secure context (HTTPS or localhost). Opening the app over plain HTTP on another device on the LAN cannot compute the pack digest.
 

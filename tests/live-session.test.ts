@@ -188,6 +188,24 @@ describe('live semantic session adapter', () => {
       needsConfirmation: false,
       confirmation: null,
     });
+
+    const confirmedKnown = state({
+      value: 'Confirmed known context',
+      resolution: 'captured',
+      source: 'accepted-known-fact',
+      confirmation: {
+        revisionId: 'rev-known-confirmed',
+        confirmedAt: '2026-11-02T12:03:00.000Z',
+        value: 'Confirmed known context',
+      },
+    });
+    expect(applyValueEdit(question, confirmedKnown, 'Client correction after confirmation')).toMatchObject({
+      value: 'Client correction after confirmation',
+      resolution: 'captured',
+      source: 'client-statement',
+      needsConfirmation: true,
+      confirmation: null,
+    });
   });
 
   it('invalidates a current confirmation when a captured client statement changes meaningfully', async () => {
@@ -259,4 +277,5 @@ describe('live semantic session adapter', () => {
     expect(relevanceMap(current)[child.id]).toBe('irrelevant');
     expect(nextVisibleQuestion(current, child.id, 1)?.id).toBe(firstVisible.id);
     expect(nextVisibleQuestion(current, child.id, -1)?.id).toBe(firstVisible.id);
-  });});
+  });
+});

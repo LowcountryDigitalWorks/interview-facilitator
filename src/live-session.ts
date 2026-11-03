@@ -166,12 +166,11 @@ export function applyValueEdit(
   }
 
   // A user-entered correction is no longer evidence from the previously accepted known fact.
+  // Preserve confirmation invalidation/tentative truth already derived by the value update.
   if (state.resolution === 'captured' && state.source === 'accepted-known-fact') {
     return {
       ...updated,
       source: 'client-statement',
-      needsConfirmation: false,
-      confirmation: null,
     };
   }
 

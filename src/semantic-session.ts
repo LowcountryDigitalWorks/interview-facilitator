@@ -300,7 +300,10 @@ export async function planSemanticMigration(raw: unknown): Promise<SemanticMigra
       return { kind: 'unsupported', reason: 'Unsupported semantic rule semantics version.' };
     }
     try { return { kind: 'current', session: await validateSemanticSessionRecord(raw) }; }
-    catch (error) { return { kind: 'invalid', reason: error instanceof Error ? error.message : 'Semantic session is invalid.' }; }
+    catch (error) {
+      const reason = error instanceof Error ? error.message : 'Semantic session is invalid.';
+      return /unsupported/i.test(reason) ? { kind: 'unsupported', reason } : { kind: 'invalid', reason };
+    }
   }
   if (version !== '1.2.0') return { kind: 'unsupported', reason: `Unsupported semantic migration source ${String(version)}.` };
   try {

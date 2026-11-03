@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
 import type { InterviewSession } from '../../src/domain';
+import type { SemanticInterviewSession } from '../../src/semantic-session';
 import { revisionHistoryKey } from '../../src/storage';
-import { syntheticPinnedSession } from './synthetic-session';
+import { syntheticPinned12Session, syntheticSemanticSession } from './synthetic-session';
 import {
   clearLocalState,
   installIdbFaultInjection,
@@ -24,8 +25,8 @@ import {
   startNewInterviewWhileActive,
 } from './fault-injection.mjs';
 
-function syntheticSession(sessionId = 'synthetic-valid-session', clientLabel = 'Synthetic Browser Test'): Promise<InterviewSession> {
-  return syntheticPinnedSession({ sessionId, clientLabel, currentQuestionId: 'must-have' });
+function syntheticSession(sessionId = 'synthetic-valid-session', clientLabel = 'Synthetic Browser Test'): Promise<SemanticInterviewSession> {
+  return syntheticSemanticSession({ sessionId, clientLabel, currentQuestionId: 'must-have' });
 }
 
 async function importSessionFile(page: import('@playwright/test').Page, session: unknown): Promise<void> {
@@ -115,6 +116,21 @@ test('same-ID identical import is a no-op with no revision or history churn', as
   expect(stored.revisionId).toBe(current.revisionId);
   expect(stored.parentRevisionId).toBe(current.parentRevisionId);
   expect(await listRevisionHistoryKeys(page)).toEqual([]);
+});
+
+test('normal import rejects historical pinned 1.2 JSON instead of silently migrating it', async ({ page }) => {
+  const historical = await syntheticPinned12Session({ sessionId: 'historical-import-rejected', clientLabel: 'Historical Import' });
+  await page.reload();
+
+  const dialogPromise = page.waitForEvent('dialog');
+  await importSessionFile(page, historical);
+  const dialog = await dialogPromise;
+  expect(dialog.type()).toBe('alert');
+  expect(dialog.message()).toMatch(/session schema/i);
+  await dialog.dismiss();
+
+  expect(await listStoredSessionIds(page)).toEqual([]);
+  await expect(page.getByText('No saved interviews yet.')).toBeVisible();
 });
 
 test('invalid import is fully rejected before collision handling or storage mutation', async ({ page }) => {
@@ -305,7 +321,15 @@ test('failed same-ID import flush keeps dirty active session authoritative', asy
   await navigateHomeKeepingActiveSession(page);
 
   const replacement = await syntheticSession(sessionId, 'Imported Replacement Label');
-  replacement.answers['existing-presence'] = { value: 'Imported overwrite attempt', status: null, note: '' };
+  replacement.answers['existing-presence'] = {
+    value: 'Imported overwrite attempt',
+    resolution: 'captured',
+    source: 'client-statement',
+    needsConfirmation: false,
+    confirmation: null,
+    followUp: null,
+    note: '',
+  };
   await importSessionFile(page, replacement);
 
   await expect(page.getByText('Pending local edits could not be saved')).toBeVisible();
@@ -482,8 +506,8 @@ test('two tabs reject a stale revision after the first tab commits', async ({ pa
   }
 });
 
-test('database layout upgrade assigns revision metadata to existing current sessions', async ({ page }) => {
-  const legacy = await syntheticSession('synthetic-revision-layout-upgrade', 'Revision Layout Upgrade');
+test('database layout upgrade assigns revision metadata to existing pinned 1.2 sessions', async ({ page }) => {
+  const legacy = await syntheticPinned12Session({ sessionId: 'synthetic-revision-layout-upgrade', clientLabel: 'Revision Layout Upgrade' });
   delete (legacy as Partial<InterviewSession>).revisionId;
   delete (legacy as Partial<InterviewSession>).parentRevisionId;
   await page.evaluate(async ({ row }) => {
@@ -512,7 +536,8 @@ test('database layout upgrade assigns revision metadata to existing current sess
   }, { row: legacy });
 
   await page.reload();
-  await expect(page.getByRole('button', { name: /Revision Layout Upgrade/ })).toBeVisible();
+  await expect(page.getByText('Older interview format')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Upgrade' })).toBeVisible();
   const migrated = await page.evaluate(async (id) => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open('ldw-interview-facilitator', 4);

@@ -1,7 +1,18 @@
-import { validateSessionForPack, type InterviewSession } from './domain';
-import { canonicalizeJson, assertPackIdentity, validateSessionRecord } from './pack-identity';
-import { INDEXED_DB_LAYOUT_VERSION, LEGACY_TO_PINNED_MIGRATION_ID, PINNED_11_TO_12_MIGRATION_ID, legacyArchiveKey, planCurrentMigration } from './session-migration';
-import { PINNED_12_TO_13_MIGRATION_ID, planSemanticMigration, type SemanticInterviewSession } from './semantic-session';
+import type { InterviewSession } from './domain';
+import { canonicalizeJson, validateSessionRecord } from './pack-identity';
+import {
+  INDEXED_DB_LAYOUT_VERSION,
+  LEGACY_TO_PINNED_MIGRATION_ID,
+  PINNED_11_TO_12_MIGRATION_ID,
+  legacyArchiveKey,
+  planCurrentMigration,
+} from './session-migration';
+import {
+  PINNED_12_TO_13_MIGRATION_ID,
+  planSemanticMigration,
+  validateSemanticSessionRecord,
+  type SemanticInterviewSession,
+} from './semantic-session';
 
 const DB_NAME = 'ldw-interview-facilitator';
 export const SESSIONS_STORE = 'sessions';
@@ -14,13 +25,13 @@ const MAX_RECOVERY_TOTAL_STRING_BYTES = 1_000_000;
 const MAX_RECOVERY_OUTPUT_BYTES = 2_000_000;
 
 export type StoredSessionList = {
-  sessions: InterviewSession[];
+  sessions: SemanticInterviewSession[];
   unreadableCount: number;
   rows?: ClassifiedStoredRow[];
 };
 
 export type ClassifiedStoredRow =
-  | { sessionId: string; classification: 'current'; raw: unknown; session: InterviewSession }
+  | { sessionId: string; classification: 'current'; raw: unknown; session: SemanticInterviewSession }
   | { sessionId: string; classification: 'legacy-migratable'; raw: unknown; plan: Extract<Awaited<ReturnType<typeof planCurrentMigration>>, { kind: 'ready' }> }
   | { sessionId: string; classification: 'unsupported-recoverable'; raw: unknown; reason: string }
   | { sessionId: string; classification: 'malformed-unreadable'; reason: string; recoveryAvailable: boolean };
@@ -211,25 +222,24 @@ function revisionHistorySessionPrefix(sessionId: string): string {
   return `${encodedSessionTuple.slice(0, -1)},`;
 }
 
-export async function replaceSessionWithHistory(imported: InterviewSession, expectedRevisionId: string): Promise<InterviewSession> {
-  validateSessionForPack(imported);
-  await assertPackIdentity(imported);
+export async function replaceSessionWithHistory(imported: SemanticInterviewSession, expectedRevisionId: string): Promise<SemanticInterviewSession> {
+  await validateSemanticSessionRecord(imported);
   const db = await openDb();
   try {
     const rawCurrent = await requestResult(db.transaction(STORE, 'readonly').objectStore(STORE).get(imported.sessionId));
     if (rawCurrent === undefined) throw new RevisionConflictError(imported.sessionId, expectedRevisionId, null);
-    const validatedCurrent = await validateSessionRecord(rawCurrent);
+    const validatedCurrent = await validateSemanticSessionRecord(rawCurrent);
     if (validatedCurrent.revisionId !== expectedRevisionId) {
       throw new RevisionConflictError(imported.sessionId, expectedRevisionId, validatedCurrent.revisionId);
     }
     const currentFingerprint = canonicalizeJson(validatedCurrent);
-    const next: InterviewSession = {
+    const next: SemanticInterviewSession = {
       ...structuredClone(imported),
       revisionId: crypto.randomUUID(),
       parentRevisionId: expectedRevisionId,
     };
 
-    return await new Promise<InterviewSession>((resolve, reject) => {
+    return await new Promise<SemanticInterviewSession>((resolve, reject) => {
       const tx = openTransaction(db, [STORE, REVISION_HISTORY_STORE], 'readwrite');
       const currentStore = tx.objectStore(STORE);
       const historyStore = tx.objectStore(REVISION_HISTORY_STORE);
@@ -290,12 +300,11 @@ export async function replaceSessionWithHistory(imported: InterviewSession, expe
   }
 }
 
-export async function saveSession(session: InterviewSession, expectedRevisionId: string | null): Promise<InterviewSession> {
-  validateSessionForPack(session);
-  await assertPackIdentity(session);
+export async function saveSession(session: SemanticInterviewSession, expectedRevisionId: string | null): Promise<SemanticInterviewSession> {
+  await validateSemanticSessionRecord(session);
   const db = await openDb();
   try {
-    const next: InterviewSession = {
+    const next: SemanticInterviewSession = {
       ...structuredClone(session),
       revisionId: crypto.randomUUID(),
       parentRevisionId: expectedRevisionId,
@@ -388,7 +397,7 @@ export async function deleteSession(sessionId: string, expectedRevisionId: strin
   }
 }
 
-export async function loadSession(sessionId: string): Promise<InterviewSession | undefined> {
+export async function loadSession(sessionId: string): Promise<SemanticInterviewSession | undefined> {
   const db = await openDb();
   try {
     const raw = await new Promise<unknown>((resolve, reject) => {
@@ -397,7 +406,7 @@ export async function loadSession(sessionId: string): Promise<InterviewSession |
       request.onerror = () => reject(request.error ?? new Error('Unable to load session.'));
     });
     if (raw === undefined) return undefined;
-    return await validateSessionRecord(raw);
+    return await validateSemanticSessionRecord(raw);
   } finally {
     db.close();
   }
@@ -445,74 +454,93 @@ function openTransaction(db: IDBDatabase, stores: string[], mode: IDBTransaction
 }
 
 export type LegacyMigrationResult =
-  | { kind: 'migrated'; session: InterviewSession }
-  | { kind: 'already-migrated'; session: InterviewSession }
-  | { kind: 'missing' }
-  | { kind: 'stale' }
-  | { kind: 'aborted' }
-  | { kind: 'unsupported'; reason: string }
-  | { kind: 'invalid'; reason: string }
-  | { kind: 'conflict'; reason: string }
-  | { kind: 'not-legacy' };
+  | { kind: 'migrated'; session: SemanticInterviewSession }
+  | { kind: 'already-migrated'; session: SemanticInterviewSession }
+  | { kind: 'missing' | 'stale' | 'aborted' | 'not-legacy' }
+  | { kind: 'unsupported' | 'invalid' | 'conflict'; reason: string };
 
+type HistoricalMigrationStepResult =
+  | { kind: 'migrated'; session: InterviewSession }
+  | { kind: 'stale' | 'aborted' }
+  | { kind: 'conflict'; reason: string };
+
+/**
+ * Explicit user-triggered upgrade to the live schema. Each accepted transition is committed in
+ * its own archive+current transaction: 1.0→1.1, 1.1→1.2, then 1.2→1.3. If a later step fails,
+ * the earlier accepted transition and its exact archive remain available for a safe retry.
+ */
 export async function migrateLegacySession(sessionId: string): Promise<LegacyMigrationResult> {
   const db = await openDb();
   try {
-    const raw = await requestResult(db.transaction(STORE, 'readonly').objectStore(STORE).get(sessionId));
-    if (raw === undefined) return { kind: 'missing' };
-    const plan = await planCurrentMigration(raw);
-    if (plan.kind === 'unsupported' || plan.kind === 'invalid') return plan;
-    if (plan.kind === 'current') return await confirmAlreadyMigrated(db, sessionId, raw);
-    return await commitLegacyMigration(db, sessionId, plan.session, plan.fingerprint, plan.raw, plan.sourceSchemaVersion, plan.migrationId);
+    for (let step = 0; step < 3; step += 1) {
+      const raw = await requestResult(db.transaction(STORE, 'readonly').objectStore(STORE).get(sessionId));
+      if (raw === undefined) return { kind: 'missing' };
+      const plan = await planCurrentMigration(raw);
+      if (plan.kind === 'unsupported' || plan.kind === 'invalid') return plan;
+      if (plan.kind === 'current') {
+        const archiveKey = legacyArchiveKey(sessionId, '1.2.0', PINNED_12_TO_13_MIGRATION_ID);
+        const archived = await requestResult(db.transaction(LEGACY_ARCHIVE_STORE, 'readonly').objectStore(LEGACY_ARCHIVE_STORE).get(archiveKey));
+        if (archived === undefined) return { kind: 'not-legacy' };
+        return await confirmSemanticAlreadyMigrated(db, sessionId);
+      }
+
+      if (plan.sourceSchemaVersion === '1.2.0') {
+        return await commitSemanticMigrationPlan(db, sessionId, plan as SemanticReadyPlan);
+      }
+
+      const historical = await commitHistoricalMigration(
+        db,
+        sessionId,
+        plan.session,
+        plan.fingerprint,
+        plan.raw,
+        plan.sourceSchemaVersion,
+        plan.migrationId,
+      );
+      if (historical.kind !== 'migrated') return historical;
+    }
+    return { kind: 'aborted' };
   } finally {
     db.close();
   }
 }
 
-async function confirmAlreadyMigrated(db: IDBDatabase, sessionId: string, raw: unknown): Promise<LegacyMigrationResult> {
-  const archiveStore = db.transaction(LEGACY_ARCHIVE_STORE, 'readonly').objectStore(LEGACY_ARCHIVE_STORE);
-  const archives = await Promise.all([
-    requestResult(archiveStore.get(legacyArchiveKey(sessionId, '1.0.0', LEGACY_TO_PINNED_MIGRATION_ID))),
-    requestResult(archiveStore.get(legacyArchiveKey(sessionId, '1.1.0', PINNED_11_TO_12_MIGRATION_ID))),
-  ]);
-  // Prefer the immediate 1.1 source archive when both generations exist: an accepted 1.0→1.1 session may have been edited before 1.1→1.2.
-  const archived = archives[1] ?? archives[0];
-  if (archived === undefined) return { kind: 'not-legacy' };
-  const replay = await planCurrentMigration(archived);
-  if (replay.kind !== 'ready') return { kind: 'conflict', reason: 'The archived legacy row cannot be migrated again.' };
-  const current = await validateSessionRecord(raw);
-  if (canonicalizeJson(current) !== canonicalizeJson(replay.session)) {
-    return { kind: 'conflict', reason: 'The archived legacy row does not match the current session.' };
-  }
-  return { kind: 'already-migrated', session: current };
-}
-
-function commitLegacyMigration(db: IDBDatabase, sessionId: string, session: InterviewSession, fingerprint: string, raw: unknown, sourceSchemaVersion: string, migrationId: string): Promise<LegacyMigrationResult> {
+function commitHistoricalMigration(
+  db: IDBDatabase,
+  sessionId: string,
+  session: InterviewSession,
+  fingerprint: string,
+  raw: unknown,
+  sourceSchemaVersion: string,
+  migrationId: string,
+): Promise<HistoricalMigrationStepResult> {
   return new Promise((resolve) => {
     const tx = openTransaction(db, [STORE, LEGACY_ARCHIVE_STORE], 'readwrite');
     let settled = false;
-    let failure: LegacyMigrationResult | null = null;
-    const finish = (result: LegacyMigrationResult) => {
+    let failure: HistoricalMigrationStepResult | null = null;
+    const finish = (result: HistoricalMigrationStepResult) => {
       if (settled) return;
       settled = true;
       resolve(result);
     };
-    const fail = (result: LegacyMigrationResult) => {
+    const fail = (result: HistoricalMigrationStepResult) => {
       failure = result;
-      tx.abort();
+      try { tx.abort(); } catch { /* transaction is already finished */ }
     };
     tx.oncomplete = () => finish({ kind: 'migrated', session });
+    tx.onerror = () => { if (failure === null) failure = { kind: 'aborted' }; };
     tx.onabort = () => finish(failure ?? { kind: 'aborted' });
     const currentRequest = tx.objectStore(STORE).get(sessionId);
     currentRequest.onerror = () => fail({ kind: 'aborted' });
     currentRequest.onsuccess = () => {
       try {
-        if (canonicalizeJson(currentRequest.result) !== fingerprint) {
+        if (currentRequest.result === undefined || canonicalizeJson(currentRequest.result) !== fingerprint) {
           fail({ kind: 'stale' });
           return;
         }
+        const key = legacyArchiveKey(sessionId, sourceSchemaVersion, migrationId);
         const archiveStore = tx.objectStore(LEGACY_ARCHIVE_STORE);
-        const archiveRequest = archiveStore.get(legacyArchiveKey(sessionId, sourceSchemaVersion, migrationId));
+        const archiveRequest = archiveStore.get(key);
         archiveRequest.onerror = () => fail({ kind: 'aborted' });
         archiveRequest.onsuccess = () => {
           try {
@@ -522,7 +550,7 @@ function commitLegacyMigration(db: IDBDatabase, sessionId: string, session: Inte
                 return;
               }
             } else {
-              const archivePut = archiveStore.put(structuredClone(raw), legacyArchiveKey(sessionId, sourceSchemaVersion, migrationId));
+              const archivePut = archiveStore.put(structuredClone(raw), key);
               archivePut.onerror = () => fail({ kind: 'aborted' });
             }
             const sessionPut = tx.objectStore(STORE).put(session);
@@ -537,17 +565,15 @@ function commitLegacyMigration(db: IDBDatabase, sessionId: string, session: Inte
     };
   });
 }
-
 export type SemanticMigrationResult =
   | { kind: 'migrated'; session: SemanticInterviewSession }
   | { kind: 'already-migrated'; session: SemanticInterviewSession }
   | { kind: 'missing' | 'stale' | 'aborted' }
   | { kind: 'unsupported' | 'invalid' | 'conflict'; reason: string };
 
-/**
- * 33C1 migration entry point. It is intentionally not wired into list/open/autosave yet;
- * 33C2 owns activation after the 1.3 writer/projection path is accepted.
- */
+/** Direct 1.2→1.3 migration helper retained for focused migration/recovery tests and tooling. */
+type SemanticReadyPlan = Extract<Awaited<ReturnType<typeof planSemanticMigration>>, { kind: 'ready' }>;
+
 export async function migrateSession12To13(sessionId: string): Promise<SemanticMigrationResult> {
   const db = await openDb();
   try {
@@ -556,55 +582,62 @@ export async function migrateSession12To13(sessionId: string): Promise<SemanticM
     const plan = await planSemanticMigration(raw);
     if (plan.kind === 'unsupported' || plan.kind === 'invalid') return plan;
     if (plan.kind === 'current') return await confirmSemanticAlreadyMigrated(db, sessionId);
-    return await new Promise<SemanticMigrationResult>((resolve) => {
-      const tx = openTransaction(db, [STORE, LEGACY_ARCHIVE_STORE], 'readwrite');
-      let failure: SemanticMigrationResult | null = null;
-      const fail = (result: SemanticMigrationResult) => {
-        if (failure !== null) return;
-        failure = result;
-        try { tx.abort(); } catch { /* already finished */ }
-      };
-      tx.oncomplete = () => resolve({ kind: 'migrated', session: plan.session });
-      tx.onerror = () => { if (failure === null) failure = { kind: 'aborted' }; };
-      tx.onabort = () => resolve(failure ?? { kind: 'aborted' });
-      const currentRequest = tx.objectStore(STORE).get(sessionId);
-      currentRequest.onerror = () => fail({ kind: 'aborted' });
-      currentRequest.onsuccess = () => {
-        try {
-          if (currentRequest.result === undefined || canonicalizeJson(currentRequest.result) !== plan.fingerprint) {
-            fail({ kind: 'stale' });
-            return;
-          }
-          const key = legacyArchiveKey(sessionId, plan.sourceSchemaVersion, PINNED_12_TO_13_MIGRATION_ID);
-          const archiveStore = tx.objectStore(LEGACY_ARCHIVE_STORE);
-          const archiveRequest = archiveStore.get(key);
-          archiveRequest.onerror = () => fail({ kind: 'aborted' });
-          archiveRequest.onsuccess = () => {
-            try {
-              if (archiveRequest.result !== undefined && canonicalizeJson(archiveRequest.result) !== plan.fingerprint) {
-                fail({ kind: 'conflict', reason: 'An existing archive contains different pinned 1.2 data.' });
-                return;
-              }
-              if (archiveRequest.result === undefined) {
-                const archivePut = archiveStore.put(structuredClone(plan.raw), key);
-                archivePut.onerror = () => fail({ kind: 'aborted' });
-              }
-              const put = tx.objectStore(STORE).put(plan.session);
-              put.onerror = () => fail({ kind: 'aborted' });
-            } catch {
-              fail({ kind: 'aborted' });
-            }
-          };
-        } catch {
-          fail({ kind: 'aborted' });
-        }
-      };
-    });
+    return await commitSemanticMigrationPlan(db, sessionId, plan);
   } finally {
     db.close();
   }
 }
 
+function commitSemanticMigrationPlan(
+  db: IDBDatabase,
+  sessionId: string,
+  plan: SemanticReadyPlan,
+): Promise<SemanticMigrationResult> {
+  return new Promise((resolve) => {
+    const tx = openTransaction(db, [STORE, LEGACY_ARCHIVE_STORE], 'readwrite');
+    let failure: SemanticMigrationResult | null = null;
+    const fail = (result: SemanticMigrationResult) => {
+      if (failure !== null) return;
+      failure = result;
+      try { tx.abort(); } catch { /* already finished */ }
+    };
+    tx.oncomplete = () => resolve({ kind: 'migrated', session: plan.session });
+    tx.onerror = () => { if (failure === null) failure = { kind: 'aborted' }; };
+    tx.onabort = () => resolve(failure ?? { kind: 'aborted' });
+    const currentRequest = tx.objectStore(STORE).get(sessionId);
+    currentRequest.onerror = () => fail({ kind: 'aborted' });
+    currentRequest.onsuccess = () => {
+      try {
+        if (currentRequest.result === undefined || canonicalizeJson(currentRequest.result) !== plan.fingerprint) {
+          fail({ kind: 'stale' });
+          return;
+        }
+        const key = legacyArchiveKey(sessionId, plan.sourceSchemaVersion, PINNED_12_TO_13_MIGRATION_ID);
+        const archiveStore = tx.objectStore(LEGACY_ARCHIVE_STORE);
+        const archiveRequest = archiveStore.get(key);
+        archiveRequest.onerror = () => fail({ kind: 'aborted' });
+        archiveRequest.onsuccess = () => {
+          try {
+            if (archiveRequest.result !== undefined && canonicalizeJson(archiveRequest.result) !== plan.fingerprint) {
+              fail({ kind: 'conflict', reason: 'An existing archive contains different pinned 1.2 data.' });
+              return;
+            }
+            if (archiveRequest.result === undefined) {
+              const archivePut = archiveStore.put(structuredClone(plan.raw), key);
+              archivePut.onerror = () => fail({ kind: 'aborted' });
+            }
+            const put = tx.objectStore(STORE).put(plan.session);
+            put.onerror = () => fail({ kind: 'aborted' });
+          } catch {
+            fail({ kind: 'aborted' });
+          }
+        };
+      } catch {
+        fail({ kind: 'aborted' });
+      }
+    };
+  });
+}
 async function confirmSemanticAlreadyMigrated(
   db: IDBDatabase,
   sessionId: string,

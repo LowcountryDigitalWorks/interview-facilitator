@@ -1,8 +1,8 @@
-import type { InterviewSession } from './domain';
+import type { SemanticInterviewSession } from './semantic-session';
 import type { ClassifiedStoredRow, StoredSessionList } from './storage';
 
 export type SessionListState =
-  | { kind: 'ready'; sessions: InterviewSession[]; unreadableCount: number; rows: ClassifiedStoredRow[] }
+  | { kind: 'ready'; sessions: SemanticInterviewSession[]; unreadableCount: number; rows: ClassifiedStoredRow[] }
   | { kind: 'error'; error: unknown };
 
 export async function readSessionList(
