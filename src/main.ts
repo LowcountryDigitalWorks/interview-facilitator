@@ -1,7 +1,8 @@
 import './styles.css';
 import type { AnswerStatus, Question } from './domain';
 import { generalDiscoveryPack as pack } from './pack';
-import { deleteSession, exportRecoveryBackup, listSessions, loadSession, migrateLegacySession, replaceSessionWithHistory, requestPersistentStorage, RevisionConflictError, saveSession } from './storage';
+import { deleteSession, exportRecoveryBackup, listSessions, loadKnownFactSession14ForReview, loadSession, migrateLegacySession, replaceSessionWithHistory, requestPersistentStorage, RevisionConflictError, saveSession } from './storage';
+import { exportCanonicalSessionJsonForReview } from './versioned-session-io';
 import { semanticSessionToMarkdown, serializeSession } from './markdown';
 import { formatConnectivityLabel, formatSaveLabel, type PersistenceState, type SaveState } from './indicators';
 import { SessionAutosaveCoordinator } from './autosave';
@@ -235,6 +236,7 @@ async function renderHome(): Promise<void> {
   const recent = listState.kind === 'ready' ? listState.sessions : [];
   const unreadableCount = listState.kind === 'ready' ? listState.unreadableCount : 0;
   const storedRows = listState.kind === 'ready' ? listState.rows : [];
+  const readOnly14 = storedRows.filter((row) => row.classification === 'current-known-fact-14');
   if (storageError) console.error('Unable to read local interviews.', listState.error);
 
   app.innerHTML = `
@@ -249,7 +251,7 @@ async function renderHome(): Promise<void> {
         <input id="import-file" type="file" accept="application/json,.json" hidden />
       </section>
       <section class="section-block">
-        <div class="section-heading"><div><p class="eyebrow">On this device</p><h2>Recent interviews</h2></div><span>${storageError ? 'Storage unavailable' : `${recent.length} local`}</span></div>
+        <div class="section-heading"><div><p class="eyebrow">On this device</p><h2>Recent interviews</h2></div><span>${storageError ? 'Storage unavailable' : `${recent.length + readOnly14.length} local`}</span></div>
         <div class="session-list">
           ${storageError ? `
             <div id="storage-read-error" class="known-preview" role="alert" aria-live="assertive">
@@ -263,6 +265,7 @@ async function renderHome(): Promise<void> {
               <strong>${unreadableCount} local interview${unreadableCount === 1 ? '' : 's'} could not be read.</strong>
               <p>${unreadableCount === 1 ? 'It was' : 'They were'} not deleted.</p>
             </div>` : ''}
+            ${readOnly14.map((row) => `<div class="known-preview"><strong>${escapeHtml(row.session.clientLabel)} — 1.4 interview (read-only)</strong><p>This validated interview remains on this device. Editing is disabled until the 1.4 interview workflow is supported. Export its complete canonical JSON backup now; opening it in the 1.3 editor would risk evidence loss.</p><button type="button" class="secondary" data-versioned-json-id="${escapeHtml(row.sessionId)}">Export full 1.4 JSON backup</button></div>`).join('')}
             ${storedRows.filter((row) => row.classification === 'legacy-migratable').map((row) => `<div class="known-preview"><strong>Older interview format</strong><p>This interview can be upgraded while preserving its original record.</p><button class="secondary" data-upgrade-id="${escapeHtml(row.sessionId)}">Upgrade</button></div>`).join('')}
             ${storedRows.filter((row) => row.classification === 'unsupported-recoverable').map((row) => `<div class="known-preview"><strong>Unsupported interview format</strong><p>Back up this internal recovery data. It is not a client interview artifact.</p><button class="secondary" data-recovery-id="${escapeHtml(row.sessionId)}">Download recovery backup</button></div>`).join('')}
             ${storedRows.filter((row) => row.classification === 'malformed-unreadable').map((row) => `<div class="known-preview" role="status"><strong>An interview record could not be read.</strong><p>It remains stored and was left unchanged.</p>${row.recoveryAvailable ? `<button class="secondary" data-recovery-id="${escapeHtml(row.sessionId)}">Download recovery backup</button>` : ''}</div>`).join('')}
@@ -270,7 +273,7 @@ async function renderHome(): Promise<void> {
               <button class="session-card" data-session-id="${escapeHtml(item.sessionId)}">
                 <span><strong>${escapeHtml(item.clientLabel)}</strong><small>${escapeHtml(item.interviewMode)} · updated ${escapeHtml(new Date(item.updatedAt).toLocaleString())}</small></span>
                 <span aria-hidden="true">→</span>
-              </button>`).join('') : '<div class="empty-card">No saved interviews yet.</div>'}`}
+              </button>`).join('') : readOnly14.length ? '' : '<div class="empty-card">No saved interviews yet.</div>'}`}
         </div>
       </section>
     </main>`;
@@ -282,6 +285,24 @@ async function renderHome(): Promise<void> {
     if (!session) return;
     download(`${session.clientLabel.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-interview.json`, serializeSession(session), 'application/json');
   });
+  app.querySelectorAll<HTMLButtonElement>('[data-versioned-json-id]').forEach((button) => button.addEventListener('click', async () => {
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      // Re-read the current persisted row before export: a different tab may
+      // have advanced it since the home list was rendered. Never use a stale
+      // displayed copy or route 1.4 through 1.3 serialization.
+      const stored = await loadKnownFactSession14ForReview(button.dataset.versionedJsonId ?? '');
+      if (!stored) throw new Error('This 1.4 interview is no longer available on this device.');
+      const contents = await exportCanonicalSessionJsonForReview(stored);
+      download(`${stored.clientLabel.replace(/[^a-z0-9]+/gi, '-').toLowerCase() || 'interview'}-1.4-backup.json`, contents, 'application/json');
+    } catch {
+      homeNotice = { kind: 'read', message: 'The 1.4 interview could not be validated and exported. Its stored record was left unchanged. Retry or use the recovery option when available.' };
+      await renderHome();
+    } finally {
+      button.disabled = false;
+    }
+  }));
   app.querySelectorAll<HTMLElement>('[data-upgrade-id]').forEach((button) => button.addEventListener('click', async () => {
     if (!(button instanceof HTMLButtonElement) || button.disabled) return;
     button.disabled = true;
