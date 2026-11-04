@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { generalDiscoveryPack } from '../src/pack';
+import { createPinnedSession } from '../src/pack-identity';
 import { createSemanticSession } from '../src/semantic-session';
 import { migrateSemantic13ToKnownFact14 } from '../src/known-fact-session';
 import {
@@ -77,6 +78,22 @@ describe('#34A2B2B pure version-aware JSON boundary', () => {
     expect((await parseCanonicalSessionJsonForReview('{')).kind).toBe('invalid');
     expect((await parseCanonicalSessionJsonForReview('"wrong shape"')).kind).toBe('invalid');
     expect((await parseCanonicalSessionJsonForReview('x'.repeat(2_000_001))).kind).toBe('invalid');
+  });
+
+
+  it('recognizes a genuinely valid historical 1.2 snapshot as requiring a reviewed migration', async () => {
+    const pinned12 = await createPinnedSession(
+      generalDiscoveryPack,
+      { clientLabel: 'Synthetic historical interview', interviewerLabel: 'Synthetic interviewer' },
+      new Date('2026-11-03T12:00:00.000Z'),
+    );
+    const inspection = await inspectSessionCompatibilityForReview(pinned12);
+    expect(inspection).toMatchObject({
+      kind: 'migration-required',
+      schemaVersion: '1.2.0',
+      nextSchemaVersion: '1.3.0',
+    });
+    await expect(exportCanonicalSessionJsonForReview(pinned12)).rejects.toThrow('no export');
   });
 
   it('does not label invalid 1.2-looking records as safe migrations', async () => {
