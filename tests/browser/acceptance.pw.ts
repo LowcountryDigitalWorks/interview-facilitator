@@ -1,10 +1,20 @@
 import AxeBuilder from '@axe-core/playwright';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Download, type Page } from '@playwright/test';
 import type { InterviewSession } from '../../src/domain';
 import { canonicalizeJson, sha256Hex } from '../../src/pack-identity';
 import { validateSemanticSessionRecord, type SemanticInterviewSession } from '../../src/semantic-session';
 import { migrateSemantic13ToKnownFact14 } from '../../src/known-fact-session';
 import { syntheticPinned12Session, syntheticSemanticSession } from './synthetic-session';
+
+async function readDownloadJson(download: Download): Promise<unknown> {
+  const stream = await download.createReadStream();
+  if (!stream) throw new Error('Download stream unavailable.');
+  const decoder = new TextDecoder();
+  let text = '';
+  for await (const chunk of stream) text += decoder.decode(chunk as Uint8Array, { stream: true });
+  text += decoder.decode();
+  return JSON.parse(text) as unknown;
+}
 
 const DB_NAME = 'ldw-interview-facilitator';
 const STORE = 'sessions';
@@ -122,12 +132,68 @@ test('validated 1.4 local interview is read-only and exports full canonical evid
   const artifact = await downloadStarted;
   expect(artifact.suggestedFilename()).toContain('-1.4-backup.json');
   expect(await artifact.failure()).toBeNull();
-  // Complete payload equality, evidence fields, and version preservation are
-  // asserted by the pure 1.4 canonical JSON round-trip unit tests.
+  const exported = await readDownloadJson(artifact) as unknown;
+  expect(exported).toEqual(source14);
+  expect((exported as typeof source14).knownFactLedger).toEqual(source14.knownFactLedger);
 
   const stored = await readStorageSnapshot(page);
   expect(stored.rows).toEqual([source14]);
   expect(stored.archives).toEqual([]);
+});
+
+
+test('1.4 home warning is explicit about this build not restoring a 1.4 JSON backup', async ({ page }) => {
+  const source14 = await migrateSemantic13ToKnownFact14(await syntheticSession('synthetic-warning-14'));
+  await page.goto('/');
+  await putRawSession(page, source14);
+  await page.reload();
+  await expect(page.getByText('Editing and importing 1.4 JSON are not supported in this build.', { exact: false })).toBeVisible();
+  await expect(page.getByText('this build cannot restore that backup', { exact: false })).toBeVisible();
+  expect((await readStorageSnapshot(page)).rows).toEqual([source14]);
+});
+
+test('1.4 export refuses a stale deleted row and explains disappearance without mutating storage', async ({ page }) => {
+  const source14 = await migrateSemantic13ToKnownFact14(await syntheticSession('synthetic-disappeared-14'));
+  await page.goto('/');
+  await putRawSession(page, source14);
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Export full 1.4 JSON backup' })).toBeVisible();
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const req = indexedDB.open('ldw-interview-facilitator', 4);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('sessions', 'readwrite');
+      tx.objectStore('sessions').delete('synthetic-disappeared-14');
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+    db.close();
+  });
+  await page.getByRole('button', { name: 'Export full 1.4 JSON backup' }).click();
+  await expect(page.getByText('This 1.4 interview is no longer on this device', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Export full 1.4 JSON backup' })).toHaveCount(0);
+  expect((await readStorageSnapshot(page)).rows).toEqual([]);
+});
+
+test('hostile 1.4 client labels are rendered as text and downloaded under a sanitized filename', async ({ page }) => {
+  const source14 = await migrateSemantic13ToKnownFact14(await syntheticSession('synthetic-hostile-label-14'));
+  source14.clientLabel = '<img src=x onerror=alert(1)>';
+  await page.goto('/');
+  await putRawSession(page, source14);
+  await page.reload();
+  await expect(page.getByText('<img src=x onerror=alert(1)> — 1.4 interview (read-only)')).toBeVisible();
+  await expect(page.locator('.session-list img')).toHaveCount(0);
+  const started = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export full 1.4 JSON backup' }).click();
+  const artifact = await started;
+  expect(artifact.suggestedFilename()).toMatch(/^[a-z0-9-]+-1\.4-backup\.json$/);
+  expect(artifact.suggestedFilename()).not.toContain('<');
+  expect(await readDownloadJson(artifact)).toEqual(source14);
+  expect((await readStorageSnapshot(page)).rows).toEqual([source14]);
 });
 
 test('answer, question note, and running note keep focus and selection through autosave', async ({ page }) => {
