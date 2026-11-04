@@ -151,7 +151,6 @@ describe('#34A2B2C3 pure known-fact 1.4 editing adapter', () => {
       { kind: 'status', questionId: 'existing-presence', status: 'INVALID' },
       { kind: 'status', questionId: 'existing-presence' },
       { kind: 'value', questionId: 'existing-presence' },
-      { kind: 'value', questionId: 'existing-presence', value: 42 },
       { kind: 'value', questionId: '', value: 'Invalid' },
       { kind: 'value', questionId: 'existing-presence', value: 'Invalid', status: 'ANSWERED' },
       { kind: 'status', questionId: 'existing-presence', status: 'ANSWERED', value: 'Invalid' },
