@@ -973,6 +973,22 @@ describe('34A2B2A dormant 1.4 read/save and immutable history boundary', () => {
     expect(memory.stores.get(REVISION_HISTORY_STORE)?.size).toBe(1);
   });
 
+  it('rejects a stale submitted 1.4 snapshot even if its caller supplies the latest expected revision', async () => {
+    const memory = installMigrationDatabase();
+    const { upgraded } = await state14();
+    seedLegacy(memory, upgraded);
+    const tabA = structuredClone(upgraded);
+    tabA.runningNotes = 'Latest committed content';
+    const current = await saveKnownFactSession14ForReview(tabA, upgraded.revisionId);
+
+    const stale = structuredClone(upgraded);
+    stale.runningNotes = 'Outdated tab payload with forged current expected revision';
+    await expect(saveKnownFactSession14ForReview(stale, current.revisionId))
+      .rejects.toBeInstanceOf(RevisionConflictError);
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(current);
+    expect(memory.stores.get(REVISION_HISTORY_STORE)?.size).toBe(1);
+  });
+
   it('rejects rewriting pinned source facts, correction lineage, acceptance events or pack identities', async () => {
     const memory = installMigrationDatabase();
     const { upgraded } = await state14();
