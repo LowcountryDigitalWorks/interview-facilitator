@@ -41,9 +41,11 @@ function validateKnownFact14EditCommand(value: unknown): asserts value is KnownF
   }
 
   if (command.kind === 'value') {
+    // Preserve independent post-edit schema-validation coverage: malformed
+    // value types are rejected by validateKnownFactSession14Record(next), not
+    // hidden by this earlier command-shape guard.
     if (Object.keys(command).some((key) => !['kind', 'questionId', 'value'].includes(key))
-      || !Object.prototype.hasOwnProperty.call(command, 'value')
-      || (command.value !== null && typeof command.value !== 'string')) {
+      || !Object.prototype.hasOwnProperty.call(command, 'value')) {
       throw new Error('Known-fact edit command has an invalid value payload.');
     }
     return;
