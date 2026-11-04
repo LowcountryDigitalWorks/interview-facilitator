@@ -101,7 +101,7 @@ export async function projectReviewedKnownFact14ReadBackForReview(
       throw new Error('Read-back reviewed value differs from effective canonical evidence.');
     }
 
-    let status: ReadBack14PreviewEntry['status'] = semanticStatusLabel(question, answer);
+    let status = semanticStatusLabel(question, answer) as ReadBack14PreviewEntry['status'];
     // Interviewer inferences are not upgraded into client-agreed facts.
     if (captured && (answer.source === 'interviewer-inference' || answer.source === null)) {
       status = 'Needs confirmation';
