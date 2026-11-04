@@ -699,8 +699,8 @@ export async function migrateSession13To14ForReview(sessionId: string): Promise<
     if (plan.session.sessionId !== sessionId) {
       return { kind: 'invalid', reason: 'Stored session identity does not match the requested key.' };
     }
-    if (plan.kind === 'current') return confirmKnownFactAlreadyMigrated(db, sessionId);
-    return commitKnownFactMigrationPlan(db, sessionId, plan);
+    if (plan.kind === 'current') return await confirmKnownFactAlreadyMigrated(db, sessionId);
+    return await commitKnownFactMigrationPlan(db, sessionId, plan);
   } finally {
     db.close();
   }
