@@ -385,6 +385,12 @@ function assertKnownFactRevisionIsAppendOnly(previous: KnownFactSession14, next:
     || canonicalizeJson(nextAcceptances.slice(0, priorAcceptances.length)) !== canonicalizeJson(priorAcceptances)) {
     throw new RevisionHistoryConflictError('Known-fact source/correction/acceptance evidence is append-only.');
   }
+  // An acceptance appended in this save must testify to the CAS-verified
+  // source revision, never an arbitrary caller-supplied revision identity.
+  if (nextAcceptances.slice(priorAcceptances.length)
+    .some((acceptance) => acceptance.revisionId !== previous.revisionId)) {
+    throw new RevisionHistoryConflictError('New known-fact acceptance must reference the current source revision.');
+  }
 }
 
 /**
@@ -422,6 +428,9 @@ export async function saveKnownFactSession14ForReview(
       fingerprint = canonicalizeJson(previousRaw);
     } else if (expectedRevisionId !== null) {
       throw new RevisionConflictError(session.sessionId, expectedRevisionId, null);
+    } else if (session.knownFactLedger.acceptances.length > 0) {
+      // There is no CAS-verified prior revision for a brand-new record.
+      throw new RevisionHistoryConflictError('New 1.4 sessions cannot invent pre-persistence acceptance events.');
     }
 
     const next: KnownFactSession14 = {
