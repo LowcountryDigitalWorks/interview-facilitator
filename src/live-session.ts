@@ -13,6 +13,10 @@ import {
   type CaptureSpec,
 } from './coverage-semantics';
 import type { SemanticAnswerState, SemanticInterviewSession, SemanticPackSnapshot } from './semantic-session';
+import type { KnownFactSession14 } from './known-fact-session';
+
+/** The pure coverage/capture projection reads shared 1.3/1.4 fields only. */
+export type LiveInterviewSession = SemanticInterviewSession | KnownFactSession14;
 
 export interface LiveCoverage {
   resolved: number;
@@ -29,21 +33,21 @@ export function captureSpecForQuestion(question: Question): CaptureSpec {
     : { kind: question.kind, options: question.options };
 }
 
-export function sessionPack(session: SemanticInterviewSession): SemanticPackSnapshot {
+export function sessionPack(session: LiveInterviewSession): SemanticPackSnapshot {
   return session.packSnapshot;
 }
 
-export function relevanceMap(session: SemanticInterviewSession): Readonly<Record<string, Relevance>> {
+export function relevanceMap(session: LiveInterviewSession): Readonly<Record<string, Relevance>> {
   return deriveRelevanceMap(session.packSnapshot.questions, session.answers);
 }
 
-export function visibleQuestions(session: SemanticInterviewSession): Question[] {
+export function visibleQuestions(session: LiveInterviewSession): Question[] {
   const relevance = relevanceMap(session);
   return session.packSnapshot.questions.filter((question) => relevance[question.id] !== 'irrelevant');
 }
 
 export function nextVisibleQuestion(
-  session: SemanticInterviewSession,
+  session: LiveInterviewSession,
   currentId: string,
   direction: 1 | -1,
 ): Question | undefined {
@@ -53,12 +57,12 @@ export function nextVisibleQuestion(
   return visible[index + direction];
 }
 
-export function coverageBucketMap(session: SemanticInterviewSession): Readonly<Record<string, CoverageBucket>> {
+export function coverageBucketMap(session: LiveInterviewSession): Readonly<Record<string, CoverageBucket>> {
   return Object.fromEntries(projectCoverageObjectives(session.packSnapshot.questions, session.answers)
     .map((projection) => [projection.questionId, projection.bucket]));
 }
 
-export function coverage(session: SemanticInterviewSession): LiveCoverage {
+export function coverage(session: LiveInterviewSession): LiveCoverage {
   const projections = projectCoverageObjectives(session.packSnapshot.questions, session.answers);
   const result: LiveCoverage = {
     resolved: 0,
@@ -183,7 +187,7 @@ export function applyValueEdit(
  * transition from silently restoring old completion truth after the original irrelevant state is lost.
  */
 export function applyReactivationReviews(
-  session: SemanticInterviewSession,
+  session: LiveInterviewSession,
   before: Readonly<Record<string, Relevance>>,
 ): void {
   const reviewedIds = new Set<string>();
