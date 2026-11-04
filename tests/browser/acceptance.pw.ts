@@ -1,8 +1,10 @@
 import AxeBuilder from '@axe-core/playwright';
+import { readFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
 import type { InterviewSession } from '../../src/domain';
 import { canonicalizeJson, sha256Hex } from '../../src/pack-identity';
 import { validateSemanticSessionRecord, type SemanticInterviewSession } from '../../src/semantic-session';
+import { migrateSemantic13ToKnownFact14 } from '../../src/known-fact-session';
 import { syntheticPinned12Session, syntheticSemanticSession } from './synthetic-session';
 
 const DB_NAME = 'ldw-interview-facilitator';
@@ -103,6 +105,32 @@ test('one malformed IndexedDB row does not hide a healthy local interview', asyn
   await expect(page.getByText('1 local interview could not be read.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'New interview' })).toBeEnabled();
   await expect(page.getByRole('button', { name: 'Import session JSON' })).toBeEnabled();
+});
+
+test('validated 1.4 local interview is read-only and exports full canonical evidence without modifying storage', async ({ page }) => {
+  const source14 = await migrateSemantic13ToKnownFact14(await syntheticSession('synthetic-readonly-14'));
+  await page.goto('/');
+  await putRawSession(page, source14);
+  await page.reload();
+
+  await expect(page.getByText('Synthetic Browser Test — 1.4 interview (read-only)')).toBeVisible();
+  await expect(page.getByText('No saved interviews yet.')).toHaveCount(0);
+  await expect(page.locator('[data-session-id="synthetic-readonly-14"]')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'New interview' })).toBeEnabled();
+
+  const downloadStarted = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export full 1.4 JSON backup' }).click();
+  const artifact = await downloadStarted;
+  expect(artifact.suggestedFilename()).toContain('-1.4-backup.json');
+  const downloaded = JSON.parse(await readFile(await artifact.path(), 'utf-8')) as unknown;
+  expect(downloaded).toEqual(source14);
+  expect(downloaded).toHaveProperty('sessionSchemaVersion', '1.4.0');
+  expect(downloaded).toHaveProperty('knownFactLedger');
+  expect(downloaded).toHaveProperty('knownFactAnswerLinks');
+
+  const stored = await readStorageSnapshot(page);
+  expect(stored.rows).toEqual([source14]);
+  expect(stored.archives).toEqual([]);
 });
 
 test('answer, question note, and running note keep focus and selection through autosave', async ({ page }) => {
