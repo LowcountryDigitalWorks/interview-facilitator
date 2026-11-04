@@ -104,4 +104,26 @@ describe('#35A internal 1.4 provenance artifact foundation', () => {
       ...session, unapprovedField: 'would be omitted silently',
     })).rejects.toThrow(/unsupported field/i);
   });
+
+  it('keeps setext-like lines, bare URLs and unusual line separators inert', async () => {
+    const session = await base14();
+    const unsafe = 'Status\\n===\\nhttps://example.test/path\\nwww.example.test\\nuser@example.test';
+    const unicode = 'Before\\u2028middle\\u0085after';
+    session.knownFacts[0]!.value = unsafe;
+    session.knownFactLedger.facts[0]!.value = unsafe;
+    session.knownFacts[0]!.provenance = unicode;
+    session.knownFactLedger.facts[0]!.provenance = unicode;
+
+    const output = await knownFact14EvidenceAppendixForReview(session);
+    expect(output).toContain('\\=\\=\\=');
+    expect(output).not.toContain('\\n===\\n');
+    expect(output).not.toContain('https://example.test');
+    expect(output).toContain('https\\:');
+    expect(output).not.toContain('www.example.test');
+    expect(output).not.toContain('user@example.test');
+    expect(output).not.toContain('\\u2028');
+    expect(output).not.toContain('\\u0085');
+    expect(output).toContain('u2028');
+    expect(output).toContain('u0085');
+  });
 });
