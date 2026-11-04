@@ -424,6 +424,9 @@ export async function saveKnownFactSession14ForReview(
       if (previous.revisionId !== expectedRevisionId) {
         throw new RevisionConflictError(session.sessionId, expectedRevisionId, previous.revisionId);
       }
+      if (session.revisionId !== expectedRevisionId) {
+        throw new RevisionConflictError(session.sessionId, expectedRevisionId, session.revisionId);
+      }
       assertKnownFactRevisionIsAppendOnly(previous, session);
       fingerprint = canonicalizeJson(previousRaw);
     } else if (expectedRevisionId !== null) {
