@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { acceptKnownFact, projectAcceptedKnownFact } from '../src/known-fact-evidence';
-import { applyKnownFact14EditForReview } from '../src/known-fact-editor';
+import { applyKnownFact14EditForReview, type KnownFact14Edit } from '../src/known-fact-editor';
 import {
   migrateSemantic13ToKnownFact14,
   validateKnownFactSession14Record,
