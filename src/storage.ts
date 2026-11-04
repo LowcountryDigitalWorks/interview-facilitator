@@ -2,6 +2,7 @@ import type { InterviewSession } from './domain';
 import {
   SEMANTIC_13_TO_KNOWN_FACT_14_MIGRATION_ID,
   planKnownFactMigration,
+  validateKnownFactSession14Record,
   type KnownFactMigrationPlan,
   type KnownFactSession14,
 } from './known-fact-session';
@@ -318,10 +319,15 @@ export async function saveSession(session: SemanticInterviewSession, expectedRev
     await new Promise<void>((resolve, reject) => {
       const tx = writeTransaction(db);
       const store = tx.objectStore(STORE);
-      let conflict: RevisionConflictError | null = null;
+      let conflict: Error | null = null;
       const currentRequest = store.get(session.sessionId);
       currentRequest.onsuccess = () => {
-        const current = currentRequest.result as { revisionId?: unknown } | undefined;
+        const current = currentRequest.result as { revisionId?: unknown; sessionSchemaVersion?: unknown } | undefined;
+        // Never let the active 1.3 writer silently replace an already migrated 1.4 row.
+        if (current !== undefined && current.sessionSchemaVersion !== '1.3.0') {
+          conflict = new Error('The 1.3 writer cannot overwrite a different session schema version.');
+          return;
+        }
         const actualRevisionId = typeof current?.revisionId === 'string' ? current.revisionId : null;
         if (actualRevisionId !== expectedRevisionId) {
           conflict = new RevisionConflictError(session.sessionId, expectedRevisionId, actualRevisionId);
@@ -335,6 +341,167 @@ export async function saveSession(session: SemanticInterviewSession, expectedRev
       tx.onabort = () => reject(tx.error ?? new Error('Local save was aborted.'));
     });
     return next;
+  } finally {
+    db.close();
+  }
+}
+
+
+/**
+ * #34A2B2A — internal typed 1.4 read/save adapter.
+ * No caller in the live UI is permitted until version-aware import, export,
+ * list and edit flows are independently accepted. The current 1.3 writer
+ * deliberately remains separate and must never downgrade a 1.4 row.
+ */
+export async function loadKnownFactSession14ForReview(sessionId: string): Promise<KnownFactSession14 | undefined> {
+  const db = await openDb();
+  try {
+    const raw = await requestResult(db.transaction(STORE, 'readonly').objectStore(STORE).get(sessionId));
+    if (raw === undefined) return undefined;
+    const validated = await validateKnownFactSession14Record(raw);
+    if (validated.sessionId !== sessionId) throw new Error('Loaded known-fact session identity does not match its storage key.');
+    return validated;
+  } finally {
+    db.close();
+  }
+}
+
+function assertKnownFactRevisionIsAppendOnly(previous: KnownFactSession14, next: KnownFactSession14): void {
+  if (previous.sessionId !== next.sessionId
+    || previous.createdAt !== next.createdAt
+    || previous.interviewPackId !== next.interviewPackId
+    || previous.interviewPackVersion !== next.interviewPackVersion
+    || canonicalizeJson(previous.packSnapshot) !== canonicalizeJson(next.packSnapshot)
+    || canonicalizeJson(previous.packIdentity) !== canonicalizeJson(next.packIdentity)
+    || canonicalizeJson(previous.knownFacts) !== canonicalizeJson(next.knownFacts)) {
+    throw new RevisionHistoryConflictError('Known-fact source identity and pinned pack must remain immutable.');
+  }
+  const priorFacts = previous.knownFactLedger.facts;
+  const priorAcceptances = previous.knownFactLedger.acceptances;
+  const nextFacts = next.knownFactLedger.facts;
+  const nextAcceptances = next.knownFactLedger.acceptances;
+  if (nextFacts.length < priorFacts.length || nextAcceptances.length < priorAcceptances.length
+    || canonicalizeJson(nextFacts.slice(0, priorFacts.length)) !== canonicalizeJson(priorFacts)
+    || canonicalizeJson(nextAcceptances.slice(0, priorAcceptances.length)) !== canonicalizeJson(priorAcceptances)) {
+    throw new RevisionHistoryConflictError('Known-fact source/correction/acceptance evidence is append-only.');
+  }
+  // An acceptance appended in this save must testify to the CAS-verified
+  // source revision, never an arbitrary caller-supplied revision identity.
+  if (nextAcceptances.slice(priorAcceptances.length)
+    .some((acceptance) => acceptance.revisionId !== previous.revisionId)) {
+    throw new RevisionHistoryConflictError('New known-fact acceptance must reference the current source revision.');
+  }
+}
+
+/**
+ * Internal-only 1.4 save: validates both schema and append-only provenance,
+ * then CAS-checks current content and atomically archives the prior revision.
+ * If a 1.3 row is still present, this refuses to upgrade or overwrite it:
+ * only the reviewed 1.3→1.4 migration gate is allowed to perform that step.
+ */
+export async function saveKnownFactSession14ForReview(
+  session: KnownFactSession14,
+  expectedRevisionId: string | null,
+): Promise<KnownFactSession14> {
+  await validateKnownFactSession14Record(session);
+  const db = await openDb();
+  try {
+    const previousRaw = await requestResult(db.transaction(STORE, 'readonly').objectStore(STORE).get(session.sessionId));
+    let previous: KnownFactSession14 | null = null;
+    let fingerprint: string | null = null;
+    if (previousRaw !== undefined) {
+      if (expectedRevisionId === null) {
+        const raw = previousRaw as { revisionId?: unknown };
+        throw new RevisionConflictError(
+          session.sessionId, expectedRevisionId,
+          typeof raw?.revisionId === 'string' ? raw.revisionId : null,
+        );
+      }
+      previous = await validateKnownFactSession14Record(previousRaw);
+      if (previous.sessionId !== session.sessionId) {
+        throw new RevisionHistoryConflictError('Stored 1.4 identity does not match its key.');
+      }
+      if (previous.revisionId !== expectedRevisionId) {
+        throw new RevisionConflictError(session.sessionId, expectedRevisionId, previous.revisionId);
+      }
+      if (session.revisionId !== expectedRevisionId) {
+        throw new RevisionConflictError(session.sessionId, expectedRevisionId, session.revisionId);
+      }
+      assertKnownFactRevisionIsAppendOnly(previous, session);
+      fingerprint = canonicalizeJson(previousRaw);
+    } else if (expectedRevisionId !== null) {
+      throw new RevisionConflictError(session.sessionId, expectedRevisionId, null);
+    } else if (session.knownFactLedger.acceptances.length > 0) {
+      // There is no CAS-verified prior revision for a brand-new record.
+      throw new RevisionHistoryConflictError('New 1.4 sessions cannot invent pre-persistence acceptance events.');
+    }
+
+    const next: KnownFactSession14 = {
+      ...structuredClone(session),
+      revisionId: crypto.randomUUID(),
+      parentRevisionId: expectedRevisionId,
+    };
+    await validateKnownFactSession14Record(next);
+
+    return await new Promise<KnownFactSession14>((resolve, reject) => {
+      const tx = openTransaction(db, [STORE, REVISION_HISTORY_STORE], 'readwrite');
+      const currentStore = tx.objectStore(STORE);
+      const historyStore = tx.objectStore(REVISION_HISTORY_STORE);
+      let failure: unknown = null;
+      const fail = (error: unknown): void => {
+        if (failure !== null) return;
+        failure = error;
+        try { tx.abort(); } catch { /* transaction already finished */ }
+      };
+      tx.oncomplete = () => failure === null ? resolve(next) : reject(failure);
+      tx.onerror = () => { if (failure === null) failure = tx.error ?? new Error('Unable to save known-fact session.'); };
+      tx.onabort = () => reject(failure ?? tx.error ?? new Error('Known-fact save was aborted.'));
+      const currentRequest = currentStore.get(session.sessionId);
+      currentRequest.onerror = () => fail(currentRequest.error ?? new Error('Unable to read current known-fact revision.'));
+      currentRequest.onsuccess = () => {
+        try {
+          const current = currentRequest.result as { revisionId?: unknown; sessionSchemaVersion?: unknown } | undefined;
+          const actualId = typeof current?.revisionId === 'string' ? current.revisionId : null;
+          if ((current !== undefined && current.sessionSchemaVersion !== '1.4.0')
+            || (current !== undefined && expectedRevisionId === null)
+            || actualId !== expectedRevisionId) {
+            fail(new RevisionConflictError(session.sessionId, expectedRevisionId, actualId));
+            return;
+          }
+          if (previous !== null && canonicalizeJson(current) !== fingerprint) {
+            fail(new RevisionHistoryConflictError('Known-fact session changed without a corresponding revision advance.'));
+            return;
+          }
+          if (previous === null) {
+            const put = currentStore.put(next);
+            put.onerror = () => fail(put.error ?? new Error('Unable to create known-fact session.'));
+            return;
+          }
+          const historyKey = revisionHistoryKey(session.sessionId, expectedRevisionId!);
+          const historyRequest = historyStore.get(historyKey);
+          historyRequest.onerror = () => fail(historyRequest.error ?? new Error('Unable to inspect known-fact revision history.'));
+          historyRequest.onsuccess = () => {
+            try {
+              if (historyRequest.result !== undefined) {
+                if (canonicalizeJson(historyRequest.result) !== fingerprint) {
+                  fail(new RevisionHistoryConflictError('A different immutable 1.4 revision already occupies this history key.'));
+                  return;
+                }
+              } else {
+                const retain = historyStore.put(structuredClone(previous), historyKey);
+                retain.onerror = () => fail(retain.error ?? new Error('Unable to retain immutable 1.4 revision.'));
+              }
+              const put = currentStore.put(next);
+              put.onerror = () => fail(put.error ?? new Error('Unable to write known-fact revision.'));
+            } catch (error) {
+              fail(error);
+            }
+          };
+        } catch (error) {
+          fail(error);
+        }
+      };
+    });
   } finally {
     db.close();
   }
