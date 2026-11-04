@@ -819,7 +819,7 @@ describe('34A2B1 internal atomic known-fact 1.3 to 1.4 storage gate', () => {
     const memory = installMigrationDatabase();
     seedLegacy(memory, await source13());
     expect((await migrateSession13To14ForReview(SESSION_ID)).kind).toBe('migrated');
-    const original = structuredClone(memory.stores.get(LEGACY_ARCHIVE_STORE)?.get(archiveKey()));
+    const original = structuredClone(memory.stores.get(LEGACY_ARCHIVE_STORE)?.get(archiveKey())) as Record<string, unknown>;
     memory.stores.get(LEGACY_ARCHIVE_STORE)?.delete(archiveKey());
     expect((await migrateSession13To14ForReview(SESSION_ID)).kind).toBe('conflict');
     memory.stores.get(LEGACY_ARCHIVE_STORE)?.set(archiveKey(), { ...original, runningNotes: 'Corrupt synthetic archive' });
