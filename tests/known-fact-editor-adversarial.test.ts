@@ -132,14 +132,29 @@ describe('#34C3 independent review M2 — validate both source and resulting 1.4
     expect(corrupted).toEqual(original);
   });
 
-  it('rejects a proposed captured option that is not in the pinned question choices', async () => {
+  it('validates the edited result and rejects a runtime-invalid value type', async () => {
     const valid = await migrateSemantic13ToKnownFact14(await createSemanticSession(
       generalDiscoveryPack, { clientLabel: 'Synthetic invalid edit' }, new Date(AT),
     ));
     const original = structuredClone(valid);
+    // Deliberately bypass TypeScript at this boundary: a malformed caller must
+    // not turn an invalid runtime value into a persisted 1.4 session.
     await expect(applyKnownFact14EditForReview(valid, {
-      kind: 'value', questionId: 'needs-booking', value: 'Not a valid pinned option',
-    })).rejects.toThrow(/meaningful value/i);
+      kind: 'value', questionId: 'needs-booking', value: 42 as unknown as string,
+    })).rejects.toThrow(/answer value must be a string or null/i);
     expect(valid).toEqual(original);
+  });
+
+  it('retains an out-of-options answer as unresolved, not as authoritative capture', async () => {
+    const valid = await migrateSemantic13ToKnownFact14(await createSemanticSession(
+      generalDiscoveryPack, { clientLabel: 'Synthetic out-of-options' }, new Date(AT),
+    ));
+    const edited = await applyKnownFact14EditForReview(valid, {
+      kind: 'value', questionId: 'needs-booking', value: 'Not a pinned option',
+    });
+    expect(edited.answers['needs-booking']).toMatchObject({
+      value: 'Not a pinned option', resolution: 'unresolved', source: null,
+    });
+    expect(relevanceMap(edited)['booking-process']).toBe('pending');
   });
 });
