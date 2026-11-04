@@ -265,7 +265,7 @@ async function renderHome(): Promise<void> {
               <strong>${unreadableCount} local interview${unreadableCount === 1 ? '' : 's'} could not be read.</strong>
               <p>${unreadableCount === 1 ? 'It was' : 'They were'} not deleted.</p>
             </div>` : ''}
-            ${readOnly14.map((row) => `<div class="known-preview"><strong>${escapeHtml(row.session.clientLabel)} — 1.4 interview (read-only)</strong><p>This validated interview remains on this device. Editing is disabled until the 1.4 interview workflow is supported. Export its complete canonical JSON backup now; opening it in the 1.3 editor would risk evidence loss.</p><button type="button" class="secondary" data-versioned-json-id="${escapeHtml(row.sessionId)}">Export full 1.4 JSON backup</button></div>`).join('')}
+            ${readOnly14.map((row) => `<div class="known-preview"><strong>${escapeHtml(row.session.clientLabel)} — 1.4 interview (read-only)</strong><p>This validated interview remains on this device. Editing and importing 1.4 JSON are not supported in this build. You can export a complete canonical JSON backup, but this build cannot restore that backup. Keep the original local record until a compatible version is available.</p><button type="button" class="secondary" data-versioned-json-id="${escapeHtml(row.sessionId)}">Export full 1.4 JSON backup</button></div>`).join('')}
             ${storedRows.filter((row) => row.classification === 'legacy-migratable').map((row) => `<div class="known-preview"><strong>Older interview format</strong><p>This interview can be upgraded while preserving its original record.</p><button class="secondary" data-upgrade-id="${escapeHtml(row.sessionId)}">Upgrade</button></div>`).join('')}
             ${storedRows.filter((row) => row.classification === 'unsupported-recoverable').map((row) => `<div class="known-preview"><strong>Unsupported interview format</strong><p>Back up this internal recovery data. It is not a client interview artifact.</p><button class="secondary" data-recovery-id="${escapeHtml(row.sessionId)}">Download recovery backup</button></div>`).join('')}
             ${storedRows.filter((row) => row.classification === 'malformed-unreadable').map((row) => `<div class="known-preview" role="status"><strong>An interview record could not be read.</strong><p>It remains stored and was left unchanged.</p>${row.recoveryAvailable ? `<button class="secondary" data-recovery-id="${escapeHtml(row.sessionId)}">Download recovery backup</button>` : ''}</div>`).join('')}
@@ -293,11 +293,18 @@ async function renderHome(): Promise<void> {
       // have advanced it since the home list was rendered. Never use a stale
       // displayed copy or route 1.4 through 1.3 serialization.
       const stored = await loadKnownFactSession14ForReview(button.dataset.versionedJsonId ?? '');
-      if (!stored) throw new Error('This 1.4 interview is no longer available on this device.');
+      if (!stored) {
+        homeNotice = { kind: 'read', message: 'This 1.4 interview is no longer on this device, possibly because another tab removed it. No backup was created. The local session list has been refreshed.' };
+        await renderHome();
+        return;
+      }
       const contents = await exportCanonicalSessionJsonForReview(stored);
       download(`${stored.clientLabel.replace(/[^a-z0-9]+/gi, '-').toLowerCase() || 'interview'}-1.4-backup.json`, contents, 'application/json');
-    } catch {
-      homeNotice = { kind: 'read', message: 'The 1.4 interview could not be validated and exported. Its stored record was left unchanged. Retry or use the recovery option when available.' };
+    } catch (error) {
+      const sizeLimited = error instanceof Error && error.message === 'Session export exceeds the safe size limit.';
+      homeNotice = { kind: 'read', message: sizeLimited
+        ? 'This 1.4 interview is larger than the safe JSON export limit. No backup was created. The local record was not changed, and this build has no oversized-file recovery export. Keep the original device and do not clear browser storage.'
+        : 'The 1.4 interview could not be validated or exported. No backup was created. The local record was not modified by this export attempt. Retry after checking local storage; do not clear this device until a usable backup exists.' };
       await renderHome();
     } finally {
       button.disabled = false;
