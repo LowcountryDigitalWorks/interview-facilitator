@@ -13,8 +13,9 @@ import {
   planCurrentMigration,
   planLegacyMigration,
 } from '../src/session-migration';
-import { LEGACY_ARCHIVE_STORE, REVISION_HISTORY_STORE, SESSIONS_STORE, listSessions, migrateLegacySession, migrateSession12To13 } from '../src/storage';
+import { LEGACY_ARCHIVE_STORE, REVISION_HISTORY_STORE, SESSIONS_STORE, listSessions, migrateLegacySession, migrateSession12To13, migrateSession13To14ForReview } from '../src/storage';
 import { PINNED_12_TO_13_MIGRATION_ID, createSemanticSession, planSemanticMigration } from '../src/semantic-session';
+import { SEMANTIC_13_TO_KNOWN_FACT_14_MIGRATION_ID, planKnownFactMigration } from '../src/known-fact-session';
 
 const SESSION_ID = 'synthetic-legacy-session';
 
@@ -702,5 +703,162 @@ describe('legacy 1.0 to pinned 1.1 migration', () => {
     expect(result.kind).toBe('not-legacy');
     expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(current);
     expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size ?? 0).toBe(0);
+  });
+});
+
+
+describe('34A2B1 internal atomic known-fact 1.3 to 1.4 storage gate', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function source13() {
+    const source = await createSemanticSession(generalDiscoveryPack, { clientLabel: 'Synthetic storage-only proof' }, new Date('2026-11-03T12:00:00.000Z'));
+    source.sessionId = SESSION_ID;
+    source.runningNotes = 'Private synthetic context; preserve exactly.';
+    source.answers['primary-goal']!.note = 'Internal note.';
+    return source;
+  }
+
+  function archiveKey() {
+    return legacyArchiveKey(SESSION_ID, '1.3.0', SEMANTIC_13_TO_KNOWN_FACT_14_MIGRATION_ID);
+  }
+
+  it('atomically archives a byte-equivalent 1.3 source and commits validated 1.4 with no invented fact acceptance', async () => {
+    const memory = installMigrationDatabase();
+    const source = await source13();
+    source.answers['existing-presence'] = {
+      ...source.answers['existing-presence']!,
+      value: 'Synthetic known context', resolution: 'captured',
+      source: 'accepted-known-fact', needsConfirmation: false,
+    };
+    const before = canonicalizeJson(source);
+    seedLegacy(memory, source);
+    const result = await migrateSession13To14ForReview(SESSION_ID);
+    expect(result.kind).toBe('migrated');
+    if (result.kind !== 'migrated') return;
+    expect(canonicalizeJson(source)).toBe(before);
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.get(archiveKey())).toEqual(source);
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(result.session);
+    expect(result.session.sessionSchemaVersion).toBe('1.4.0');
+    expect(result.session.parentRevisionId).toBe(source.revisionId);
+    expect(result.session.runningNotes).toBe(source.runningNotes);
+    expect(result.session.answers['primary-goal']?.note).toBe('Internal note.');
+    expect(result.session.packSnapshot).toEqual(source.packSnapshot);
+    expect(result.session.packIdentity).toEqual(source.packIdentity);
+    expect(result.session.knownFactLedger.acceptances).toEqual([]);
+    expect(result.session.knownFactAnswerLinks['existing-presence']).toEqual({ kind: 'legacy-unverified' });
+    expect(result.session.answers['existing-presence']?.needsConfirmation).toBe(true);
+    expect(memory.transactions.some((tx) => tx.mode === 'readwrite'
+      && tx.names.includes(SESSIONS_STORE) && tx.names.includes(LEGACY_ARCHIVE_STORE))).toBe(true);
+  });
+
+  it('idempotently verifies the archived source by deterministic replay without adding a second archive', async () => {
+    const memory = installMigrationDatabase();
+    const source = await source13();
+    seedLegacy(memory, source);
+    const first = await migrateSession13To14ForReview(SESSION_ID);
+    const archive = structuredClone(memory.stores.get(LEGACY_ARCHIVE_STORE)?.get(archiveKey()));
+    const second = await migrateSession13To14ForReview(SESSION_ID);
+    expect(first.kind).toBe('migrated');
+    expect(second.kind).toBe('already-migrated');
+    if (first.kind === 'migrated' && second.kind === 'already-migrated') {
+      expect(canonicalizeJson(second.session)).toBe(canonicalizeJson(first.session));
+    }
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size).toBe(1);
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.get(archiveKey())).toEqual(archive);
+  });
+
+  it('preserves identical pre-existing archive bytes and rejects conflicting archives without writes', async () => {
+    for (const conflicting of [false, true]) {
+      const memory = installMigrationDatabase();
+      const source = await source13();
+      seedLegacy(memory, source);
+      const archived = structuredClone(source);
+      if (conflicting) archived.runningNotes = 'Different archived truth';
+      memory.stores.set(LEGACY_ARCHIVE_STORE, new Map([[archiveKey(), archived]]));
+      const before = canonicalizeJson(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID));
+      const result = await migrateSession13To14ForReview(SESSION_ID);
+      expect(result.kind).toBe(conflicting ? 'conflict' : 'migrated');
+      expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.get(archiveKey())).toEqual(archived);
+      expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(
+        conflicting ? source : (result.kind === 'migrated' ? result.session : source),
+      );
+      if (conflicting) expect(canonicalizeJson(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID))).toBe(before);
+    }
+  });
+
+  it.each([
+    ['archive read', { fail: 'archive-get' as const }],
+    ['archive put', { fail: 'archive-put' as const }],
+    ['current put', { fail: 'session-put' as const }],
+    ['aborted transaction', { abortWrite: true }],
+    ['abort after staged writes', { abortAtCommit: true }],
+  ])('rolls back both records when %s fails', async (_name, opts) => {
+    const memory = installMigrationDatabase(opts);
+    const source = await source13();
+    seedLegacy(memory, source);
+    const before = canonicalizeJson(source);
+    const result = await migrateSession13To14ForReview(SESSION_ID);
+    expect(result.kind).toBe('aborted');
+    expect(canonicalizeJson(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID))).toBe(before);
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size ?? 0).toBe(0);
+  });
+
+  it.each([
+    ['changed', { swapSecondRead: { changed: 'test-only row' } }],
+    ['removed', { removeSecondRead: true }],
+  ])('detects a %s session between preflight and commit without mutation', async (_name, opts) => {
+    const memory = installMigrationDatabase(opts);
+    const source = await source13();
+    seedLegacy(memory, source);
+    expect((await migrateSession13To14ForReview(SESSION_ID)).kind).toBe('stale');
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(source);
+    expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size ?? 0).toBe(0);
+  });
+
+  it('fails closed when retry archive is missing or no longer replays exact current state', async () => {
+    const memory = installMigrationDatabase();
+    seedLegacy(memory, await source13());
+    expect((await migrateSession13To14ForReview(SESSION_ID)).kind).toBe('migrated');
+    const original = structuredClone(memory.stores.get(LEGACY_ARCHIVE_STORE)?.get(archiveKey())) as Record<string, unknown>;
+    memory.stores.get(LEGACY_ARCHIVE_STORE)?.delete(archiveKey());
+    expect((await migrateSession13To14ForReview(SESSION_ID)).kind).toBe('conflict');
+    memory.stores.get(LEGACY_ARCHIVE_STORE)?.set(archiveKey(), { ...original, runningNotes: 'Corrupt synthetic archive' });
+    expect((await migrateSession13To14ForReview(SESSION_ID)).kind).toBe('conflict');
+    memory.stores.get(LEGACY_ARCHIVE_STORE)?.set(archiveKey(), original);
+    const current = memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID) as { runningNotes: string };
+    current.runningNotes = 'Edited after migration';
+    expect((await migrateSession13To14ForReview(SESSION_ID)).kind).toBe('conflict');
+  });
+
+  it('does not migrate a missing row, invalid 1.3 data, earlier 1.0-1.2 rows or future versions', async () => {
+    const memory = installMigrationDatabase();
+    expect((await migrateSession13To14ForReview(SESSION_ID)).kind).toBe('missing');
+    expect((await migrateSession13To14ForReview('   ')).kind).toBe('invalid');
+    const source = await source13();
+    for (const row of [
+      { ...source, unexpected: 'not canonical' },
+      { ...source, sessionSchemaVersion: '1.2.0' },
+      { ...source, sessionSchemaVersion: '1.1.0' },
+      { ...source, sessionSchemaVersion: '1.0.0' },
+      { ...source, sessionSchemaVersion: '9.0.0' },
+    ]) {
+      seedLegacy(memory, row);
+      const actual = await migrateSession13To14ForReview(SESSION_ID);
+      expect(['invalid', 'unsupported']).toContain(actual.kind);
+      expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(row);
+      expect(memory.stores.get(LEGACY_ARCHIVE_STORE)?.size ?? 0).toBe(0);
+    }
+  });
+
+  it('keeps known-fact 1.4 a dormant migration contract, not an active 1.3 save target', async () => {
+    const source = await source13();
+    expect((await planKnownFactMigration(source)).kind).toBe('ready');
+    const memory = installMigrationDatabase();
+    seedLegacy(memory, source);
+    const upgraded = await migrateSession13To14ForReview(SESSION_ID);
+    expect(upgraded.kind).toBe('migrated');
+    if (upgraded.kind !== 'migrated') return;
+    expect((await planKnownFactMigration(upgraded.session)).kind).toBe('current');
+    expect((await planSemanticMigration(upgraded.session)).kind).toBe('unsupported');
   });
 });

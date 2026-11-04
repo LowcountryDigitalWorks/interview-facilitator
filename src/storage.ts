@@ -1,4 +1,10 @@
 import type { InterviewSession } from './domain';
+import {
+  SEMANTIC_13_TO_KNOWN_FACT_14_MIGRATION_ID,
+  planKnownFactMigration,
+  type KnownFactMigrationPlan,
+  type KnownFactSession14,
+} from './known-fact-session';
 import { canonicalizeJson, validateSessionRecord } from './pack-identity';
 import {
   INDEXED_DB_LAYOUT_VERSION,
@@ -664,6 +670,120 @@ async function confirmSemanticAlreadyMigrated(
   }
   if (canonicalizeJson(replay.session) !== canonicalizeJson(currentPlan.session)) {
     return { kind: 'conflict', reason: 'Retained pinned 1.2 migration source does not match the current semantic session.' };
+  }
+  return { kind: 'already-migrated', session: currentPlan.session };
+}
+
+
+/**
+ * #34A2B1 — internal storage proof, deliberately NOT wired into the user interface.
+ * The live app remains 1.3-only until separate 1.4 load/edit/save/export gates are accepted.
+ * A single strict IndexedDB transaction archives the exact original 1.3 bytes and
+ * commits its deterministic 1.4 successor, or rolls both writes back.
+ */
+export type KnownFactStorageMigrationResult =
+  | { kind: 'migrated' | 'already-migrated'; session: KnownFactSession14 }
+  | { kind: 'missing' | 'stale' | 'aborted' }
+  | { kind: 'unsupported' | 'invalid' | 'conflict'; reason: string };
+
+type KnownFactReadyPlan = Extract<KnownFactMigrationPlan, { kind: 'ready' }>;
+
+export async function migrateSession13To14ForReview(sessionId: string): Promise<KnownFactStorageMigrationResult> {
+  if (!sessionId.trim()) return { kind: 'invalid', reason: 'A nonempty session ID is required.' };
+  const db = await openDb();
+  try {
+    const raw = await requestResult(db.transaction(STORE, 'readonly').objectStore(STORE).get(sessionId));
+    if (raw === undefined) return { kind: 'missing' };
+    const plan = await planKnownFactMigration(raw);
+    if (plan.kind === 'unsupported' || plan.kind === 'invalid') return plan;
+    if (plan.session.sessionId !== sessionId) {
+      return { kind: 'invalid', reason: 'Stored session identity does not match the requested key.' };
+    }
+    if (plan.kind === 'current') return await confirmKnownFactAlreadyMigrated(db, sessionId);
+    return await commitKnownFactMigrationPlan(db, sessionId, plan);
+  } finally {
+    db.close();
+  }
+}
+
+function commitKnownFactMigrationPlan(
+  db: IDBDatabase,
+  sessionId: string,
+  plan: KnownFactReadyPlan,
+): Promise<KnownFactStorageMigrationResult> {
+  return new Promise((resolve) => {
+    const tx = openTransaction(db, [STORE, LEGACY_ARCHIVE_STORE], 'readwrite');
+    let failure: KnownFactStorageMigrationResult | null = null;
+    const fail = (result: KnownFactStorageMigrationResult): void => {
+      if (failure !== null) return;
+      failure = result;
+      try { tx.abort(); } catch { /* transaction already completed */ }
+    };
+    tx.oncomplete = () => resolve({ kind: 'migrated', session: plan.session });
+    tx.onerror = () => { if (failure === null) failure = { kind: 'aborted' }; };
+    tx.onabort = () => resolve(failure ?? { kind: 'aborted' });
+
+    const currentRequest = tx.objectStore(STORE).get(sessionId);
+    currentRequest.onerror = () => fail({ kind: 'aborted' });
+    currentRequest.onsuccess = () => {
+      try {
+        if (currentRequest.result === undefined || canonicalizeJson(currentRequest.result) !== plan.fingerprint) {
+          fail({ kind: 'stale' });
+          return;
+        }
+        const key = legacyArchiveKey(sessionId, plan.sourceSchemaVersion, plan.migrationId);
+        const archiveStore = tx.objectStore(LEGACY_ARCHIVE_STORE);
+        const archiveRequest = archiveStore.get(key);
+        archiveRequest.onerror = () => fail({ kind: 'aborted' });
+        archiveRequest.onsuccess = () => {
+          try {
+            if (archiveRequest.result !== undefined
+              && canonicalizeJson(archiveRequest.result) !== plan.fingerprint) {
+              fail({ kind: 'conflict', reason: 'An existing archive contains different semantic 1.3 data.' });
+              return;
+            }
+            if (archiveRequest.result === undefined) {
+              const archivePut = archiveStore.put(structuredClone(plan.raw), key);
+              archivePut.onerror = () => fail({ kind: 'aborted' });
+            }
+            const currentPut = tx.objectStore(STORE).put(plan.session);
+            currentPut.onerror = () => fail({ kind: 'aborted' });
+          } catch {
+            fail({ kind: 'aborted' });
+          }
+        };
+      } catch {
+        fail({ kind: 'aborted' });
+      }
+    };
+  });
+}
+
+/** Replaying the retained source is required to report idempotent migration success. */
+async function confirmKnownFactAlreadyMigrated(
+  db: IDBDatabase,
+  sessionId: string,
+): Promise<KnownFactStorageMigrationResult> {
+  const key = legacyArchiveKey(sessionId, '1.3.0', SEMANTIC_13_TO_KNOWN_FACT_14_MIGRATION_ID);
+  const tx = openTransaction(db, [STORE, LEGACY_ARCHIVE_STORE], 'readonly');
+  const [rawCurrent, archived] = await Promise.all([
+    requestResult(tx.objectStore(STORE).get(sessionId)),
+    requestResult(tx.objectStore(LEGACY_ARCHIVE_STORE).get(key)),
+  ]);
+  if (rawCurrent === undefined) return { kind: 'stale' };
+  if (archived === undefined) {
+    return { kind: 'conflict', reason: 'Current known-fact session has no retained semantic 1.3 migration source.' };
+  }
+  const currentPlan = await planKnownFactMigration(rawCurrent);
+  if (currentPlan.kind !== 'current' || currentPlan.session.sessionId !== sessionId) {
+    return { kind: 'conflict', reason: 'Known-fact session changed while migration history was verified.' };
+  }
+  const replay = await planKnownFactMigration(archived);
+  if (replay.kind !== 'ready' || replay.session.sessionId !== sessionId) {
+    return { kind: 'conflict', reason: 'Retained semantic 1.3 source cannot be replayed.' };
+  }
+  if (canonicalizeJson(replay.session) !== canonicalizeJson(currentPlan.session)) {
+    return { kind: 'conflict', reason: 'Retained semantic 1.3 source does not match the current known-fact session.' };
   }
   return { kind: 'already-migrated', session: currentPlan.session };
 }
