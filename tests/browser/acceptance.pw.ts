@@ -190,7 +190,7 @@ test('hostile 1.4 client labels are rendered as text and downloaded under a sani
   const started = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Export full 1.4 JSON backup' }).click();
   const artifact = await started;
-  expect(artifact.suggestedFilename()).toMatch(/^[a-z0-9-]+-1\\.4-backup\\.json$/);
+  expect(artifact.suggestedFilename()).toMatch(/^[a-z0-9-]+-1\.4-backup\.json$/);
   expect(artifact.suggestedFilename()).not.toContain('<');
   expect(await readDownloadJson(artifact)).toEqual(source14);
   expect((await readStorageSnapshot(page)).rows).toEqual([source14]);
