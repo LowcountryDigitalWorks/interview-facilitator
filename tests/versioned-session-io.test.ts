@@ -81,6 +81,6 @@ describe('#34A2B2B pure version-aware JSON boundary', () => {
 
   it('does not label invalid 1.2-looking records as safe migrations', async () => {
     const fake = { ...(await synthetic13()), sessionSchemaVersion: '1.2.0' };
-    expect((await inspectSessionCompatibilityForReview(fake)).kind).toBe('invalid');
+    expect((await inspectSessionCompatibilityForReview(fake)).kind).toBe('unsupported-version');
   });
 });
