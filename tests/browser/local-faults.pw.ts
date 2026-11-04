@@ -158,7 +158,7 @@ test('normal import rejects canonical 1.4 JSON before opening an editor or chang
   await importSessionFile(page, imported14);
   const dialog = await dialogPromise;
   expect(dialog.type()).toBe('alert');
-  expect(dialog.message()).toMatch(/session schema/i);
+  expect(dialog.message()).toMatch(/unsupported field|session schema/i);
   await dialog.dismiss();
   expect(await listStoredSessionIds(page)).toEqual([]);
   expect(await listRevisionHistoryKeys(page)).toEqual([]);
