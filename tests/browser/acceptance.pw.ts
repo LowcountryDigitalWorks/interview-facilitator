@@ -1,11 +1,20 @@
-import { readFile } from 'node:fs/promises';
 import AxeBuilder from '@axe-core/playwright';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Download, type Page } from '@playwright/test';
 import type { InterviewSession } from '../../src/domain';
 import { canonicalizeJson, sha256Hex } from '../../src/pack-identity';
 import { validateSemanticSessionRecord, type SemanticInterviewSession } from '../../src/semantic-session';
 import { migrateSemantic13ToKnownFact14 } from '../../src/known-fact-session';
 import { syntheticPinned12Session, syntheticSemanticSession } from './synthetic-session';
+
+async function readDownloadJson(download: Download): Promise<unknown> {
+  const stream = await download.createReadStream();
+  if (!stream) throw new Error('Download stream unavailable.');
+  const decoder = new TextDecoder();
+  let text = '';
+  for await (const chunk of stream) text += decoder.decode(chunk as Uint8Array, { stream: true });
+  text += decoder.decode();
+  return JSON.parse(text) as unknown;
+}
 
 const DB_NAME = 'ldw-interview-facilitator';
 const STORE = 'sessions';
@@ -123,7 +132,7 @@ test('validated 1.4 local interview is read-only and exports full canonical evid
   const artifact = await downloadStarted;
   expect(artifact.suggestedFilename()).toContain('-1.4-backup.json');
   expect(await artifact.failure()).toBeNull();
-  const exported = JSON.parse(await readFile(await artifact.path(), 'utf8')) as unknown;
+  const exported = await readDownloadJson(artifact) as unknown;
   expect(exported).toEqual(source14);
   expect((exported as typeof source14).knownFactLedger).toEqual(source14.knownFactLedger);
 
@@ -183,7 +192,7 @@ test('hostile 1.4 client labels are rendered as text and downloaded under a sani
   const artifact = await started;
   expect(artifact.suggestedFilename()).toMatch(/^[a-z0-9-]+-1\\.4-backup\\.json$/);
   expect(artifact.suggestedFilename()).not.toContain('<');
-  expect(JSON.parse(await readFile(await artifact.path(), 'utf8'))).toEqual(source14);
+  expect(await readDownloadJson(artifact)).toEqual(source14);
   expect((await readStorageSnapshot(page)).rows).toEqual([source14]);
 });
 
