@@ -906,6 +906,26 @@ describe('34A2B2A dormant 1.4 read/save and immutable history boundary', () => {
     expect(await loadKnownFactSession14ForReview(SESSION_ID)).toEqual(next);
   });
 
+  it('rejects acceptance events forged for another revision, including unsaved new sessions', async () => {
+    const memory = installMigrationDatabase();
+    const { upgraded } = await state14();
+    seedLegacy(memory, upgraded);
+    const forged = structuredClone(upgraded);
+    forged.knownFactLedger = acceptKnownFact(forged.knownFactLedger, {
+      id: 'forged-acceptance', factId: 'synthetic-fact-a',
+      expectedRevisionId: 'unrelated-revision', currentRevisionId: 'unrelated-revision',
+      acceptedAt: '2026-11-03T15:02:00.000Z',
+    });
+    await expect(saveKnownFactSession14ForReview(forged, upgraded.revisionId))
+      .rejects.toThrow(/source revision/i);
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(upgraded);
+    expect(memory.stores.get(REVISION_HISTORY_STORE)?.size ?? 0).toBe(0);
+
+    memory.stores.get(SESSIONS_STORE)?.clear();
+    await expect(saveKnownFactSession14ForReview(forged, null)).rejects.toThrow(/pre-persistence/i);
+    expect(memory.stores.get(SESSIONS_STORE)?.size).toBe(0);
+  });
+
   it('saves canonical 1.4 edits with CAS, retains exact prior revision, and appends accepted-fact history', async () => {
     const memory = installMigrationDatabase();
     const { upgraded } = await state14();
