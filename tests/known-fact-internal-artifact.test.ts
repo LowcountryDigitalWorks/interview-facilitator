@@ -35,7 +35,7 @@ describe('#35A internal 1.4 provenance artifact foundation', () => {
     const markdown = await knownFact14EvidenceAppendixForReview(session);
     expect(markdown).toContain('INTERNAL / CONFIDENTIAL');
     expect(markdown).toContain('Source and corrected facts');
-    expect(markdown).toContain('Historical'.toLowerCase().replace('historical', 'historical'));
+    expect(markdown).toContain('Human acceptance events (historical, not client confirmation)');
     expect(markdown).toContain('accept\\-1');
     expect(markdown).toContain('corrected\\-1');
     expect(markdown).toContain('Superseded');
