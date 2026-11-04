@@ -153,7 +153,7 @@ describe('#35B explicitly reviewed 1.4 client Read-back preview', () => {
     }, { expectedRevisionId: session.revisionId, entries: [] })).rejects.toThrow(/unsupported field/i);
     await expect(projectReviewedKnownFact14ReadBackForReview(session, {
       expectedRevisionId: session.revisionId,
-      entries: [{ questionId: 'primary-goal', publicLabel: 'Client\\nSecret',
+      entries: [{ questionId: 'primary-goal', publicLabel: 'Client\nSecret',
         reviewedValue: 'A public reviewable goal' }],
     })).rejects.toThrow(/single line/i);
   });
