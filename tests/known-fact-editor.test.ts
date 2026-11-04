@@ -118,6 +118,53 @@ describe('#34A2B2C3 pure known-fact 1.4 editing adapter', () => {
     expect(revised.knownFactLedger).toEqual(accepted.knownFactLedger);
   });
 
+  it('preserves accepted-fact provenance when Already Known is reselected', async () => {
+    const source = await accepted14();
+    const original = structuredClone(source);
+    const repeated = await applyKnownFact14EditForReview(source, {
+      kind: 'status', questionId: 'existing-presence', status: 'ALREADY_KNOWN',
+    });
+    expect(repeated.answers['existing-presence']).toEqual(source.answers['existing-presence']);
+    expect(repeated.knownFactAnswerLinks).toEqual(source.knownFactAnswerLinks);
+    expect(repeated.knownFactLedger).toEqual(source.knownFactLedger);
+    expect(source).toEqual(original);
+
+    const needsReview = await applyKnownFact14EditForReview(source, {
+      kind: 'status', questionId: 'existing-presence', status: 'MUST_CONFIRM',
+    });
+    expect(needsReview.answers['existing-presence']?.needsConfirmation).toBe(true);
+    const reselected = await applyKnownFact14EditForReview(needsReview, {
+      kind: 'status', questionId: 'existing-presence', status: 'ALREADY_KNOWN',
+    });
+    expect(reselected.answers['existing-presence']).toEqual(needsReview.answers['existing-presence']);
+    expect(reselected.knownFactAnswerLinks).toEqual(needsReview.knownFactAnswerLinks);
+    expect(reselected.knownFactLedger).toEqual(needsReview.knownFactLedger);
+  });
+
+  it('rejects malformed runtime commands without mutating accepted fact evidence', async () => {
+    const source = await accepted14();
+    const snapshot = structuredClone(source);
+    const badCommands: unknown[] = [
+      null,
+      [],
+      { kind: 'unknown', questionId: 'existing-presence', status: 'ANSWERED' },
+      { kind: 'status', questionId: 'existing-presence', status: 'INVALID' },
+      { kind: 'status', questionId: 'existing-presence' },
+      { kind: 'value', questionId: 'existing-presence' },
+      { kind: 'value', questionId: 'existing-presence', value: 42 },
+      { kind: 'value', questionId: '', value: 'Invalid' },
+      { kind: 'value', questionId: 'existing-presence', value: 'Invalid', status: 'ANSWERED' },
+      { kind: 'status', questionId: 'existing-presence', status: 'ANSWERED', value: 'Invalid' },
+      { kind: 'status', questionId: 'existing-presence', status: 'ANSWERED', unexpected: 'canary' },
+    ];
+    for (const malformed of badCommands) {
+      await expect(applyKnownFact14EditForReview(
+        source, malformed as KnownFact14Edit,
+      )).rejects.toThrow(/Known-fact edit command/i);
+      expect(source).toEqual(snapshot);
+    }
+  });
+
   it('rejects an unknown question without mutating evidence or storage', async () => {
     const source = await accepted14();
     const before = structuredClone(source);
