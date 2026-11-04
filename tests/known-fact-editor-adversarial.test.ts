@@ -109,7 +109,9 @@ describe('#34C3 independent review M2 — validate both source and resulting 1.4
     };
     const original = structuredClone(corrupted);
     await expect(applyKnownFact14EditForReview(corrupted, {
-      kind: 'value', questionId: 'primary-goal', value: 'Must not update',
+      // If entry validation is removed, this edit would delete the broken link
+      // and make the resulting record appear valid. Reject BEFORE repair.
+      kind: 'value', questionId: 'existing-presence', value: 'Would erase broken link',
     })).rejects.toThrow(/acceptance snapshot/i);
     expect(corrupted).toEqual(original);
   });
@@ -127,7 +129,9 @@ describe('#34C3 independent review M2 — validate both source and resulting 1.4
     });
     const original = structuredClone(corrupted);
     await expect(applyKnownFact14EditForReview(corrupted, {
-      kind: 'value', questionId: 'primary-goal', value: 'Must not mutate',
+      // Without source validation, changing this same accepted answer would
+      // remove its link and conceal the superseded original evidence.
+      kind: 'value', questionId: 'existing-presence', value: 'Would conceal supersession',
     })).rejects.toThrow(/superseded/i);
     expect(corrupted).toEqual(original);
   });
