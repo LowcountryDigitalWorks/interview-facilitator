@@ -39,7 +39,7 @@ describe('#35A internal 1.4 provenance artifact foundation', () => {
     expect(markdown).toContain('accept\\-1');
     expect(markdown).toContain('corrected\\-1');
     expect(markdown).toContain('Superseded');
-    expect(markdown).toContain('Human-reviewed correction');
+    expect(markdown).toContain('Human\\-reviewed correction');
     expect(markdown).toContain('Newer synthetic source value');
     expect(markdown).toContain('Synthetic private reference');
     expect(markdown).toBe(await knownFact14EvidenceAppendixForReview(session));
