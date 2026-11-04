@@ -39,6 +39,7 @@ export type StoredSessionList = {
 
 export type ClassifiedStoredRow =
   | { sessionId: string; classification: 'current'; raw: unknown; session: SemanticInterviewSession }
+  | { sessionId: string; classification: 'current-known-fact-14'; raw: unknown; session: KnownFactSession14 }
   | { sessionId: string; classification: 'legacy-migratable'; raw: unknown; plan: Extract<Awaited<ReturnType<typeof planCurrentMigration>>, { kind: 'ready' }> }
   | { sessionId: string; classification: 'unsupported-recoverable'; raw: unknown; reason: string }
   | { sessionId: string; classification: 'malformed-unreadable'; reason: string; recoveryAvailable: boolean };
@@ -141,6 +142,23 @@ export async function classifyStoredSessionRows(rows: unknown[]): Promise<Classi
     const sessionId = candidate && typeof candidate.sessionId === 'string'
       ? candidate.sessionId : `unreadable-${classified.length + 1}`;
     try {
+      // A valid 1.4 row is readable for safe listing/backup, but is not a
+      // live 1.3 editable session. Keep it out of sessions[] until the 1.4
+      // active editor and import paths are independently accepted.
+      if (candidate?.sessionSchemaVersion === '1.4.0') {
+        try {
+          const session = await validateKnownFactSession14Record(raw);
+          if (session.sessionId !== sessionId) throw new Error('Stored 1.4 identity mismatch.');
+          classified.push({ sessionId, classification: 'current-known-fact-14', raw, session });
+        } catch {
+          let recoveryAvailable = false;
+          if (hasStableRecoveryIdentity(raw)) {
+            try { buildRecoveryBackup(raw); recoveryAvailable = true; } catch { /* preserve source unchanged */ }
+          }
+          classified.push({ sessionId, classification: 'malformed-unreadable', reason: 'Stored 1.4 interview is invalid.', recoveryAvailable });
+        }
+        continue;
+      }
       const plan = await planCurrentMigration(raw);
       if (plan.kind === 'current') {
         classified.push({ sessionId, classification: 'current', raw, session: plan.session });
