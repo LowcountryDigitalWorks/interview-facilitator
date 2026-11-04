@@ -120,49 +120,74 @@ test('same-ID identical import is a no-op with no revision or history churn', as
 });
 
 
-test('stale 1.3 editor never downgrades an in-place 1.4 update from another tab', async ({ page }) => {
-  const current13 = await syntheticSession('synthetic-cross-tab-14', 'Cross-tab Schema Test');
-  await openSeededInterviewOnLastQuestion(page, 'Cross-tab Schema Test', current13);
-  const upgraded14 = await migrateSemantic13ToKnownFact14(current13);
-
-  // Simulate a separately completed, authorized 1.4 upgrade while this tab
-  // still runs its original 1.3 editor. Do not call the dormant migration UI.
-  await overwriteStoredSession(page, upgraded14);
-  await page.locator('#answer').fill('This stale editor must not overwrite the 1.4 row');
-  await expect(page.locator('[data-save-alert]')).toContainText('Local save failed');
-  await expect(page.locator('#answer')).toHaveValue('This stale editor must not overwrite the 1.4 row');
-  expect(await readStoredSession(page, current13.sessionId)).toEqual(upgraded14);
-  expect(await listRevisionHistoryKeys(page)).toEqual([]);
-});
+for (const sameRevision of [false, true]) {
+  test('real two-tab 1.3→1.4 downgrade guard ' + (sameRevision ? 'same revision' : 'changed revision'), async ({ page }) => {
+    const current13 = await syntheticSession('synthetic-cross-tab-14', 'Cross-tab Schema Test');
+    await openSeededInterviewOnLastQuestion(page, 'Cross-tab Schema Test', current13);
+    const upgraded14 = await migrateSemantic13ToKnownFact14(current13);
+    if (sameRevision) {
+      // Deliberately defeat the independent revision CAS guard.
+      upgraded14.revisionId = current13.revisionId;
+      upgraded14.parentRevisionId = current13.parentRevisionId;
+    }
+    const tabB = await page.context().newPage();
+    try {
+      await tabB.goto('/');
+      await overwriteStoredSession(tabB, upgraded14);
+      expect(await readStoredSession(tabB, current13.sessionId)).toEqual(upgraded14);
+      await page.locator('#answer').fill('Stale overwrite attempt');
+      await expect(page.locator('[data-save-indicator]')).toContainText('Local save failed');
+      expect(await readStoredSession(tabB, current13.sessionId)).toEqual(upgraded14);
+      expect(await listRevisionHistoryKeys(page)).toEqual([]);
+      expect(await listLegacyArchiveKeys(page)).toEqual([]);
+    } finally { await tabB.close(); }
+  });
+}
 
 test('normal 1.3 import cannot overwrite a local 1.4 row with the same session ID', async ({ page }) => {
   const source13 = await syntheticSession('synthetic-import-collision-14', 'Existing 1.4 Row');
   const upgraded14 = await migrateSemantic13ToKnownFact14(source13);
   await putRawSession(page, upgraded14);
   await page.reload();
-
+  const archive = { sessionId: source13.sessionId, marker: 'pre-existing synthetic archive' };
+  await overwriteLegacyArchive(page, 'pre-existing-archive', archive);
   const import13 = structuredClone(source13);
   import13.runningNotes = 'Imported 1.3 content must not downgrade stored 1.4';
   await importSessionFile(page, import13);
-
   await expect(page.getByText('The local interview could not be read, so the imported file was not saved.', { exact: false })).toBeVisible();
   expect(await readStoredSession(page, source13.sessionId)).toEqual(upgraded14);
   expect(await listRevisionHistoryKeys(page)).toEqual([]);
+  expect(await listLegacyArchiveKeys(page)).toEqual(['pre-existing-archive']);
+  expect(await readLegacyArchive(page, 'pre-existing-archive')).toEqual(archive);
 });
 
-test('normal import rejects canonical 1.4 JSON before opening an editor or changing stored rows', async ({ page }) => {
-  const source13 = await syntheticSession('synthetic-import-format-14');
-  const imported14 = await migrateSemantic13ToKnownFact14(source13);
+test('normal import rejects canonical 1.4 JSON before changing existing mixed rows or archives', async ({ page }) => {
+  const existing13 = await syntheticSession('synthetic-import-format-14', 'Keep existing 1.3');
+  existing13.knownFacts.push({
+    id: 'synthetic-fact', label: 'Existing site', value: 'Yes',
+    provenance: 'Synthetic briefing', questionId: 'existing-presence',
+  });
+  const imported14 = await migrateSemantic13ToKnownFact14(existing13);
+  const other14 = await migrateSemantic13ToKnownFact14(await syntheticSession('synthetic-other-14', 'Keep existing 1.4'));
+  await putRawSession(page, existing13);
+  await putRawSession(page, other14);
   await page.reload();
+  const archive = { sessionId: existing13.sessionId, marker: 'pre-existing synthetic archive' };
+  await overwriteLegacyArchive(page, 'pre-existing-archive', archive);
   const dialogPromise = page.waitForEvent('dialog');
   await importSessionFile(page, imported14);
   const dialog = await dialogPromise;
   expect(dialog.type()).toBe('alert');
-  expect(dialog.message()).toMatch(/unsupported field|session schema/i);
+  expect(dialog.message()).toBe('Semantic session contains an unsupported field.');
   await dialog.dismiss();
-  expect(await listStoredSessionIds(page)).toEqual([]);
+  expect((await listStoredSessionIds(page)).sort()).toEqual([existing13.sessionId, other14.sessionId].sort());
+  expect(await readStoredSession(page, existing13.sessionId)).toEqual(existing13);
+  expect(await readStoredSession(page, other14.sessionId)).toEqual(other14);
   expect(await listRevisionHistoryKeys(page)).toEqual([]);
-  await expect(page.getByText('No saved interviews yet.')).toBeVisible();
+  expect(await listLegacyArchiveKeys(page)).toEqual(['pre-existing-archive']);
+  expect(await readLegacyArchive(page, 'pre-existing-archive')).toEqual(archive);
+  await expect(page.getByRole('button', { name: /Keep existing 1.3/ })).toBeVisible();
+  await expect(page.getByText('Keep existing 1.4 — 1.4 interview (read-only)')).toBeVisible();
 });
 
 test('normal import rejects historical pinned 1.2 JSON instead of silently migrating it', async ({ page }) => {
