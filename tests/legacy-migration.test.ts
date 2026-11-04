@@ -13,9 +13,10 @@ import {
   planCurrentMigration,
   planLegacyMigration,
 } from '../src/session-migration';
-import { LEGACY_ARCHIVE_STORE, REVISION_HISTORY_STORE, SESSIONS_STORE, listSessions, migrateLegacySession, migrateSession12To13, migrateSession13To14ForReview } from '../src/storage';
+import { LEGACY_ARCHIVE_STORE, REVISION_HISTORY_STORE, SESSIONS_STORE, listSessions, loadKnownFactSession14ForReview, migrateLegacySession, migrateSession12To13, migrateSession13To14ForReview, revisionHistoryKey, RevisionConflictError, RevisionHistoryConflictError, saveKnownFactSession14ForReview, saveSession } from '../src/storage';
 import { PINNED_12_TO_13_MIGRATION_ID, createSemanticSession, planSemanticMigration } from '../src/semantic-session';
-import { SEMANTIC_13_TO_KNOWN_FACT_14_MIGRATION_ID, planKnownFactMigration } from '../src/known-fact-session';
+import { SEMANTIC_13_TO_KNOWN_FACT_14_MIGRATION_ID, migrateSemantic13ToKnownFact14, planKnownFactMigration } from '../src/known-fact-session';
+import { acceptKnownFact, correctKnownFact } from '../src/known-fact-evidence';
 
 const SESSION_ID = 'synthetic-legacy-session';
 
@@ -57,7 +58,7 @@ function legacyRecord(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put' | 'session-put'; abortWrite?: boolean; abortAtCommit?: boolean; swapSecondRead?: unknown; removeSecondRead?: boolean } = {}) {
+function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put' | 'session-put' | 'history-put'; abortWrite?: boolean; abortAtCommit?: boolean; swapSecondRead?: unknown; removeSecondRead?: boolean } = {}) {
   const stores = new Map<string, Map<string, unknown>>();
   const transactions: Array<{ names: string[]; mode: IDBTransactionMode }> = [];
   let version = 0;
@@ -121,7 +122,9 @@ function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put
               const request = { onsuccess: null as null | (() => void), onerror: null as null | (() => void), error: null as DOMException | null };
               enqueue(() => {
                 const injected = (options.fail === 'archive-put' && name === LEGACY_ARCHIVE_STORE)
-                  || (options.fail === 'session-put' && name === SESSIONS_STORE && names.includes(LEGACY_ARCHIVE_STORE));
+                  || (options.fail === 'history-put' && name === REVISION_HISTORY_STORE)
+                  || (options.fail === 'session-put' && name === SESSIONS_STORE
+                    && (names.includes(LEGACY_ARCHIVE_STORE) || names.includes(REVISION_HISTORY_STORE)));
                 if (injected) {
                   request.onerror?.();
                   return;
@@ -144,7 +147,7 @@ function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put
           fn();
           pending -= 1;
           if (pending === 0 && !aborted && !finished) {
-            if (options.abortAtCommit && mode === 'readwrite' && names.includes(LEGACY_ARCHIVE_STORE)) {
+            if (options.abortAtCommit && mode === 'readwrite' && (names.includes(LEGACY_ARCHIVE_STORE) || names.includes(REVISION_HISTORY_STORE))) {
               tx.abort();
               return;
             }
@@ -156,7 +159,7 @@ function installMigrationDatabase(options: { fail?: 'archive-get' | 'archive-put
           }
         });
       };
-      if (options.abortWrite && mode === 'readwrite' && names.includes(LEGACY_ARCHIVE_STORE)) queueMicrotask(() => tx.abort());
+      if (options.abortWrite && mode === 'readwrite' && (names.includes(LEGACY_ARCHIVE_STORE) || names.includes(REVISION_HISTORY_STORE))) queueMicrotask(() => tx.abort());
       return tx;
     },
   };
@@ -860,5 +863,184 @@ describe('34A2B1 internal atomic known-fact 1.3 to 1.4 storage gate', () => {
     if (upgraded.kind !== 'migrated') return;
     expect((await planKnownFactMigration(upgraded.session)).kind).toBe('current');
     expect((await planSemanticMigration(upgraded.session)).kind).toBe('unsupported');
+  });
+});
+
+
+describe('34A2B2A dormant 1.4 read/save and immutable history boundary', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  async function state14() {
+    const source = await createSemanticSession(generalDiscoveryPack, { clientLabel: 'Synthetic known-fact durability' }, new Date('2026-11-03T15:00:00.000Z'));
+    source.sessionId = SESSION_ID;
+    source.knownFacts.push({
+      id: 'synthetic-fact-a', label: 'Synthetic hosting fact',
+      value: 'Managed hosting', provenance: 'Synthetic test plan', questionId: 'existing-presence',
+    });
+    return { source, upgraded: await migrateSemantic13ToKnownFact14(source) };
+  }
+
+  it('loads only validated 1.4 records and refuses to interpret 1.3 as canonical 1.4', async () => {
+    const memory = installMigrationDatabase();
+    const { source, upgraded } = await state14();
+    expect(await loadKnownFactSession14ForReview(SESSION_ID)).toBeUndefined();
+    seedLegacy(memory, source);
+    await expect(loadKnownFactSession14ForReview(SESSION_ID)).rejects.toThrow(/schema version/i);
+    memory.stores.get(SESSIONS_STORE)?.set(SESSION_ID, structuredClone(upgraded));
+    expect(await loadKnownFactSession14ForReview(SESSION_ID)).toEqual(upgraded);
+    const mismatch = { ...structuredClone(upgraded), sessionId: 'another-session' };
+    memory.stores.get(SESSIONS_STORE)?.set(SESSION_ID, mismatch);
+    await expect(loadKnownFactSession14ForReview(SESSION_ID)).rejects.toThrow(/identity/i);
+  });
+
+  it('creates an explicit 1.4 record while preserving all fields and does not touch revision history when new', async () => {
+    const memory = installMigrationDatabase();
+    const { upgraded } = await state14();
+    const next = await saveKnownFactSession14ForReview(upgraded, null);
+    expect(next.sessionSchemaVersion).toBe('1.4.0');
+    expect(next.revisionId).not.toBe(upgraded.revisionId);
+    expect(next.parentRevisionId).toBeNull();
+    expect(next.knownFactLedger).toEqual(upgraded.knownFactLedger);
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(next);
+    expect(memory.stores.get(REVISION_HISTORY_STORE)?.size).toBe(0);
+    expect(await loadKnownFactSession14ForReview(SESSION_ID)).toEqual(next);
+  });
+
+  it('rejects acceptance events forged for another revision, including unsaved new sessions', async () => {
+    const memory = installMigrationDatabase();
+    const { upgraded } = await state14();
+    seedLegacy(memory, upgraded);
+    const forged = structuredClone(upgraded);
+    forged.knownFactLedger = acceptKnownFact(forged.knownFactLedger, {
+      id: 'forged-acceptance', factId: 'synthetic-fact-a',
+      expectedRevisionId: 'unrelated-revision', currentRevisionId: 'unrelated-revision',
+      acceptedAt: '2026-11-03T15:02:00.000Z',
+    });
+    await expect(saveKnownFactSession14ForReview(forged, upgraded.revisionId))
+      .rejects.toThrow(/source revision/i);
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(upgraded);
+    expect(memory.stores.get(REVISION_HISTORY_STORE)?.size ?? 0).toBe(0);
+
+    memory.stores.get(SESSIONS_STORE)?.clear();
+    await expect(saveKnownFactSession14ForReview(forged, null)).rejects.toThrow(/pre-persistence/i);
+    expect(memory.stores.get(SESSIONS_STORE)?.size).toBe(0);
+  });
+
+  it('saves canonical 1.4 edits with CAS, retains exact prior revision, and appends accepted-fact history', async () => {
+    const memory = installMigrationDatabase();
+    const { upgraded } = await state14();
+    seedLegacy(memory, upgraded);
+    const initial = structuredClone(upgraded);
+    const editing = structuredClone(upgraded);
+    editing.knownFactLedger = acceptKnownFact(editing.knownFactLedger, {
+      id: 'accept-fact-a', factId: 'synthetic-fact-a',
+      expectedRevisionId: editing.revisionId, currentRevisionId: editing.revisionId,
+      acceptedAt: '2026-11-03T15:01:00.000Z',
+    });
+    editing.runningNotes = 'Edited synthetic note';
+    const saved = await saveKnownFactSession14ForReview(editing, initial.revisionId);
+    expect(saved.revisionId).not.toBe(initial.revisionId);
+    expect(saved.parentRevisionId).toBe(initial.revisionId);
+    expect(saved.knownFactLedger.acceptances).toHaveLength(1);
+    expect(memory.stores.get(REVISION_HISTORY_STORE)?.get(revisionHistoryKey(SESSION_ID, initial.revisionId))).toEqual(initial);
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(saved);
+    expect(await loadKnownFactSession14ForReview(SESSION_ID)).toEqual(saved);
+  });
+
+  it('prevents the live 1.3 writer or a 1.4 shortcut from overwriting another session schema', async () => {
+    const memory = installMigrationDatabase();
+    const { source, upgraded } = await state14();
+    seedLegacy(memory, source);
+    await expect(saveKnownFactSession14ForReview(upgraded, source.revisionId)).rejects.toThrow(/schema version/i);
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(source);
+    memory.stores.get(SESSIONS_STORE)?.set(SESSION_ID, structuredClone(upgraded));
+    source.revisionId = upgraded.revisionId;
+    await expect(saveSession(source, upgraded.revisionId)).rejects.toThrow(/1.3 writer/i);
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(upgraded);
+  });
+
+  it('rejects stale writes from another tab without changing the authoritative 1.4 revision', async () => {
+    const memory = installMigrationDatabase();
+    const { upgraded } = await state14();
+    seedLegacy(memory, upgraded);
+    const tabA = structuredClone(upgraded);
+    tabA.runningNotes = 'Tab A';
+    const savedA = await saveKnownFactSession14ForReview(tabA, upgraded.revisionId);
+    const tabB = structuredClone(upgraded);
+    tabB.runningNotes = 'Tab B stale';
+    await expect(saveKnownFactSession14ForReview(tabB, upgraded.revisionId)).rejects.toBeInstanceOf(RevisionConflictError);
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(savedA);
+    expect(memory.stores.get(REVISION_HISTORY_STORE)?.size).toBe(1);
+  });
+
+  it('rejects a stale submitted 1.4 snapshot even if its caller supplies the latest expected revision', async () => {
+    const memory = installMigrationDatabase();
+    const { upgraded } = await state14();
+    seedLegacy(memory, upgraded);
+    const tabA = structuredClone(upgraded);
+    tabA.runningNotes = 'Latest committed content';
+    const current = await saveKnownFactSession14ForReview(tabA, upgraded.revisionId);
+
+    const stale = structuredClone(upgraded);
+    stale.runningNotes = 'Outdated tab payload with forged current expected revision';
+    await expect(saveKnownFactSession14ForReview(stale, current.revisionId))
+      .rejects.toBeInstanceOf(RevisionConflictError);
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(current);
+    expect(memory.stores.get(REVISION_HISTORY_STORE)?.size).toBe(1);
+  });
+
+  it('rejects rewriting pinned source facts, correction lineage, acceptance events or pack identities', async () => {
+    const memory = installMigrationDatabase();
+    const { upgraded } = await state14();
+    const accepted = structuredClone(upgraded);
+    accepted.knownFactLedger = acceptKnownFact(accepted.knownFactLedger, {
+      id: 'accept-fact-a', factId: 'synthetic-fact-a',
+      expectedRevisionId: accepted.revisionId, currentRevisionId: accepted.revisionId,
+      acceptedAt: '2026-11-03T15:01:00.000Z',
+    });
+    accepted.knownFactLedger = correctKnownFact(accepted.knownFactLedger, {
+      id: 'corrected-fact-a', supersedesFactId: 'synthetic-fact-a',
+      value: 'Private hosting', provenance: 'Synthetic corrected context',
+      expectedRevisionId: accepted.revisionId, currentRevisionId: accepted.revisionId,
+    });
+    seedLegacy(memory, accepted);
+    const mutations = [
+      (draft: typeof accepted) => { draft.knownFactLedger.facts.pop(); },
+      (draft: typeof accepted) => { draft.knownFactLedger.acceptances.pop(); },
+      (draft: typeof accepted) => { draft.knownFactLedger.acceptances[0]!.revisionId = 'rewritten-revision'; },
+      (draft: typeof accepted) => { draft.knownFacts[0]!.value = 'Silently modified root'; draft.knownFactLedger.facts[0]!.value = 'Silently modified root'; },
+      (draft: typeof accepted) => { draft.packIdentity.digest = 'a'.repeat(64); },
+    ];
+    for (const mutate of mutations) {
+      const changed = structuredClone(accepted);
+      mutate(changed);
+      await expect(saveKnownFactSession14ForReview(changed, accepted.revisionId)).rejects.toThrow();
+      expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(accepted);
+    }
+    expect(memory.stores.get(REVISION_HISTORY_STORE)?.size ?? 0).toBe(0);
+  });
+
+  it('refuses a pre-existing conflicting history record with zero writes', async () => {
+    const memory = installMigrationDatabase();
+    const { upgraded } = await state14();
+    seedLegacy(memory, upgraded);
+    const oldHistory = { ...structuredClone(upgraded), runningNotes: 'Conflicting existing history' };
+    memory.stores.set(REVISION_HISTORY_STORE, new Map([[revisionHistoryKey(SESSION_ID, upgraded.revisionId), oldHistory]]));
+    await expect(saveKnownFactSession14ForReview(upgraded, upgraded.revisionId)).rejects.toBeInstanceOf(RevisionHistoryConflictError);
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(upgraded);
+    expect(memory.stores.get(REVISION_HISTORY_STORE)?.size).toBe(1);
+  });
+
+  it.each([
+    ['history write failure', { fail: 'history-put' as const }],
+    ['current write failure', { fail: 'session-put' as const }],
+    ['abort after staged writes', { abortAtCommit: true }],
+  ])('rolls back current and immutable history together on %s', async (_label, options) => {
+    const memory = installMigrationDatabase(options);
+    const { upgraded } = await state14();
+    seedLegacy(memory, upgraded);
+    await expect(saveKnownFactSession14ForReview(upgraded, upgraded.revisionId)).rejects.toThrow();
+    expect(memory.stores.get(SESSIONS_STORE)?.get(SESSION_ID)).toEqual(upgraded);
+    expect(memory.stores.get(REVISION_HISTORY_STORE)?.size ?? 0).toBe(0);
   });
 });
