@@ -62,5 +62,16 @@ export async function applyStoredKnownFact14EditForReview(
     || checked.parentRevisionId !== input.expectedRevisionId) {
     throw new Error('Stored 1.4 edit did not return a new parent-linked revision.');
   }
+  // A successful CAS and parent-linked revision alone do not prove that the
+  // storage adapter returned the intended edit. The accepted save implementation
+  // changes only revision lineage; every other canonical field must survive.
+  const expectedPersisted: KnownFactSession14 = {
+    ...next,
+    revisionId: checked.revisionId,
+    parentRevisionId: checked.parentRevisionId,
+  };
+  if (canonicalizeJson(checked) !== canonicalizeJson(expectedPersisted)) {
+    throw new Error('Stored 1.4 edit returned content that differs from the requested edit.');
+  }
   return { kind: 'saved', session: checked };
 }

@@ -150,4 +150,72 @@ describe('#34A3 internal 1.4 stored-edit workflow', () => {
       save: async next => ({ ...next, revisionId: 'invalid-revision' }),
     })).rejects.toThrow(/parent-linked revision/i);
   });
+
+  it('rejects blank session and revision IDs before any read or save', async () => {
+    const source = await fixture();
+    let reads = 0;
+    const store: KnownFact14EditStorageForReview = {
+      async load() { reads += 1; return source; },
+      async save() { throw new Error('Unexpected write'); },
+    };
+    for (const IDs of [
+      { sessionId: '  ', expectedRevisionId: source.revisionId },
+      { sessionId: source.sessionId, expectedRevisionId: '  ' },
+    ]) {
+      await expect(applyStoredKnownFact14EditForReview({
+        ...IDs, edit: { kind: 'value', questionId: 'existing-presence', value: 'Unsafe' },
+      }, store)).rejects.toThrow(/requires a session ID and expected revision/);
+    }
+    expect(reads).toBe(0);
+  });
+
+  it('rejects a valid new revision that silently returns stale unedited answers', async () => {
+    const source = await fixture();
+    const before = structuredClone(source);
+    const operation = applyStoredKnownFact14EditForReview({
+      sessionId: source.sessionId, expectedRevisionId: source.revisionId,
+      edit: { kind: 'value', questionId: 'existing-presence', value: 'New site' },
+    }, {
+      load: async () => structuredClone(source),
+      save: async () => ({
+        ...structuredClone(source),
+        revisionId: 'synthetic-new-revision',
+        parentRevisionId: source.revisionId,
+      }),
+    });
+    await expect(operation).rejects.toThrow(/returned content that differs/);
+    expect(source).toEqual(before);
+  });
+
+  it('rejects a valid saved revision with an unrelated field altered by the adapter', async () => {
+    const source = await fixture();
+    await expect(applyStoredKnownFact14EditForReview({
+      sessionId: source.sessionId, expectedRevisionId: source.revisionId,
+      edit: { kind: 'value', questionId: 'existing-presence', value: 'New site' },
+    }, {
+      load: async () => structuredClone(source),
+      save: async (next) => ({
+        ...structuredClone(next),
+        clientLabel: 'Incorrect synthetic label',
+        revisionId: 'synthetic-new-revision',
+        parentRevisionId: source.revisionId,
+      }),
+    })).rejects.toThrow(/returned content that differs/);
+  });
+
+  it('rejects a new revision that changes the session identity', async () => {
+    const source = await fixture();
+    await expect(applyStoredKnownFact14EditForReview({
+      sessionId: source.sessionId, expectedRevisionId: source.revisionId,
+      edit: { kind: 'value', questionId: 'existing-presence', value: 'New site' },
+    }, {
+      load: async () => structuredClone(source),
+      save: async (next) => ({
+        ...structuredClone(next),
+        sessionId: 'different-synthetic-session',
+        revisionId: 'synthetic-new-revision',
+        parentRevisionId: source.revisionId,
+      }),
+    })).rejects.toThrow(/parent-linked revision/);
+  });
 });
