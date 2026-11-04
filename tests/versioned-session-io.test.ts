@@ -44,7 +44,7 @@ describe('#34A2B2B pure version-aware JSON boundary', () => {
     expect(parsed.schemaVersion).toBe('1.4.0');
     expect(parsed.session).toEqual(upgraded);
     if (parsed.schemaVersion === '1.4.0') {
-      expect(parsed.session.knownFactLedger.facts[0].id).toBe('synthetic-fact');
+      expect(parsed.session.knownFactLedger.facts[0]?.id).toBe('synthetic-fact');
       expect(parsed.session.knownFactLedger.acceptances).toEqual([]);
     }
   });
