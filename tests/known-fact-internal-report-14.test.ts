@@ -85,7 +85,7 @@ describe('#35D internal deterministic 1.4 report', () => {
     const report = await knownFact14InternalInterviewReportForReview(s);
     expect(report).toContain('Conditional / pending questions');
     expect(report).toContain('Conditional / pending — NOT current');
-    expect(report).toContain('Retained INTERNAL value \\(NOT current evidence\\)');
+    expect(report).toContain('Retained INTERNAL value (NOT current evidence)');
     expect(report).toContain('PRIVATE PENDING RETAINED');
   });
 
