@@ -144,7 +144,9 @@ export async function validateKnownFactLifecycle14(raw: unknown): Promise<KnownF
       if (replayStatus !== 'completed' || replayRevisionId !== fromRevisionId
         || !completedByRevision.has(fromRevisionId)) throw new Error('Reopen event must reference the active preserved completed revision.');
       if (newRevisionId === fromRevisionId) throw new Error('Reopen must create a new revision.');
-      if (replayRevisionId === newRevisionId || [...completedByRevision.keys()].includes(newRevisionId)) throw new Error('Reopen revision ID already exists.');
+      // Only completed revisions seen SO FAR in event replay count as reused.
+      // A valid reopened draft can appear as a completed snapshot later.
+      if (replayRevisionId === newRevisionId || completionEventByRevision.has(newRevisionId)) throw new Error('Reopen revision ID already exists.');
       replayRevisionId = newRevisionId;
       replayStatus = 'draft';
       events.push({ type, eventId, fromRevisionId, newRevisionId, occurredAt });
