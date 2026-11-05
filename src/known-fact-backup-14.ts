@@ -43,8 +43,16 @@ function canonicalSessionJson(validated: KnownFactSession14): string {
 
 /** Deterministic, lossless canonical 1.4 backup; never a client export. */
 export async function createKnownFact14CanonicalBackupForReview(raw: unknown): Promise<string> {
-  const session = await validateKnownFactSession14Record(raw);
+  // Materialize the exact source JSON once. Repeated reads of caller getters
+  // must never change what is checked, hashed or written into the backup.
+  let snapshot: unknown;
+  try { snapshot = JSON.parse(JSON.stringify(raw)); }
+  catch { throw new Error('Canonical backup source must be JSON-serializable.'); }
+  const session = await validateKnownFactSession14Record(snapshot);
   const sessionJson = canonicalSessionJson(session);
+  if (canonicalizeJson(snapshot) !== sessionJson) {
+    throw new Error('Canonical backup source would lose or normalize fields during validation.');
+  }
   const body: JsonObject = {
     kind: KNOWN_FACT14_BACKUP_FORMAT,
     formatVersion: 1,
@@ -89,8 +97,17 @@ export async function validateKnownFact14CanonicalBackupForReview(input: unknown
     throw new Error('Unsupported canonical backup integrity record.');
   }
   const validated = await validateKnownFactSession14Record(envelope.session);
-  if (await sha256Hex(canonicalSessionJson(validated)) !== integrity.digest) {
+  const validatedJson = canonicalSessionJson(validated);
+  if (canonicalizeJson(envelope.session) !== validatedJson) {
+    throw new Error('Canonical backup validation would discard source fields.');
+  }
+  if (await sha256Hex(validatedJson) !== integrity.digest) {
     throw new Error('Canonical backup integrity mismatch; no restore was attempted.');
+  }
+  // Exact canonical bytes prevent duplicate-key shadowing, alternate Unicode
+  // spellings, reordered records and hidden trailing/noncanonical content.
+  if (input !== canonicalizeJson(envelope) + '\n') {
+    throw new Error('Canonical backup must use exact canonical JSON bytes.');
   }
   return validated;
 }
