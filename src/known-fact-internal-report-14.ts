@@ -1,4 +1,4 @@
-import { coverage, coverageBucketMap, relevanceMap, semanticStatusLabel } from './live-session';
+import { relevanceMap, semanticStatusLabel } from './live-session';
 import { knownFact14EvidenceAppendixForReview } from './known-fact-internal-artifact';
 import { validateKnownFactSession14Record } from './known-fact-session';
 import type { Question } from './domain';
@@ -33,6 +33,14 @@ function evidenceSource(state: SemanticAnswerState): string {
   if (state.source === 'interviewer-inference') return 'Interviewer inference (unconfirmed)';
   return 'Unestablished';
 }
+function effectiveStatus(question: Question, state: SemanticAnswerState | undefined): string {
+  if (!state) return 'Open';
+  if (state.resolution === 'captured' && (
+    state.source === null || state.source === 'interviewer-inference')) {
+    return 'Needs confirmation';
+  }
+  return semanticStatusLabel(question, state);
+}
 function addQuestion(lines: string[], question: Question, state: SemanticAnswerState | undefined,
   index: number, zone: 'current' | 'pending' | 'inactive'): void {
   lines.push('### Question ' + index, '');
@@ -41,13 +49,11 @@ function addQuestion(lines: string[], question: Question, state: SemanticAnswerS
   field(lines, 'Evidence zone', zone === 'current' ? 'Currently relevant'
     : zone === 'pending' ? 'Conditional / pending — NOT current' : 'Inactive / hidden — NOT current');
   if (!state) { field(lines, 'Status', 'Open (no stored answer)'); lines.push(''); return; }
-  let status = semanticStatusLabel(question, state);
-  if (state.resolution === 'captured' && (state.source === null
-    || state.source === 'interviewer-inference')) status = 'Needs confirmation';
+  const status = effectiveStatus(question, state);
   field(lines, 'Effective status', zone === 'current' ? status : 'Not effective — ' + status);
   field(lines, 'Resolution', state.resolution);
   field(lines, 'Source classification', evidenceSource(state));
-  field(lines, 'Needs human confirmation', state.needsConfirmation ? 'Yes' : 'No');
+  field(lines, 'Needs human confirmation', status === 'Needs confirmation' || state.needsConfirmation ? 'Yes' : 'No');
   if (state.confirmation) {
     field(lines, 'Recorded confirmation revision', state.confirmation.revisionId);
     field(lines, 'Recorded confirmation date', state.confirmation.confirmedAt);
@@ -71,8 +77,19 @@ function addQuestion(lines: string[], question: Question, state: SemanticAnswerS
 export async function knownFact14InternalInterviewReportForReview(raw: unknown): Promise<string> {
   const session = await validateKnownFactSession14Record(raw);
   const relevance = relevanceMap(session);
-  const buckets = coverageBucketMap(session);
-  const stats = coverage(session);
+  // For the internal report, inference/unknown-source values may never inflate
+  // the current counter even if an old source flag was incorrectly cleared.
+  const currentQuestions = session.packSnapshot.questions.filter((q) =>
+    relevance[q.id] === 'relevant');
+  const statuses = currentQuestions.map((q) => effectiveStatus(q, session.answers[q.id]));
+  const stats = {
+    visible: currentQuestions.length,
+    resolved: statuses.filter(s => s === 'Current' || s === 'Known context').length,
+    mustConfirm: statuses.filter(s => s === 'Needs confirmation').length,
+    notApplicable: statuses.filter(s => s === 'Not applicable').length,
+    remaining: statuses.filter(s => s === 'Open' || s === 'Deferred').length,
+    inactive: session.packSnapshot.questions.length - currentQuestions.length,
+  };
   const lines: string[] = [
     '# Internal interview evidence report — schema 1.4', '',
     '**INTERNAL / CONFIDENTIAL — not a client Read-back or restore file.**',
@@ -111,8 +128,8 @@ export async function knownFact14InternalInterviewReportForReview(raw: unknown):
   }
   if (count === 0) lines.push('_None._', '');
   lines.push('## Currently relevant questions needing confirmation', '');
-  const uncertain = session.packSnapshot.questions.filter((q) =>
-    relevance[q.id] === 'relevant' && buckets[q.id] === 'needs-confirmation');
+  const uncertain = currentQuestions.filter((q) =>
+    effectiveStatus(q, session.answers[q.id]) === 'Needs confirmation');
   if (uncertain.length === 0) lines.push('_None._', '');
   else for (const question of uncertain) field(lines, 'Needs confirmation', question.prompt);
   lines.push('', '## Conditional / pending questions — NOT current', '');
