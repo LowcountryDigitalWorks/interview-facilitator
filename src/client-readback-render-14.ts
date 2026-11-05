@@ -25,12 +25,31 @@ function requireHost(host: unknown): asserts host is HTMLElement {
     throw new Error('Read-back renderer requires an element host.');
   }
   const candidate = host as HTMLElement;
-  if (typeof candidate.replaceChildren !== 'function'
+  if (candidate.nodeType !== 1
+    || typeof candidate.replaceChildren !== 'function'
     || !candidate.ownerDocument
+    || candidate.ownerDocument.nodeType !== 9
     || typeof candidate.ownerDocument.createElement !== 'function'
     || typeof candidate.ownerDocument.createDocumentFragment !== 'function') {
     throw new Error('Read-back renderer host does not support safe DOM text nodes.');
   }
+  const constructor = candidate.ownerDocument.defaultView?.HTMLElement;
+  if (constructor && !(candidate instanceof constructor)) {
+    throw new Error('Read-back renderer requires a host element from its document realm.');
+  }
+}
+
+/**
+ * Call when hiding, closing, switching session, unmounting or clearing the
+ * Read-back surface. A plain host.replaceChildren() is NOT sufficient to
+ * revoke an in-flight result: this generation fence prevents stale repaint.
+ * This does not cancel validation CPU work; it prevents later disclosure.
+ * Never calls projectors, storage, network, or the live 1.3 application.
+ */
+export function invalidateReviewedKnownFact14ReadBackForReview(host: HTMLElement): void {
+  requireHost(host);
+  renderSequence.set(host, (renderSequence.get(host) ?? 0) + 1);
+  host.replaceChildren();
 }
 
 /**
