@@ -141,7 +141,7 @@ describe('#35C dormant canonical JSON 1.4 backup/verification', () => {
     expect(JSON.parse(shadow)).toEqual(parsed);
     await expect(validateKnownFact14CanonicalBackupForReview(shadow))
       .rejects.toThrow(/exact canonical JSON bytes/i);
-    await expect(validateKnownFact14CanonicalBackupForReview(JSON.stringify(parsed) + '\\n'))
+    await expect(validateKnownFact14CanonicalBackupForReview(JSON.stringify(parsed, null, 2) + '\n'))
       .rejects.toThrow(/exact canonical JSON bytes/i);
   });
 
@@ -181,7 +181,7 @@ describe('#35C dormant canonical JSON 1.4 backup/verification', () => {
       { ...valid, integrity: { ...valid.integrity, canonicalization: 'other-json' } },
     ]) {
       await expect(validateKnownFact14CanonicalBackupForReview(
-        canonicalizeJson(variant) + '\\n',
+        canonicalizeJson(variant) + '\n',
       )).rejects.toThrow();
     }
   });
