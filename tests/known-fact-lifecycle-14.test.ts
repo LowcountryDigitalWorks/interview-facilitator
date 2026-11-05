@@ -100,6 +100,47 @@ describe('#34B versioned dormant Draft / Completed / reopen contract', () => {
     })).rejects.toThrow(/only a completed/i);
   });
 
+  it('rejects completion and read-back timestamps earlier than captured source evidence', async () => {
+    const { session, lifecycle } = await draftLifecycle();
+    const prior = '2026-11-05T11:59:59.999Z';
+    await expect(completeKnownFactLifecycle14(lifecycle, {
+      expectedRevisionId: session.revisionId, eventId: 'backdated-complete',
+      completedAt: prior, acknowledgedFollowUpQuestionIds: [],
+    })).rejects.toThrow(/predate.*source/i);
+    await expect(recordKnownFactReadBack14(lifecycle, {
+      eventId: 'backdated-readback', occurredAt: prior,
+    })).rejects.toThrow(/predate.*source/i);
+    expect(lifecycle.events).toEqual([]);
+    expect(lifecycle.status).toBe('draft');
+  });
+
+  it('rejects restored completed snapshots backdated before the captured revision', async () => {
+    const { session, lifecycle } = await draftLifecycle();
+    const completed = await completeKnownFactLifecycle14(lifecycle, {
+      expectedRevisionId: session.revisionId,
+      eventId: 'completion-true-date',
+      completedAt: '2026-11-05T12:05:00.000Z',
+      acknowledgedFollowUpQuestionIds: [],
+    });
+    const forged = structuredClone(completed);
+    forged.events[0]!.occurredAt = '2026-11-05T11:59:59.999Z';
+    forged.completedRevisions[0]!.completedAt = '2026-11-05T11:59:59.999Z';
+    await expect(validateKnownFactLifecycle14(forged))
+      .rejects.toThrow(/predate.*source/i);
+  });
+
+  it('rejects oversized lifecycle event and completed-revision history before replay', async () => {
+    const { lifecycle } = await draftLifecycle();
+    await expect(validateKnownFactLifecycle14({
+      ...lifecycle, events: Array.from({ length: 2001 }, () => ({})),
+    })).rejects.toThrow(/bounded/i);
+    await expect(validateKnownFactLifecycle14({
+      ...lifecycle, completedRevisions: Array.from({ length: 501 }, () => ({})),
+    })).rejects.toThrow(/bounded/i);
+    expect(lifecycle.events).toEqual([]);
+    expect(lifecycle.completedRevisions).toEqual([]);
+  });
+
   it('fails closed on unsupported envelope versions and forged completion history', async () => {
     const { session, lifecycle } = await draftLifecycle();
     await expect(validateKnownFactLifecycle14({ ...lifecycle, formatVersion: 2 })).rejects.toThrow(/unsupported lifecycle format/i);
