@@ -127,6 +127,65 @@ describe('#35C dormant canonical JSON 1.4 backup/verification', () => {
       .rejects.toThrow(/schema version/i);
   });
 
+  it('rejects duplicate JSON keys and noncanonical spacing/order/newline before acceptance', async () => {
+    const valid = await createKnownFact14CanonicalBackupForReview(await completeSynthetic14());
+    const parsed = JSON.parse(valid);
+    await expect(validateKnownFact14CanonicalBackupForReview(valid)).resolves.toMatchObject({
+      sessionSchemaVersion: '1.4.0',
+    });
+    await expect(validateKnownFact14CanonicalBackupForReview(valid.trimEnd()))
+      .rejects.toThrow(/exact canonical JSON bytes/i);
+    await expect(validateKnownFact14CanonicalBackupForReview(' ' + valid))
+      .rejects.toThrow(/exact canonical JSON bytes/i);
+    const shadow = valid.replace('"kind":', '"kind":"SHADOW-INJECTED","kind":');
+    expect(JSON.parse(shadow)).toEqual(parsed);
+    await expect(validateKnownFact14CanonicalBackupForReview(shadow))
+      .rejects.toThrow(/exact canonical JSON bytes/i);
+    await expect(validateKnownFact14CanonicalBackupForReview(JSON.stringify(parsed) + '\\n'))
+      .rejects.toThrow(/exact canonical JSON bytes/i);
+  });
+
+  it('fails closed on special answer keys instead of silently dropping private material', async () => {
+    const source = await completeSynthetic14();
+    const answers = source.answers as Record<string, unknown>;
+    Object.defineProperty(answers, '__proto__', {
+      configurable: true, enumerable: true,
+      value: structuredClone(source.answers['primary-goal']),
+    });
+    await expect(createKnownFact14CanonicalBackupForReview(source)).rejects.toThrow();
+  });
+
+  it('snapshots changing getters exactly once before validation, integrity and output', async () => {
+    const source = await completeSynthetic14();
+    const answer = source.answers['primary-goal']!;
+    const original = answer.value!;
+    let reads = 0;
+    Object.defineProperty(answer, 'value', {
+      enumerable: true, configurable: true,
+      get: () => (++reads === 1 ? original : 'UNVALIDATED GETTER OVERRIDE'),
+    });
+    const bytes = await createKnownFact14CanonicalBackupForReview(source);
+    expect(reads).toBe(1);
+    expect(bytes).toContain('PRIVATE ORIGINAL GOAL');
+    expect(bytes).not.toContain('UNVALIDATED GETTER OVERRIDE');
+    const restored = await validateKnownFact14CanonicalBackupForReview(bytes);
+    expect(restored.answers['primary-goal']?.value).toBe(original);
+  });
+
+  it('covers source-kind, version, digest format and canonicalization negatives', async () => {
+    const valid = JSON.parse(await createKnownFact14CanonicalBackupForReview(await completeSynthetic14()));
+    for (const variant of [
+      { ...valid, kind: 'WRONG-KIND' },
+      { ...valid, sessionSchemaVersion: '1.3.0' },
+      { ...valid, integrity: { ...valid.integrity, digest: 'x'.repeat(64) } },
+      { ...valid, integrity: { ...valid.integrity, canonicalization: 'other-json' } },
+    ]) {
+      await expect(validateKnownFact14CanonicalBackupForReview(
+        canonicalizeJson(variant) + '\\n',
+      )).rejects.toThrow();
+    }
+  });
+
   it('refuses unsupported nested fields instead of dropping unknown future data', async () => {
     const valid = JSON.parse(await createKnownFact14CanonicalBackupForReview(await completeSynthetic14()));
     valid.session.newFutureField = 'PRIVATE MUST NOT DROP';
