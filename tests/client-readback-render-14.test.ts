@@ -114,6 +114,35 @@ describe('#35E dormant textContent-only read-back renderer', () => {
     expect(visible(host)).not.toContain('stale');
   });
 
+  it('does not revive a superseded selection when concurrent renders race', async () => {
+    const session = await fixture(), host = root();
+    const older = renderReviewedKnownFact14ReadBackForReview(asHost(host), session,
+      review(session, [{ questionId: 'primary-goal', publicLabel: 'OLDER SELECTION',
+        reviewedValue: '<script>alert(1)</script> SYNTHETIC PUBLIC VALUE' }]));
+    const newer = renderReviewedKnownFact14ReadBackForReview(asHost(host), session,
+      review(session, [{ questionId: 'primary-goal', publicLabel: 'NEWER SELECTION',
+        reviewedValue: '<script>alert(1)</script> SYNTHETIC PUBLIC VALUE' }]));
+    const outcomes = await Promise.all([older, newer]);
+    expect(outcomes).toEqual(['superseded', 'rendered']);
+    expect(visible(host)).toContain('NEWER SELECTION');
+    expect(visible(host)).not.toContain('OLDER SELECTION');
+  });
+
+  it('does not let an older rejected render overwrite the latest valid view', async () => {
+    const session = await fixture(), host = root();
+    const old = renderReviewedKnownFact14ReadBackForReview(asHost(host), session, {
+      expectedRevisionId: 'STALE PRIVATE REVISION', entries: [],
+    });
+    const fresh = renderReviewedKnownFact14ReadBackForReview(asHost(host), session,
+      review(session, [{ questionId: 'primary-goal', publicLabel: 'Valid selection',
+        reviewedValue: '<script>alert(1)</script> SYNTHETIC PUBLIC VALUE' }]));
+    await expect(old).rejects.toThrow(/stale/);
+    expect(await fresh).toBe('rendered');
+    expect(visible(host)).toContain('Valid selection');
+    expect(visible(host)).not.toContain('Read-back unavailable');
+    expect(visible(host)).not.toContain('STALE PRIVATE REVISION');
+  });
+
   it('does not accept a standalone forged projection or an invalid host', async () => {
     const host = root();
     await expect(renderReviewedKnownFact14ReadBackForReview(asHost(host),
