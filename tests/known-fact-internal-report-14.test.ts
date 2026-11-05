@@ -78,15 +78,15 @@ describe('#35D internal deterministic 1.4 report', () => {
 
   it('clearly separates pending state and hidden retained values', async () => {
     const s = await fixture();
-    const pending = s.packSnapshot.questions.find(q => relevanceMap(s)[q.id] === 'pending');
-    if (pending && s.answers[pending.id]) {
-      s.answers[pending.id]!.resolution = 'deferred';
-      s.answers[pending.id]!.value = 'PRIVATE PENDING RETAINED';
-    }
+    expect(relevanceMap(s)['booking-process']).toBe('pending');
+    const answer = s.answers['booking-process']!;
+    answer.resolution = 'deferred';
+    answer.value = 'PRIVATE PENDING RETAINED';
     const report = await knownFact14InternalInterviewReportForReview(s);
     expect(report).toContain('Conditional / pending questions');
-    expect(report).toContain('NOT current');
-    if (pending) expect(report).toContain('PRIVATE PENDING RETAINED');
+    expect(report).toContain('Conditional / pending — NOT current');
+    expect(report).toContain('Retained INTERNAL value \\(NOT current evidence\\)');
+    expect(report).toContain('PRIVATE PENDING RETAINED');
   });
 
   it('rejects legacy 1.3 or extra source fields', async () => {
