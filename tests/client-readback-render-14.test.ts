@@ -28,7 +28,7 @@ function nodes(root: TextNode): TextNode[] {
   return [root, ...root.children.flatMap(nodes)];
 }
 function visible(root: TextNode) {
-  return nodes(root).map(node => node.textContent).join(' | ');
+  return nodes(root).map(node => node.textContent).filter(Boolean).join(' | ');
 }
 async function fixture() {
   const session = await createSemanticSession(generalDiscoveryPack,
