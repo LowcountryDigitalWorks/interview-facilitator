@@ -74,6 +74,10 @@ export async function validateKnownFactLifecycle14(raw: unknown): Promise<KnownF
   }
   if (input.status !== 'draft' && input.status !== 'completed') throw new Error('Lifecycle status is invalid.');
   if (!Array.isArray(input.completedRevisions) || !Array.isArray(input.events)) throw new Error('Lifecycle history must be arrays.');
+  // Fail closed before iterating large attacker-controlled history trees.
+  if (input.completedRevisions.length > 500 || input.events.length > 2000) {
+    throw new Error('Lifecycle history exceeds the bounded event/revision limit.');
+  }
 
   const session = await validateKnownFactSession14Record(input.session);
   const completedRevisions: CompletedKnownFactRevision14[] = [];
@@ -98,6 +102,9 @@ export async function validateKnownFactLifecycle14(raw: unknown): Promise<KnownF
       acknowledgedFollowUpQuestionIds: acknowledged,
       sessionSnapshot: snapshot,
     };
+    if (checked.completedAt < snapshot.updatedAt) {
+      throw new Error('Completion cannot predate the captured source revision.');
+    }
     if (completedByRevision.has(revisionId)) throw new Error('A completed revision cannot be recorded twice.');
     completedByRevision.set(revisionId, checked);
     completedRevisions.push(checked);
@@ -190,6 +197,9 @@ export async function completeKnownFactLifecycle14(
   if (source.session.revisionId !== nonempty(command?.expectedRevisionId, 'Expected revision ID')) throw new Error('Stale lifecycle revision; completion was not applied.');
   const eventId = nonempty(command.eventId, 'Completion event ID');
   const completedAt = timestamp(command.completedAt, 'Completion time');
+  if (completedAt < source.session.updatedAt) {
+    throw new Error('Completion cannot predate the captured source revision.');
+  }
   const acknowledgedFollowUpQuestionIds = stringIds(command.acknowledgedFollowUpQuestionIds, 'Acknowledged follow-up IDs');
   if (source.events.some(event => event.eventId === eventId)) throw new Error('Lifecycle event ID already exists.');
   const completion: CompletedKnownFactRevision14 = {
@@ -219,6 +229,9 @@ export async function reopenKnownFactLifecycle14(
   const eventId = nonempty(command.eventId, 'Reopen event ID');
   const newRevisionId = nonempty(command.newRevisionId, 'New Draft revision ID');
   const reopenedAt = timestamp(command.reopenedAt, 'Reopen time');
+  if (reopenedAt < source.session.updatedAt) {
+    throw new Error('Reopen cannot predate the completed source revision.');
+  }
   if (source.events.some(event => event.eventId === eventId)) throw new Error('Lifecycle event ID already exists.');
   if (source.events.some(event => event.type === 'reopened' && event.newRevisionId === newRevisionId)
     || source.completedRevisions.some(item => item.revisionId === newRevisionId)) throw new Error('New Draft revision ID already exists.');
@@ -245,6 +258,9 @@ export async function recordKnownFactReadBack14(
   const source = await validateKnownFactLifecycle14(raw);
   const eventId = nonempty(command?.eventId, 'Read-back event ID');
   const occurredAt = timestamp(command.occurredAt, 'Read-back time');
+  if (occurredAt < source.session.updatedAt) {
+    throw new Error('Read-back cannot predate the captured source revision.');
+  }
   if (source.events.some(event => event.eventId === eventId)) throw new Error('Lifecycle event ID already exists.');
   return validateKnownFactLifecycle14({
     ...source,
