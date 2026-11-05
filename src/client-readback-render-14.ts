@@ -25,8 +25,10 @@ function requireHost(host: unknown): asserts host is HTMLElement {
     throw new Error('Read-back renderer requires an element host.');
   }
   const candidate = host as HTMLElement;
-  if (candidate.nodeType !== 1
-    || typeof candidate.replaceChildren !== 'function'
+  if (candidate.nodeType !== 1) {
+    throw new Error('Read-back renderer requires an element host.');
+  }
+  if (typeof candidate.replaceChildren !== 'function'
     || !candidate.ownerDocument
     || candidate.ownerDocument.nodeType !== 9
     || typeof candidate.ownerDocument.createElement !== 'function'
