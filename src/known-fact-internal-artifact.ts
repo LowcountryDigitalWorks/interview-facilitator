@@ -10,10 +10,14 @@ import { validateKnownFactSession14Record } from './known-fact-session';
 
 function escapeMarkdown(value: string): string {
   return value
+    // Expose non-ASCII line separator/control characters as visible codepoints.
+    // The original raw values remain losslessly available in canonical JSON.
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u0085/g, '\\u0085')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/([\\`*_{}\[\]()#+\-.!|~])/g, '\\$1');
+    .replace(/([\\`*_{}\[\]()#+\-.!|~=:@])/g, '\\$1');
 }
 
 function inline(value: string): string {
