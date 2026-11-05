@@ -52,7 +52,10 @@ describe('#35D internal deterministic 1.4 report', () => {
     const s = await fixture();
     s.answers['primary-goal']!.source = 'interviewer-inference';
     const report = await knownFact14InternalInterviewReportForReview(s);
-    expect(report).toContain('Interviewer inference (unconfirmed)');
+    expect(report).toContain('Interviewer inference \\(unconfirmed\\)');
+    expect(report).toContain('**Needs human confirmation:** Yes');
+    expect(report).toContain('**Current:** 0');
+    expect(report).toContain('**Needs confirmation:** 1');
     expect(report).toContain('Needs confirmation');
   });
 
