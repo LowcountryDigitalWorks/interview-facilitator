@@ -76,7 +76,7 @@ describe('#35C dormant canonical JSON 1.4 backup/verification', () => {
     expect(first).toBe(await createKnownFact14CanonicalBackupForReview(structuredClone(session)));
     const restored = await validateKnownFact14CanonicalBackupForReview(first);
     expect(restored.parentRevisionId).toBe(session.parentRevisionId);
-    expect(restored.knownFactLedger.facts).toHaveLength(2);
+    expect(restored.knownFactLedger.facts).toHaveLength(session.knownFactLedger.facts.length);
     expect(restored.knownFactLedger.acceptances).toHaveLength(1);
     expect(restored.answers['booking-process']?.value).toBe('PRIVATE HIDDEN VALUE');
   });
