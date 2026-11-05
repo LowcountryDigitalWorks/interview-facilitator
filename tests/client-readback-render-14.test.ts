@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderReviewedKnownFact14ReadBackForReview } from '../src/client-readback-render-14';
+import { prepareKnownFact14ReadBackReviewForReview } from '../src/client-readback-14';
 import { migrateSemantic13ToKnownFact14 } from '../src/known-fact-session';
 import { createSemanticSession } from '../src/semantic-session';
 import { generalDiscoveryPack } from '../src/pack';
@@ -47,8 +48,9 @@ async function fixture() {
   };
   return migrateSemantic13ToKnownFact14(session);
 }
-function review(session: Awaited<ReturnType<typeof fixture>>, entries: unknown[]) {
-  return { expectedRevisionId: session.revisionId, entries };
+async function review(session: Awaited<ReturnType<typeof fixture>>, entries: unknown[]) {
+  const snapshot = await prepareKnownFact14ReadBackReviewForReview(session);
+  return { ...snapshot, entries };
 }
 function asHost(value: TextNode): HTMLElement { return value as unknown as HTMLElement; }
 
@@ -56,7 +58,7 @@ describe('#35E dormant textContent-only read-back renderer', () => {
   it('with empty review shows zero items and never dumps private session fields', async () => {
     const session = await fixture(), host = root(), before = structuredClone(session);
     expect(await renderReviewedKnownFact14ReadBackForReview(
-      asHost(host), session, review(session, []),
+      asHost(host), session, await review(session, []),
     )).toBe('rendered');
     expect(visible(host)).toContain('No items selected for disclosure.');
     expect(nodes(host).some(n => n.tag === 'li')).toBe(false);
@@ -69,7 +71,7 @@ describe('#35E dormant textContent-only read-back renderer', () => {
     const session = await fixture(), host = root();
     const label = '<img src=x onerror=alert(1)> Main outcome';
     await renderReviewedKnownFact14ReadBackForReview(asHost(host), session,
-      review(session, [{
+      await review(session, [{
         questionId: 'primary-goal', publicLabel: label,
         reviewedValue: '<script>alert(1)</script> SYNTHETIC PUBLIC VALUE',
         reviewedFollowUp: '<b>Discuss deadline</b>',
@@ -90,7 +92,7 @@ describe('#35E dormant textContent-only read-back renderer', () => {
   it('clears a previously selected view before throwing on stale or private selections', async () => {
     const session = await fixture(), host = root();
     await renderReviewedKnownFact14ReadBackForReview(asHost(host), session,
-      review(session, [{ questionId: 'primary-goal', publicLabel: 'Goal',
+      await review(session, [{ questionId: 'primary-goal', publicLabel: 'Goal',
         reviewedValue: '<script>alert(1)</script> SYNTHETIC PUBLIC VALUE' }]));
     expect(visible(host)).toContain('SYNTHETIC PUBLIC VALUE');
     await expect(renderReviewedKnownFact14ReadBackForReview(asHost(host), session, {
@@ -99,7 +101,7 @@ describe('#35E dormant textContent-only read-back renderer', () => {
     expect(visible(host)).toBe('Read-back unavailable. Review the current session before presenting.');
     expect(visible(host)).not.toContain('SYNTHETIC PUBLIC VALUE');
     await expect(renderReviewedKnownFact14ReadBackForReview(asHost(host), session,
-      review(session, [{ questionId: 'booking-process', publicLabel: 'Booking',
+      await review(session, [{ questionId: 'booking-process', publicLabel: 'Booking',
         reviewedValue: 'PRIVATE HIDDEN ANSWER' }]))).rejects.toThrow(/relevant/);
     expect(visible(host)).not.toContain('PRIVATE');
   });
@@ -108,7 +110,7 @@ describe('#35E dormant textContent-only read-back renderer', () => {
     const session = await fixture(), host = root();
     session.answers['primary-goal']!.value = 'PRIVATE MALFORMED';
     await expect(renderReviewedKnownFact14ReadBackForReview(asHost(host), session,
-      review(session, [{ questionId: 'primary-goal', publicLabel: 'Goal',
+      await review(session, [{ questionId: 'primary-goal', publicLabel: 'Goal',
         reviewedValue: 'stale' }]))).rejects.toThrow(/differs/);
     expect(visible(host)).not.toContain('PRIVATE');
     expect(visible(host)).not.toContain('stale');
@@ -116,33 +118,38 @@ describe('#35E dormant textContent-only read-back renderer', () => {
 
   it('does not revive a superseded selection when concurrent renders race', async () => {
     const session = await fixture(), host = root();
-    const older = renderReviewedKnownFact14ReadBackForReview(asHost(host), session,
-      review(session, [{ questionId: 'primary-goal', publicLabel: 'OLDER SELECTION',
-        reviewedValue: '<script>alert(1)</script> SYNTHETIC PUBLIC VALUE' }]));
-    const newer = renderReviewedKnownFact14ReadBackForReview(asHost(host), session,
-      review(session, [{ questionId: 'primary-goal', publicLabel: 'NEWER SELECTION',
-        reviewedValue: '<script>alert(1)</script> SYNTHETIC PUBLIC VALUE' }]));
+    const olderReview = await review(session, [{
+      questionId: 'primary-goal', publicLabel: 'OLDER SELECTION',
+      reviewedValue: '<script>alert(1)</script> SYNTHETIC PUBLIC VALUE',
+    }]);
+    const newerReview = await review(session, [{
+      questionId: 'primary-goal', publicLabel: 'NEWER SELECTION',
+      reviewedValue: '<script>alert(1)</script> SYNTHETIC PUBLIC VALUE',
+    }]);
+    // Both private snapshot commands are prepared before starting the renders.
+    const older = renderReviewedKnownFact14ReadBackForReview(asHost(host), session, olderReview);
+    const newer = renderReviewedKnownFact14ReadBackForReview(asHost(host), session, newerReview);
     const outcomes = await Promise.all([older, newer]);
     expect(outcomes).toEqual(['superseded', 'rendered']);
     expect(visible(host)).toContain('NEWER SELECTION');
     expect(visible(host)).not.toContain('OLDER SELECTION');
   });
-
   it('does not let an older rejected render overwrite the latest valid view', async () => {
     const session = await fixture(), host = root();
+    const freshReview = await review(session, [{
+      questionId: 'primary-goal', publicLabel: 'Valid selection',
+      reviewedValue: '<script>alert(1)</script> SYNTHETIC PUBLIC VALUE',
+    }]);
     const old = renderReviewedKnownFact14ReadBackForReview(asHost(host), session, {
       expectedRevisionId: 'STALE PRIVATE REVISION', entries: [],
     });
-    const fresh = renderReviewedKnownFact14ReadBackForReview(asHost(host), session,
-      review(session, [{ questionId: 'primary-goal', publicLabel: 'Valid selection',
-        reviewedValue: '<script>alert(1)</script> SYNTHETIC PUBLIC VALUE' }]));
+    const fresh = renderReviewedKnownFact14ReadBackForReview(asHost(host), session, freshReview);
     await expect(old).rejects.toThrow(/stale/);
     expect(await fresh).toBe('rendered');
     expect(visible(host)).toContain('Valid selection');
     expect(visible(host)).not.toContain('Read-back unavailable');
     expect(visible(host)).not.toContain('STALE PRIVATE REVISION');
   });
-
   it('does not accept a standalone forged projection or an invalid host', async () => {
     const host = root();
     await expect(renderReviewedKnownFact14ReadBackForReview(asHost(host),
