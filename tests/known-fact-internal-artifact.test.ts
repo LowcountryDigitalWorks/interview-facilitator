@@ -104,4 +104,30 @@ describe('#35A internal 1.4 provenance artifact foundation', () => {
       ...session, unapprovedField: 'would be omitted silently',
     })).rejects.toThrow(/unsupported field/i);
   });
+
+  it('keeps setext-like lines, bare URLs and unusual line separators inert', async () => {
+    const session = await base14();
+    const unsafe = ['Status', '===', 'https://example.test/path',
+      'www.example.test', 'user@example.test'].join(String.fromCharCode(10));
+    const lineSeparator = String.fromCharCode(0x2028);
+    const nextLineControl = String.fromCharCode(0x85);
+    const unicode = 'Before' + lineSeparator + 'middle' + nextLineControl + 'after';
+    session.knownFacts[0]!.value = unsafe;
+    session.knownFactLedger.facts[0]!.value = unsafe;
+    session.knownFacts[0]!.provenance = unicode;
+    session.knownFactLedger.facts[0]!.provenance = unicode;
+
+    const output = await knownFact14EvidenceAppendixForReview(session);
+    const slash = String.fromCharCode(92);
+    expect(output).toContain(slash + '=' + slash + '=' + slash + '=');
+    expect(output).not.toContain(String.fromCharCode(10) + '===');
+    expect(output).not.toContain('https://example.test');
+    expect(output).toContain('https' + slash + ':');
+    expect(output).not.toContain('www.example.test');
+    expect(output).not.toContain('user@example.test');
+    expect(output).not.toContain(lineSeparator);
+    expect(output).not.toContain(nextLineControl);
+    expect(output).toContain('u2028');
+    expect(output).toContain('u0085');
+  });
 });
