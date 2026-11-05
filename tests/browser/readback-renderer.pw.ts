@@ -84,7 +84,7 @@ test('real DOM renders reviewed HTML-looking text without elements or private no
     .toEqual([]);
 });
 
-test('real DOM rejection gives a generic, non-sensitive notice, then invalidation clears it', async ({ page }) => {
+test('real DOM rejection gives a generic, non-sensitive notice', async ({ page }) => {
   const result = await page.evaluate(async () => {
     const load = (path: string) => import(/* @vite-ignore */ path);
     const [pack, semantic, known, renderer] = await Promise.all([
@@ -111,4 +111,54 @@ test('real DOM rejection gives a generic, non-sensitive notice, then invalidatio
   expect(result.errorText).toBe('Read-back unavailable. Review the current session before presenting.');
   expect(result.errorText).not.toContain('SYNTHETIC PRIVATE');
   expect(result.noticeParagraphs).toBe(1);
+});
+
+test('real DOM clears a previous approved preview when a later review is stale', async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const load = (path: string) => import(/* @vite-ignore */ path);
+    const [pack, semantic, known, readback, renderer] = await Promise.all([
+      '/src/pack.ts', '/src/semantic-session.ts',
+      '/src/known-fact-session.ts', '/src/client-readback-14.ts',
+      '/src/client-readback-render-14.ts',
+    ].map(load));
+    const source = await semantic.createSemanticSession(pack.generalDiscoveryPack, {
+      clientLabel: 'SYNTHETIC PRIVATE CLIENT',
+    }, new Date('2026-11-05T12:00:00.000Z'));
+    source.answers['primary-goal'] = {
+      value: 'SYNTHETIC APPROVED ANSWER',
+      resolution: 'captured', source: 'client-statement',
+      needsConfirmation: false, confirmation: null,
+      note: 'SYNTHETIC PRIVATE NOTE', followUp: null,
+    };
+    const session = await known.migrateSemantic13ToKnownFact14(source);
+    const root = document.querySelector('#readback-preview') as HTMLElement;
+    const validReview = {
+      ...await readback.prepareKnownFact14ReadBackReviewForReview(session),
+      entries: [{ questionId: 'primary-goal', publicLabel: 'SYNTHETIC REVIEWED HEADING',
+        reviewedValue: 'SYNTHETIC APPROVED ANSWER' }],
+    };
+    const firstStatus = await renderer.renderReviewedKnownFact14ReadBackForReview(
+      root, session, validReview);
+    const firstText = root.textContent ?? '';
+    let rejected = false;
+    try {
+      await renderer.renderReviewedKnownFact14ReadBackForReview(root, session, {
+        expectedRevisionId: 'SYNTHETIC PRIVATE STALE ID', entries: [],
+      });
+    } catch {
+      rejected = true;
+    }
+    return { firstStatus, firstText, rejected, finalText: root.textContent,
+      itemCount: root.querySelectorAll('ol > li').length,
+      noticeCount: root.querySelectorAll('p').length };
+  });
+  expect(result.firstStatus).toBe('rendered');
+  expect(result.firstText).toContain('SYNTHETIC APPROVED ANSWER');
+  expect(result.rejected).toBe(true);
+  expect(result.finalText).toBe('Read-back unavailable. Review the current session before presenting.');
+  expect(result.finalText).not.toContain('SYNTHETIC REVIEWED HEADING');
+  expect(result.finalText).not.toContain('SYNTHETIC APPROVED ANSWER');
+  expect(result.finalText).not.toContain('SYNTHETIC PRIVATE STALE ID');
+  expect(result.itemCount).toBe(0);
+  expect(result.noticeCount).toBe(1);
 });
