@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderReviewedKnownFact14ReadBackForReview } from '../src/client-readback-render-14';
+import { invalidateReviewedKnownFact14ReadBackForReview, renderReviewedKnownFact14ReadBackForReview } from '../src/client-readback-render-14';
 import { prepareKnownFact14ReadBackReviewForReview } from '../src/client-readback-14';
 import { migrateSemantic13ToKnownFact14 } from '../src/known-fact-session';
 import { createSemanticSession } from '../src/semantic-session';
@@ -11,13 +11,17 @@ const AT = '2026-11-05T00:00:00.000Z';
 // Actual browser integration is a separate acceptance gate, not claimed here.
 class TextNode {
   readonly children: TextNode[] = [];
+  readonly nodeType: number;
   textContent = '';
-  constructor(readonly tag: string, readonly ownerDocument: FakeDocument) {}
+  constructor(readonly tag: string, readonly ownerDocument: FakeDocument) {
+    this.nodeType = tag === '#fragment' ? 11 : 1;
+  }
   appendChild(child: TextNode): void { this.children.push(child); }
   replaceChildren(...nodes: TextNode[]): void { this.children.splice(0, this.children.length, ...nodes); }
   set innerHTML(_value: string) { throw new Error('Unsafe innerHTML was used.'); }
 }
 class FakeDocument {
+  readonly nodeType = 9;
   createElement(tag: string): TextNode { return new TextNode(tag, this); }
   createDocumentFragment(): TextNode { return new TextNode('#fragment', this); }
 }
@@ -150,6 +154,56 @@ describe('#35E dormant textContent-only read-back renderer', () => {
     expect(visible(host)).not.toContain('Read-back unavailable');
     expect(visible(host)).not.toContain('STALE PRIVATE REVISION');
   });
+
+  it('explicit invalidation synchronously clears a displayed client review', async () => {
+    const session = await fixture(), host = root();
+    await renderReviewedKnownFact14ReadBackForReview(asHost(host), session,
+      await review(session, [{
+        questionId: 'primary-goal', publicLabel: 'SYNTHETIC APPROVED LABEL',
+        reviewedValue: '<script>alert(1)</script> SYNTHETIC PUBLIC VALUE',
+      }]));
+    expect(visible(host)).toContain('SYNTHETIC APPROVED LABEL');
+    invalidateReviewedKnownFact14ReadBackForReview(asHost(host));
+    expect(visible(host)).toBe('');
+    expect(nodes(host)).toHaveLength(1);
+  });
+
+  it('invalidation during projection fences stale completion from repainting a hidden view', async () => {
+    const session = await fixture(), host = root();
+    const selection = await review(session, [{
+      questionId: 'primary-goal', publicLabel: 'DO NOT REVIVE ME',
+      reviewedValue: '<script>alert(1)</script> SYNTHETIC PUBLIC VALUE',
+    }]);
+    const pending = renderReviewedKnownFact14ReadBackForReview(asHost(host), session, selection);
+    invalidateReviewedKnownFact14ReadBackForReview(asHost(host));
+    expect(visible(host)).toBe('');
+    expect(await pending).toBe('superseded');
+    expect(visible(host)).not.toContain('DO NOT REVIVE ME');
+    expect(nodes(host)).toHaveLength(1);
+  });
+
+  it('invalidation prevents a pending rejection from repainting its error notice', async () => {
+    const session = await fixture(), host = root();
+    const pending = renderReviewedKnownFact14ReadBackForReview(asHost(host), session, {
+      expectedRevisionId: 'STALE SYNTHETIC', entries: [],
+    });
+    invalidateReviewedKnownFact14ReadBackForReview(asHost(host));
+    await expect(pending).rejects.toThrow(/stale/i);
+    expect(visible(host)).toBe('');
+    expect(nodes(host)).toHaveLength(1);
+  });
+
+  it('refuses forged duck-typed render or invalidation hosts', async () => {
+    const fake = {
+      replaceChildren() {},
+      ownerDocument: root().ownerDocument,
+    } as unknown as HTMLElement;
+    await expect(renderReviewedKnownFact14ReadBackForReview(fake, {}, {}))
+      .rejects.toThrow(/element host/i);
+    expect(() => invalidateReviewedKnownFact14ReadBackForReview(fake))
+      .toThrow(/element host/i);
+  });
+
   it('does not accept a standalone forged projection or an invalid host', async () => {
     const host = root();
     await expect(renderReviewedKnownFact14ReadBackForReview(asHost(host),
