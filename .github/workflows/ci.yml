@@ -25,6 +25,8 @@ jobs:
       - run: npm run build
       - name: Install Chromium for browser acceptance
         run: npx playwright install --with-deps chromium
+      - name: Dormant Read-back Chromium contract
+        run: npx playwright test -c playwright.readback.config.ts
       - name: Browser acceptance
         run: npx playwright test
       - name: Controlled update acceptance
