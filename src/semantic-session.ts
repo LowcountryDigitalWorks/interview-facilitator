@@ -151,12 +151,13 @@ export async function validateSemanticSessionRecord(value: unknown): Promise<Sem
   const questionById = new Map(validatedSnapshot.questions.map((question) => [question.id, question]));
 
   const answersRecord = requireRecord(record.answers, 'Semantic session answers');
-  const answers: Record<string, SemanticAnswerState> = {};
-  for (const [questionId, answer] of Object.entries(answersRecord)) {
+  // Object.fromEntries creates OWN data properties even for "__proto__".
+  // Assignment into {} would mutate its prototype and silently drop evidence.
+  const answers = Object.fromEntries(Object.entries(answersRecord).map(([questionId, answer]) => {
     const question = questionById.get(questionId);
     if (!question) throw new Error(`Semantic session contains an unknown question ${questionId}.`);
-    answers[questionId] = validateSemanticAnswer(answer, question);
-  }
+    return [questionId, validateSemanticAnswer(answer, question)];
+  })) as Record<string, SemanticAnswerState>;
 
   const v1Digest = await sha256Hex(canonicalizeJson(legacyCompatibleSnapshot));
   const compatibilityRecord = {
