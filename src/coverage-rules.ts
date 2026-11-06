@@ -80,9 +80,11 @@ export function deriveRelevanceMap(
     }
   };
 
-  const result: Record<string, Relevance> = {};
-  for (const question of questions) result[question.id] = evaluate(question.id);
-  return result;
+  // fromEntries preserves literal own keys such as "__proto__"; assignment into
+  // {} would instead mutate the prototype and silently omit relevance evidence.
+  return Object.fromEntries(
+    questions.map((question) => [question.id, evaluate(question.id)]),
+  ) as Record<string, Relevance>;
 }
 
 /**
