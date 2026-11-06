@@ -3,6 +3,7 @@ import { generalDiscoveryPack } from '../src/pack';
 import { canonicalizeJson } from '../src/pack-identity';
 import { createSemanticSession, validateSemanticSessionRecord } from '../src/semantic-session';
 import { migrateSemantic13ToKnownFact14, validateKnownFactSession14Record } from '../src/known-fact-session';
+import { acceptKnownFact, projectAcceptedKnownFact } from '../src/known-fact-evidence';
 
 const AT = new Date('2026-11-05T12:00:00.000Z');
 
@@ -82,4 +83,54 @@ describe('#34/#35 special question key source fidelity', () => {
     })).rejects.toThrow(/accepted-known-fact/i);
     expect(canonicalizeJson(converted)).toBe(before);
   });
+  it('preserves a genuinely accepted __proto__ evidence link and rejects forged acceptance', async () => {
+    const pack = structuredClone(generalDiscoveryPack);
+    const question = pack.questions.find(item => item.id === 'existing-presence')!;
+    question.id = '__proto__';
+    pack.knownFacts[0]!.questionId = '__proto__';
+    const source = await createSemanticSession(pack, { clientLabel: 'Synthetic accepted fact' }, AT);
+    const sourceBytes = canonicalizeJson(source);
+    const input = await migrateSemantic13ToKnownFact14(source);
+    const acceptedAt = AT.toISOString();
+    input.knownFactLedger = acceptKnownFact(input.knownFactLedger, {
+      id: 'synthetic-acceptance-__proto__',
+      factId: pack.knownFacts[0]!.id,
+      expectedRevisionId: input.revisionId,
+      currentRevisionId: input.revisionId,
+      acceptedAt,
+    });
+    const projected = projectAcceptedKnownFact(
+      input.knownFactLedger, 'synthetic-acceptance-__proto__', '__proto__',
+      { kind: 'textarea' }, input.answers['__proto__']!,
+    );
+    Object.defineProperty(input.answers, '__proto__', {
+      value: projected.answer, enumerable: true, writable: true, configurable: true,
+    });
+    Object.defineProperty(input.knownFactAnswerLinks, '__proto__', {
+      value: { kind: 'accepted', factId: projected.factId, acceptanceId: projected.acceptanceId },
+      enumerable: true, writable: true, configurable: true,
+    });
+
+    const before = canonicalizeJson(input);
+    const validated = await validateKnownFactSession14Record(JSON.parse(before));
+    expect(Object.prototype.hasOwnProperty.call(validated.knownFactAnswerLinks, '__proto__')).toBe(true);
+    expect(Object.getPrototypeOf(validated.knownFactAnswerLinks)).toBe(Object.prototype);
+    expect(validated.knownFactAnswerLinks['__proto__']).toEqual({
+      kind: 'accepted', factId: pack.knownFacts[0]!.id,
+      acceptanceId: 'synthetic-acceptance-__proto__',
+    });
+    expect(validated.answers['__proto__']?.value).toBe(pack.knownFacts[0]!.value);
+    expect(validated.answers['__proto__']?.source).toBe('accepted-known-fact');
+    expect(canonicalizeJson(validated)).toBe(before);
+    expect(canonicalizeJson(source)).toBe(sourceBytes);
+
+    const forged = structuredClone(input);
+    forged.knownFactAnswerLinks['__proto__'] = {
+      kind: 'accepted', factId: projected.factId, acceptanceId: 'nonexistent-acceptance',
+    };
+    await expect(validateKnownFactSession14Record(forged))
+      .rejects.toThrow(/acceptance snapshot/i);
+    expect(canonicalizeJson(input)).toBe(before);
+  });
+
 });
