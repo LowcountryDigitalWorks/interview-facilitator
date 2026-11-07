@@ -255,6 +255,50 @@ test('answer, question note, and running note keep focus and selection through a
   await expect(page.locator('[data-save-indicator]')).toContainText(/Saved/);
 });
 
+test('mobile Quick capture autosaves out-of-order notes without changing coverage or Presentation disclosure', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await startFreshInterview(page, 'Synthetic Quick Capture');
+  const quick = page.getByRole('region', { name: 'Quick capture' });
+  const parkingNotes = page.locator('#running-notes');
+  const note = 'Synthetic out-of-order follow-up: ask about access ownership.';
+
+  await expect(quick).toBeVisible();
+  await expect(quick).toContainText('do not count toward coverage');
+  await expect(quick).toContainText('stay private in Presentation view');
+  await expect(parkingNotes).toBeVisible();
+  await expect(page.locator('#context-mobile-panel #running-notes')).toHaveCount(0);
+  await expect(page.locator('[data-coverage-mobile]')).toHaveText('Coverage 0/5');
+
+  await parkingNotes.fill(note);
+  await expect(page.locator('[data-save-indicator]')).toContainText(/Saved/, { timeout: 5000 });
+  await expect(page.locator('[data-coverage-mobile]')).toHaveText('Coverage 0/5');
+
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(parkingNotes).toHaveValue(note);
+  await page.reload();
+  await page.getByRole('button', { name: /Synthetic Quick Capture/ }).click();
+  await expect(parkingNotes).toHaveValue(note);
+  const rows = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+  const saved = rows.find((item) => item.clientLabel === 'Synthetic Quick Capture');
+  expect(saved?.runningNotes).toBe(note);
+  expect(saved?.answers['existing-presence']?.resolution).toBe('unresolved');
+
+  const width = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }));
+  expect(width.scrollWidth).toBeLessThanOrEqual(width.clientWidth + 1);
+
+  await page.getByRole('button', { name: 'Presentation view' }).click();
+  await expect(page.locator('#running-notes')).toHaveCount(0);
+  await expect(page.getByText(note)).toHaveCount(0);
+  await advanceToQuestion(page, 'What absolutely has to be true for the first version to feel successful?');
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await expect(page.getByText(note)).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Exit presentation' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Export full JSON backup' })).toHaveCount(0);
+});
+
 test('an already-cached production shell reloads while offline', async ({ page, context }) => {
   await page.goto('/');
   await page.evaluate(async () => { await navigator.serviceWorker.ready; });
