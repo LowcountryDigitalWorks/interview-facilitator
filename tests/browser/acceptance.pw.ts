@@ -353,6 +353,8 @@ test('Read-back correction focuses heading if parent answer hides originating co
   await page.reload();
   await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
   await page.getByRole('button', { name: 'Presentation view' }).click();
+  // The saved session resumes at the conditional question; advance through Wrap-up first.
+  await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByRole('button', { name: 'Review interview' }).click();
 
   await page.getByRole('button', { name: 'Change How should booking or scheduling work?' }).click();
