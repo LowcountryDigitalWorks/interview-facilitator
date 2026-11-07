@@ -54,6 +54,13 @@ function assertSourceRoots(sourceFacts: readonly KnownFact[], ledger: KnownFactL
   }
 }
 
+/** Set a literal own key without triggering the legacy "__proto__" setter. */
+function setOwnQuestionKey<T>(record: Record<string, T>, questionId: string, value: T): void {
+  Object.defineProperty(record, questionId, {
+    value, writable: true, enumerable: true, configurable: true,
+  });
+}
+
 function validateAnswerLinks(
   raw: unknown,
   session: SemanticInterviewSession,
@@ -83,7 +90,7 @@ function validateAnswerLinks(
       if (answer.resolution === 'captured' && !answer.needsConfirmation) {
         throw new Error('Legacy unverified captured known-fact evidence must require confirmation.');
       }
-      checked[questionId] = { kind: 'legacy-unverified' };
+      setOwnQuestionKey(checked, questionId, { kind: 'legacy-unverified' });
       continue;
     }
     if (link.kind !== 'accepted'
@@ -107,11 +114,11 @@ function validateAnswerLinks(
       && ledger.facts.some((item) => item.supersedesFactId === fact.id)) {
       throw new Error('Superseded known-fact answer must require confirmation.');
     }
-    checked[questionId] = {
+    setOwnQuestionKey(checked, questionId, {
       kind: 'accepted',
       factId: fact.id,
       acceptanceId: acceptance.id,
-    };
+    });
   }
   for (const [questionId, answer] of Object.entries(session.answers)) {
     if (answer.source === 'accepted-known-fact'
@@ -167,7 +174,7 @@ export async function migrateSemantic13ToKnownFact14(raw: unknown): Promise<Know
     if (answer.source !== 'accepted-known-fact') continue;
     // A 1.3 source tag has no durable acceptance ID. Preserve its value and
     // note but never fabricate acceptance history or authoritative coverage.
-    knownFactAnswerLinks[questionId] = { kind: 'legacy-unverified' };
+    setOwnQuestionKey(knownFactAnswerLinks, questionId, { kind: 'legacy-unverified' });
     if (answer.resolution === 'captured') answer.needsConfirmation = true;
   }
   const converted: KnownFactSession14 = {

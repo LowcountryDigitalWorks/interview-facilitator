@@ -162,3 +162,136 @@ test('real DOM clears a previous approved preview when a later review is stale',
   expect(result.itemCount).toBe(0);
   expect(result.noticeCount).toBe(1);
 });
+
+test('real Chromium clears an in-flight successful preview at teardown without stale repaint', async ({ page }) => {
+  const outcome = await page.evaluate(async () => {
+    const load = (path: string) => import(/* @vite-ignore */ path);
+    const [pack, semantic, known, readback, renderer] = await Promise.all([
+      '/src/pack.ts', '/src/semantic-session.ts',
+      '/src/known-fact-session.ts', '/src/client-readback-14.ts',
+      '/src/client-readback-render-14.ts',
+    ].map(load));
+    const source = await semantic.createSemanticSession(pack.generalDiscoveryPack, {
+      clientLabel: 'SYNTHETIC PRIVATE CLIENT',
+    }, new Date('2026-11-05T12:00:00.000Z'));
+    source.answers['primary-goal'] = {
+      value: 'SYNTHETIC DISCLOSABLE TEXT',
+      resolution: 'captured', source: 'client-statement',
+      needsConfirmation: false, confirmation: null,
+      note: 'SYNTHETIC PRIVATE NOTE', followUp: null,
+    };
+    const session = await known.migrateSemantic13ToKnownFact14(source);
+    const review = {
+      ...await readback.prepareKnownFact14ReadBackReviewForReview(session),
+      entries: [{
+        questionId: 'primary-goal', publicLabel: 'SYNTHETIC PUBLIC LABEL',
+        reviewedValue: 'SYNTHETIC DISCLOSABLE TEXT',
+      }],
+    };
+    const host = document.querySelector('#readback-preview') as HTMLElement;
+    const pending = renderer.renderReviewedKnownFact14ReadBackForReview(host, session, review);
+    renderer.invalidateReviewedKnownFact14ReadBackForReview(host);
+    const emptyAtTeardown = host.textContent === '' && host.children.length === 0;
+    const canceledStatus = await pending;
+    const emptyAfterPendingSettles = host.textContent === '' && host.children.length === 0;
+    const restoredStatus = await renderer.renderReviewedKnownFact14ReadBackForReview(
+      host, session, review);
+    const visibleBeforeFinalClear = host.textContent?.includes('SYNTHETIC DISCLOSABLE TEXT') ?? false;
+    renderer.invalidateReviewedKnownFact14ReadBackForReview(host);
+    return {
+      canceledStatus, emptyAtTeardown, emptyAfterPendingSettles, restoredStatus,
+      visibleBeforeFinalClear,
+      emptyAfterFinalClear: host.textContent === '' && host.children.length === 0,
+    };
+  });
+  expect(outcome).toEqual({
+    canceledStatus: 'superseded',
+    emptyAtTeardown: true,
+    emptyAfterPendingSettles: true,
+    restoredStatus: 'rendered',
+    visibleBeforeFinalClear: true,
+    emptyAfterFinalClear: true,
+  });
+});
+
+test('real Chromium teardown suppresses a stale pending rejection notice and prior preview', async ({ page }) => {
+  const outcome = await page.evaluate(async () => {
+    const load = (path: string) => import(/* @vite-ignore */ path);
+    const [pack, semantic, known, readback, renderer] = await Promise.all([
+      '/src/pack.ts', '/src/semantic-session.ts',
+      '/src/known-fact-session.ts', '/src/client-readback-14.ts',
+      '/src/client-readback-render-14.ts',
+    ].map(load));
+    const source = await semantic.createSemanticSession(pack.generalDiscoveryPack, {
+      clientLabel: 'SYNTHETIC PRIVATE CLIENT',
+    }, new Date('2026-11-05T12:00:00.000Z'));
+    const session = await known.migrateSemantic13ToKnownFact14(source);
+    const valid = {
+      ...await readback.prepareKnownFact14ReadBackReviewForReview(session),
+      entries: [] as Array<unknown>,
+    };
+    const host = document.querySelector('#readback-preview') as HTMLElement;
+    const initial = await renderer.renderReviewedKnownFact14ReadBackForReview(host, session, valid);
+    const previouslyDisplayed = host.textContent?.includes('No items selected for disclosure.') ?? false;
+    const pendingFailure = renderer.renderReviewedKnownFact14ReadBackForReview(host, session, {
+      ...valid, expectedRevisionId: 'SYNTHETIC PRIVATE STALE REVISION',
+    });
+    const clearedOnNewReview = host.textContent === '' && host.children.length === 0;
+    renderer.invalidateReviewedKnownFact14ReadBackForReview(host);
+    let rejected = false;
+    try {
+      await pendingFailure;
+    } catch {
+      rejected = true;
+    }
+    return {
+      initial, previouslyDisplayed, clearedOnNewReview, rejected,
+      emptyAfterStaleRejection: host.textContent === '' && host.children.length === 0,
+    };
+  });
+  expect(outcome).toEqual({
+    initial: 'rendered',
+    previouslyDisplayed: true,
+    clearedOnNewReview: true,
+    rejected: true,
+    emptyAfterStaleRejection: true,
+  });
+});
+
+test('real Chromium rejects invisible Unicode in client-facing Read-back labels', async ({ page }) => {
+  const outcome = await page.evaluate(async () => {
+    const load = (path: string) => import(/* @vite-ignore */ path);
+    const [pack, semantic, known, readback, renderer] = await Promise.all([
+      '/src/pack.ts', '/src/semantic-session.ts',
+      '/src/known-fact-session.ts', '/src/client-readback-14.ts',
+      '/src/client-readback-render-14.ts',
+    ].map(load));
+    const source = await semantic.createSemanticSession(pack.generalDiscoveryPack, {
+      clientLabel: 'SYNTHETIC PRIVATE CLIENT',
+    }, new Date('2026-11-05T12:00:00.000Z'));
+    const session = await known.migrateSemantic13ToKnownFact14(source);
+    const review = {
+      ...await readback.prepareKnownFact14ReadBackReviewForReview(session),
+      entries: [{
+        questionId: 'primary-goal', publicLabel: 'SYNTHETIC\u200B HIDDEN-LABEL',
+        reviewedValue: null,
+      }],
+    };
+    const host = document.querySelector('#readback-preview') as HTMLElement;
+    let rejected = false;
+    try {
+      await renderer.renderReviewedKnownFact14ReadBackForReview(host, session, review);
+    } catch {
+      rejected = true;
+    }
+    return {
+      rejected,
+      text: host.textContent,
+      count: host.querySelectorAll('ol > li').length,
+    };
+  });
+  expect(outcome.rejected).toBe(true);
+  expect(outcome.text).toBe('Read-back unavailable. Review the current session before presenting.');
+  expect(outcome.text).not.toContain('HIDDEN-LABEL');
+  expect(outcome.count).toBe(0);
+});
