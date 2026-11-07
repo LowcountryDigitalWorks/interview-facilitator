@@ -68,10 +68,11 @@ test('atomic Draft→read-back→Completed→reopened Draft survives canonical e
       get(tx.objectStore('trial-session').get(session.sessionId)),
       get(tx.objectStore('trial-backup').get(session.sessionId)),
     ]);
-    const verifiedHistory = history.length === 3 && history.every((item) => item !== undefined)
-      && history[0]?.lifecycle?.status === 'draft'
-      && history[1]?.lifecycle?.status === 'draft'
-      && history[2]?.lifecycle?.status === 'completed';
+    const historic = history as Array<{ lifecycle: { status: string } } | undefined>;
+    const verifiedHistory = historic.length === 3 && historic.every((item) => item !== undefined)
+      && historic[0]?.lifecycle?.status === 'draft'
+      && historic[1]?.lifecycle?.status === 'draft'
+      && historic[2]?.lifecycle?.status === 'completed';
     db.close();
 
     // Simulate local trial database loss, then restore from explicitly held
