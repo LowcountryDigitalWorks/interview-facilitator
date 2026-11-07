@@ -100,6 +100,62 @@ describe('#34B versioned dormant Draft / Completed / reopen contract', () => {
     })).rejects.toThrow(/only a completed/i);
   });
 
+  it('rejects forged reopened Draft parent and time without changing preserved completion', async () => {
+    const { session, lifecycle } = await draftLifecycle();
+    const completed = await completeKnownFactLifecycle14(lifecycle, {
+      expectedRevisionId: session.revisionId,
+      eventId: 'complete-parent-guard', completedAt: '2026-11-05T12:05:00.000Z',
+      acknowledgedFollowUpQuestionIds: [],
+    });
+    const draft = await reopenKnownFactLifecycle14(completed, {
+      expectedRevisionId: session.revisionId, eventId: 'reopen-parent-guard',
+      newRevisionId: 'synthetic-next-revision', reopenedAt: '2026-11-05T12:10:00.000Z',
+    });
+    const retained = canonicalizeJson(draft.completedRevisions[0]!.sessionSnapshot);
+    const alteredParent = structuredClone(draft);
+    alteredParent.session.parentRevisionId = 'unrelated-parent';
+    await expect(validateKnownFactLifecycle14(alteredParent))
+      .rejects.toThrow(/reopened draft.*parent/i);
+    const backdated = structuredClone(draft);
+    backdated.session.updatedAt = '2026-11-05T12:06:00.000Z';
+    await expect(validateKnownFactLifecycle14(backdated))
+      .rejects.toThrow(/reopened draft.*reopen time/i);
+    expect(canonicalizeJson(draft.completedRevisions[0]!.sessionSnapshot)).toBe(retained);
+    await expect(validateKnownFactLifecycle14(draft)).resolves.toEqual(draft);
+  });
+
+  it('rejects forged completed-reopen lineage and immutable pinned interview identity', async () => {
+    const { session, lifecycle } = await draftLifecycle();
+    const first = await completeKnownFactLifecycle14(lifecycle, {
+      expectedRevisionId: session.revisionId,
+      eventId: 'complete-original', completedAt: '2026-11-05T12:05:00.000Z',
+      acknowledgedFollowUpQuestionIds: [],
+    });
+    const reopened = await reopenKnownFactLifecycle14(first, {
+      expectedRevisionId: session.revisionId, eventId: 'reopen-next',
+      newRevisionId: 'synthetic-second-completion', reopenedAt: '2026-11-05T12:10:00.000Z',
+    });
+    const second = await completeKnownFactLifecycle14(reopened, {
+      expectedRevisionId: 'synthetic-second-completion',
+      eventId: 'complete-again', completedAt: '2026-11-05T12:12:00.000Z',
+      acknowledgedFollowUpQuestionIds: [],
+    });
+    const wrongParent = structuredClone(second);
+    wrongParent.session.parentRevisionId = 'unrelated-parent';
+    wrongParent.completedRevisions[1]!.sessionSnapshot.parentRevisionId = 'unrelated-parent';
+    await expect(validateKnownFactLifecycle14(wrongParent))
+      .rejects.toThrow(/completed reopened revision.*parent/i);
+
+    // The individual session snapshots remain valid, but the lifecycle is not:
+    // a later completion cannot claim a different creation identity.
+    const changedOrigin = structuredClone(second);
+    changedOrigin.session.createdAt = '2026-11-05T11:00:00.000Z';
+    changedOrigin.completedRevisions[1]!.sessionSnapshot.createdAt = '2026-11-05T11:00:00.000Z';
+    await expect(validateKnownFactLifecycle14(changedOrigin))
+      .rejects.toThrow(/immutable pinned interview identity/i);
+    await expect(validateKnownFactLifecycle14(second)).resolves.toEqual(second);
+  });
+
   it('rejects completion and read-back timestamps earlier than captured source evidence', async () => {
     const { session, lifecycle } = await draftLifecycle();
     const prior = '2026-11-05T11:59:59.999Z';
