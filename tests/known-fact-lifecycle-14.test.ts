@@ -154,6 +154,11 @@ describe('#34B versioned dormant Draft / Completed / reopen contract', () => {
     changedOrigin.completedRevisions[1]!.sessionSnapshot.createdAt = '2026-11-05T11:00:00.000Z';
     await expect(validateKnownFactLifecycle14(changedOrigin))
       .rejects.toThrow(/immutable pinned interview identity/i);
+
+    const swappedHistory = structuredClone(second);
+    swappedHistory.completedRevisions.reverse();
+    await expect(validateKnownFactLifecycle14(swappedHistory))
+      .rejects.toThrow(/completion event order/i);
     await expect(validateKnownFactLifecycle14(second)).resolves.toEqual(second);
   });
 
