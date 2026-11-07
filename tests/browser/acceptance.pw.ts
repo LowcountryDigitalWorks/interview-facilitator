@@ -361,7 +361,7 @@ test('Read-back correction focuses heading if parent answer hides originating co
   await expect(page.getByRole('button', { name: 'Return to Read-back' })).toBeVisible();
   await page.locator('[data-action="back"]').click();
   await expect(page.getByRole('heading', { name: 'Do people need to request or book time?', level: 1 })).toBeVisible();
-  await page.getByRole('radio', { name: 'No' }).check();
+  await page.getByRole('radio', { name: 'No', exact: true }).check();
   await page.getByRole('button', { name: 'Return to Read-back' }).click();
 
   await expect(page.locator('#review-title')).toBeFocused();
