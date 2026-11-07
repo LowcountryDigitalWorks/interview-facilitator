@@ -83,6 +83,11 @@ textarea { resize: vertical; line-height: 1.5; }
 .question-help { max-width: 58ch; margin: 0 0 1.5rem; color: var(--muted); line-height: 1.55; }
 .answer-block { margin: 1.5rem 0; }
 .answer-block textarea, .answer-block input { font-size: 1.05rem; }
+.quick-capture { min-width: 0; margin: 1.2rem 0; padding: 1rem; background: #fff; border: 1px solid var(--line); border-radius: 12px; }
+.quick-capture h2 { margin: 0 0 .3rem; font-size: 1.08rem; }
+.quick-capture p { margin: 0 0 .8rem; color: var(--muted); font-size: .88rem; line-height: 1.5; }
+.quick-capture textarea { min-width: 0; }
+
 .choice-group { display: grid; gap: .65rem; padding: 0; border: 0; }
 .choice { display: flex; gap: .75rem; align-items: center; padding: .85rem; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
 .choice input { width: auto; }
