@@ -337,6 +337,40 @@ test('Change and Return to Read-back work on a 320px phone without stale return 
   await expect(page.getByRole('button', { name: 'Return to Read-back' })).toHaveCount(0);
 });
 
+test('Read-back correction focuses heading if parent answer hides originating conditional row', async ({ page }) => {
+  await page.goto('/');
+  const row = await syntheticSession('synthetic-conditional-return-focus');
+  row.currentQuestionId = 'booking-process';
+  row.answers['needs-booking'] = {
+    value: 'Yes', resolution: 'captured', source: 'client-statement',
+    needsConfirmation: false, confirmation: null, followUp: null, note: '',
+  };
+  row.answers['booking-process'] = {
+    value: 'Synthetic booking detail', resolution: 'captured', source: 'client-statement',
+    needsConfirmation: false, confirmation: null, followUp: null, note: 'private scheduling note',
+  };
+  await putRawSession(page, row);
+  await page.reload();
+  await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
+  await page.getByRole('button', { name: 'Presentation view' }).click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+
+  await page.getByRole('button', { name: 'Change How should booking or scheduling work?' }).click();
+  await expect(page.getByRole('button', { name: 'Return to Read-back' })).toBeVisible();
+  await page.locator('[data-action="back"]').click();
+  await expect(page.getByRole('heading', { name: 'Do people need to request or book time?', level: 1 })).toBeVisible();
+  await page.getByRole('radio', { name: 'No' }).check();
+  await page.getByRole('button', { name: 'Return to Read-back' }).click();
+
+  await expect(page.locator('#review-title')).toBeFocused();
+  await expect(page.getByRole('button', { name: 'Change How should booking or scheduling work?' })).toHaveCount(0);
+  await expect(page.locator('.summary-row', { hasText: 'Do people need to request or book time?' })).toContainText('No');
+  await expect(page.getByText('private scheduling note')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Exit presentation' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Export full JSON backup' })).toHaveCount(0);
+  await expect(page.locator('.context-rail')).toHaveCount(0);
+});
+
 async function startFreshInterview(page: Page, clientLabel = 'Synthetic Browser Test'): Promise<void> {
   await page.goto('/');
   await page.getByRole('button', { name: 'New interview' }).click();
