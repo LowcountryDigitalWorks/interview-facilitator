@@ -628,6 +628,11 @@ function renderInterview(): void {
         ${question.help ? `<p id="question-help" class="question-help">${escapeHtml(question.help)}</p>` : ''}
         <div class="answer-block">${answerControl(question, state.value ?? '')}</div>
         ${presenting ? '' : `<label class="notes-label">Question notes <span>internal</span><textarea id="question-note" rows="3" placeholder="Optional interviewer note">${escapeHtml(state.note)}</textarea></label>
+        <section class="quick-capture" aria-labelledby="quick-capture-title">
+          <h2 id="quick-capture-title">Quick capture</h2>
+          <p id="quick-capture-help">Park volunteered or out-of-order details here. Notes autosave locally, stay private in Presentation view, and do not count toward coverage until you transfer them into a question answer.</p>
+          <label class="notes-label">Parking notes <span>internal</span><textarea id="running-notes" rows="4" aria-describedby="quick-capture-help" placeholder="Notes to revisit during this interview">${escapeHtml(session.runningNotes)}</textarea></label>
+        </section>
         <fieldset class="status-fieldset"><legend>Question status</legend><div class="status-grid">${statusOptions.map((option) => { const selected = statusControlForState(state) === option.value; return `<label class="status-chip ${selected ? 'selected' : ''}"><input type="radio" name="status" value="${option.value}" ${selected ? 'checked' : ''}/><span>${escapeHtml(option.label)}</span></label>`; }).join('')}</div></fieldset>`}
         ${readBackReturnTarget?.sessionId === session.sessionId ? '<div class="button-row"><button class="secondary" type="button" data-action="return-to-readback">Return to Read-back</button></div>' : ''}
         <div class="action-dock"><button class="secondary" data-action="back" ${nextVisibleQuestion(session, question.id, -1) ? '' : 'disabled'}>Back</button><button class="primary" data-action="next">${nextVisibleQuestion(session, question.id, 1) ? 'Continue' : 'Review interview'}</button></div>
@@ -635,7 +640,6 @@ function renderInterview(): void {
       ${presenting ? '' : `<aside class="context-rail" id="context-mobile-panel" aria-labelledby="context-panel-title">
         <button class="text-button mobile-panel-close" data-action="close-mobile-panel">Close context</button>
         <section><p class="eyebrow" id="context-panel-title">Known context</p>${facts.length ? facts.map((fact) => `<div class="fact-card"><strong>${escapeHtml(fact.label)}</strong><p>${escapeHtml(fact.value)}</p><small>${escapeHtml(fact.provenance)}</small></div>`).join('') : '<p class="muted">No known facts linked to this question.</p>'}</section>
-        <section><label class="notes-label">Running notes <span>internal</span><textarea id="running-notes" rows="10" placeholder="Cross-question notes">${escapeHtml(session.runningNotes)}</textarea></label></section>
       </aside>`}
     </main>`;
 
