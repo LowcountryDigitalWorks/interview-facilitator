@@ -104,6 +104,42 @@ test('Home distinguishes a legitimate empty database and meets the initial axe f
   expect(consequential).toEqual([]);
 });
 
+test('Prepare exposes pinned pack, reference provenance and distinct readiness without auto-accepting facts', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+
+  await expect(page.getByRole('heading', { name: 'Prepare this interview' })).toBeVisible();
+  await expect(page.getByText('Prepare · General discovery · pack v1.0.0')).toBeVisible();
+  const context = page.getByRole('region', { name: 'Known context for review' });
+  await expect(context).toContainText('Existing online presence');
+  await expect(context).toContainText('A basic public website already exists.');
+  await expect(context).toContainText('Source: Synthetic pre-interview research');
+  await expect(context).toContainText('does not accept or confirm');
+
+  const readiness = page.getByRole('region', { name: 'Before you start' });
+  await expect(readiness.locator('[data-prepare-save]')).toContainText('Not saved yet');
+  await expect(readiness.locator('[data-prepare-offline]')).toContainText(/offline shell ready|Offline readiness has not been confirmed/);
+  await expect(readiness.locator('[data-prepare-storage]')).toContainText(/protected storage|Best effort|Protection not yet checked/);
+  await expect(readiness).toContainText('Export JSON backup');
+  const viewport = await page.evaluate(() => ({
+    width: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.width + 1);
+
+  await page.getByLabel('Project or client label').fill('Synthetic Prepare Check');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  await expect(page.getByRole('heading', { name: 'What is already in place today?', level: 1 })).toBeVisible();
+  const rows = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+  const stored = rows.find((item) => item.clientLabel === 'Synthetic Prepare Check');
+  expect(stored).toBeDefined();
+  expect(stored?.answers['existing-presence']).toMatchObject({
+    value: null, resolution: 'unresolved', source: null, confirmation: null,
+  });
+  expect(stored?.knownFacts[0]?.provenance).toBe('Synthetic pre-interview research');
+});
+
 test('one malformed IndexedDB row does not hide a healthy local interview', async ({ page }) => {
   await page.goto('/');
   await putRawSession(page, await syntheticSession());
