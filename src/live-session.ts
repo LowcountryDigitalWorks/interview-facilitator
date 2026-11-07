@@ -211,19 +211,26 @@ export function applyReactivationReviews(
       state,
       captureSpecForQuestion(question),
     );
-    session.answers[question.id] = {
-      value: reviewed.value as string | null,
-      resolution: reviewed.resolution,
-      source: reviewed.source,
-      needsConfirmation: reviewed.needsConfirmation,
-      confirmation: reviewed.confirmation === null ? null : {
-        revisionId: reviewed.confirmation.revisionId,
-        confirmedAt: reviewed.confirmation.confirmedAt,
-        value: reviewed.confirmation.value as string,
+    // Preserve an own answer key even when a valid question ID is "__proto__".
+    // Bracket assignment into a {} record would silently mutate its prototype.
+    Object.defineProperty(session.answers, question.id, {
+      value: {
+        value: reviewed.value as string | null,
+        resolution: reviewed.resolution,
+        source: reviewed.source,
+        needsConfirmation: reviewed.needsConfirmation,
+        confirmation: reviewed.confirmation === null ? null : {
+          revisionId: reviewed.confirmation.revisionId,
+          confirmedAt: reviewed.confirmation.confirmedAt,
+          value: reviewed.confirmation.value as string,
+        },
+        followUp: reviewed.followUp,
+        note: state.note,
       },
-      followUp: reviewed.followUp,
-      note: state.note,
-    };
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
   }
 }
 
