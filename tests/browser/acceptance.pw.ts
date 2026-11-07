@@ -277,6 +277,66 @@ test('Presentation read-back stays public across Change and masks retained defer
 
 });
 
+test('Read-back Change returns to the originating row and preserves Presentation disclosure boundary', async ({ page }) => {
+  await page.goto('/');
+  const row = await syntheticSession('synthetic-change-return-presentation');
+  row.currentQuestionId = 'must-have';
+  row.answers['existing-presence'] = {
+    value: 'Previously agreed synthetic detail', resolution: 'captured', source: 'client-statement',
+    needsConfirmation: false, confirmation: null, followUp: null, note: 'private question note',
+  };
+  row.runningNotes = 'private running note';
+  await putRawSession(page, row);
+  await page.reload();
+  await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
+  await page.getByRole('button', { name: 'Presentation view' }).click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+
+  const change = page.getByRole('button', { name: 'Change What is already in place today?' });
+  await change.click();
+  await expect(page.getByRole('heading', { name: 'What is already in place today?', level: 1 })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Exit presentation' })).toBeVisible();
+  await expect(page.locator('.context-rail')).toHaveCount(0);
+  await expect(page.getByText('private question note')).toHaveCount(0);
+  await page.locator('#answer').fill('Updated public synthetic detail');
+
+  await page.getByRole('button', { name: 'Return to Read-back' }).click();
+  await expect(change).toBeFocused();
+  await expect(page.locator('.summary-row', { hasText: 'What is already in place today?' }))
+    .toContainText('Updated public synthetic detail');
+  await expect(page.getByRole('button', { name: 'Exit presentation' })).toBeVisible();
+  await expect(page.locator('.context-rail')).toHaveCount(0);
+  await expect(page.getByText('private question note')).toHaveCount(0);
+  await expect(page.getByText('private running note')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Export full JSON backup' })).toHaveCount(0);
+});
+
+test('Change and Return to Read-back work on a 320px phone without stale return controls', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await startFreshInterview(page, 'Synthetic Phone Read-back');
+  await advanceToQuestion(page, 'What absolutely has to be true for the first version to feel successful?');
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  const change = page.getByRole('button', { name: 'Change What is already in place today?' });
+  await change.click();
+
+  const returnButton = page.getByRole('button', { name: 'Return to Read-back' });
+  await expect(returnButton).toBeVisible();
+  await page.locator('#answer').fill('Synthetic mobile correction');
+  await returnButton.click();
+  await expect(change).toBeFocused();
+  await expect(page.locator('.summary-row', { hasText: 'What is already in place today?' }))
+    .toContainText('Synthetic mobile correction');
+  const viewport = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }));
+  expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.clientWidth + 1);
+
+  await page.getByRole('button', { name: 'Return to interview' }).click();
+  await expect(page.getByRole('button', { name: 'Return to Read-back' })).toHaveCount(0);
+});
+
 async function startFreshInterview(page: Page, clientLabel = 'Synthetic Browser Test'): Promise<void> {
   await page.goto('/');
   await page.getByRole('button', { name: 'New interview' }).click();
