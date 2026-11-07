@@ -60,6 +60,7 @@ test('reviewed Read-back has semantic headings/list and does not steal interview
         .map(node => node.tagName.toLowerCase()),
       reviewedListCount: host.querySelectorAll('ol > li').length,
       noUnexpectedControls: host.querySelectorAll('button, a[href], input, textarea, [tabindex]').length === 0,
+      noLiveRegionOnSuccessfulPreview: host.querySelector('[role="alert"], [aria-live]') === null,
       disclaimerPresent: renderedText.includes('For discussion only; not a confirmation'),
       selectionPresent: renderedText.includes('SYNTHETIC REVIEWED GOAL')
         && renderedText.includes('SYNTHETIC REVIEWED VALUE')
@@ -75,6 +76,7 @@ test('reviewed Read-back has semantic headings/list and does not steal interview
     headingLevels: ['h1', 'h2', 'h3'],
     reviewedListCount: 1,
     noUnexpectedControls: true,
+    noLiveRegionOnSuccessfulPreview: true,
     disclaimerPresent: true,
     selectionPresent: true,
     privateFieldsAbsent: true,
@@ -135,6 +137,8 @@ test('stale review clears selected disclosure without moving interviewer focus',
         'Read-back unavailable. Review the current session before presenting.',
       noPriorDisclosure: !(host.textContent ?? '').includes('SYNTHETIC REVIEWED VALUE'),
       noPrivateRevision: !(host.textContent ?? '').includes('SYNTHETIC PRIVATE'),
+      genericFailureAlert: host.querySelector('[role="alert"]')?.textContent ===
+        'Read-back unavailable. Review the current session before presenting.',
       noOldHeadingsOrList: host.querySelectorAll('h2,h3,ol,li').length === 0,
       noNewControls: host.querySelectorAll('button, a[href], input, textarea').length === 0,
     };
@@ -147,6 +151,7 @@ test('stale review clears selected disclosure without moving interviewer focus',
     onlyGenericNotice: true,
     noPriorDisclosure: true,
     noPrivateRevision: true,
+    genericFailureAlert: true,
     noOldHeadingsOrList: true,
     noNewControls: true,
   });
