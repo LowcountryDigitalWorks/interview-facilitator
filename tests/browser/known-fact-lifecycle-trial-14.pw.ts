@@ -62,11 +62,14 @@ test('atomic Draft→read-back→Completed→reopened Draft survives canonical e
       request.onerror = () => reject(request.error);
     });
     const historyStore = tx.objectStore('trial-history');
-    const history = await Promise.all([0, 1, 2].map((generation) =>
-      get(historyStore.get(trial.lifecycleTrialHistoryKey(session.sessionId, generation)))));
-    const [storedSession, storedBackup] = await Promise.all([
-      get(tx.objectStore('trial-session').get(session.sessionId)),
-      get(tx.objectStore('trial-backup').get(session.sessionId)),
+    // Queue ALL requests before awaiting: IndexedDB may auto-commit as soon
+    // as the event loop returns with no pending requests.
+    const historyRequests = [0, 1, 2].map((generation) =>
+      get(historyStore.get(trial.lifecycleTrialHistoryKey(session.sessionId, generation))));
+    const sessionRequest = get(tx.objectStore('trial-session').get(session.sessionId));
+    const backupRequest = get(tx.objectStore('trial-backup').get(session.sessionId));
+    const [history, storedSession, storedBackup] = await Promise.all([
+      Promise.all(historyRequests), sessionRequest, backupRequest,
     ]);
     const historic = history as Array<{ lifecycle: { status: string } } | undefined>;
     const verifiedHistory = historic.length === 3 && historic.every((item) => item !== undefined)
