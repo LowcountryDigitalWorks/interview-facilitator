@@ -208,6 +208,19 @@ export async function validateKnownFactLifecycle14(raw: unknown): Promise<KnownF
     } else throw new Error('Unsupported lifecycle event.');
   }
 
+  // The preserved snapshots are append-only in completion order. Otherwise
+  // reordering an otherwise valid array could bypass the provenance-prefix
+  // check above while event replay still points to the same revision IDs.
+  const completedEvents = events.filter((event) => event.type === 'completed');
+  if (completedEvents.length !== completedRevisions.length
+    || completedRevisions.some((item, index) => {
+      const event = completedEvents[index];
+      return event?.type !== 'completed'
+        || event.revisionId !== item.revisionId
+        || event.eventId !== item.completionEventId;
+    })) {
+    throw new Error('Completed revision records must follow lifecycle completion event order.');
+  }
   for (const item of completedRevisions) {
     if (completionEventByRevision.get(item.revisionId) !== item.completionEventId) throw new Error('Completed revision is missing its matching completion event.');
   }
