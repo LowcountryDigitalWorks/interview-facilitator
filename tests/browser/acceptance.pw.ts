@@ -336,6 +336,90 @@ test('textarea answer exposes prompt and helper in its accessible name and descr
   await expect(answer).toHaveAccessibleDescription('Confirm the known context or capture what has changed.');
 });
 
+test('render boundary preflight retains answer node, focus and caret during synthetic IME input and autosave', async ({ page }) => {
+  await startFreshInterview(page, 'Synthetic IME Boundary');
+  const answer = page.locator('#answer');
+  await answer.fill('abcdefghij');
+  await answer.focus();
+  await answer.evaluate((element) => {
+    const field = element as HTMLTextAreaElement;
+    (window as Window & { __ldw36Answer?: HTMLTextAreaElement }).__ldw36Answer = field;
+    field.setSelectionRange(2, 7);
+    // Synthetic composition events test the DOM render boundary, not physical keyboard IME compatibility.
+    field.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: 'あ' }));
+    field.dispatchEvent(new InputEvent('input', {
+      bubbles: true, inputType: 'insertCompositionText', data: 'あ', isComposing: true,
+    }));
+  });
+
+  await expect(page.locator('[data-save-indicator]')).toContainText(/Saved/, { timeout: 5000 });
+  const snapshot = await page.evaluate(() => {
+    const original = (window as Window & { __ldw36Answer?: HTMLTextAreaElement }).__ldw36Answer;
+    const current = document.querySelector<HTMLTextAreaElement>('#answer');
+    return {
+      sameNode: original === current,
+      connected: original?.isConnected ?? false,
+      focused: document.activeElement === current,
+      value: current?.value,
+      selectionStart: current?.selectionStart,
+      selectionEnd: current?.selectionEnd,
+    };
+  });
+  expect(snapshot).toEqual({
+    sameNode: true, connected: true, focused: true,
+    value: 'abcdefghij', selectionStart: 2, selectionEnd: 7,
+  });
+  await answer.evaluate((element) => {
+    element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'あ' }));
+  });
+  await expect(answer).toBeFocused();
+});
+
+test('render boundary preflight preserves capture and context nodes across status and note updates', async ({ page }) => {
+  await startFreshInterview(page, 'Synthetic Context Boundary');
+  const answer = page.locator('#answer');
+  const runningNotes = page.locator('#running-notes');
+  await answer.fill('Existing synthetic context');
+  await answer.evaluate((element) => {
+    const field = element as HTMLTextAreaElement;
+    field.setSelectionRange(4, 9);
+    (window as Window & { __ldw36Answer?: HTMLTextAreaElement }).__ldw36Answer = field;
+  });
+  await runningNotes.evaluate((element) => {
+    (window as Window & { __ldw36Running?: HTMLTextAreaElement }).__ldw36Running = element as HTMLTextAreaElement;
+  });
+
+  await page.locator('label.status-chip', { hasText: 'N/A' }).click();
+  await expect(page.locator('[data-coverage-resolved]')).toContainText('1 N/A');
+  await page.locator('#question-note').fill('Synthetic private question note');
+  await runningNotes.fill('Synthetic private running note');
+  await expect(page.locator('[data-save-indicator]')).toContainText(/Saved/, { timeout: 5000 });
+
+  const snapshot = await page.evaluate(() => {
+    const windowRefs = window as Window & {
+      __ldw36Answer?: HTMLTextAreaElement;
+      __ldw36Running?: HTMLTextAreaElement;
+    };
+    const currentAnswer = document.querySelector<HTMLTextAreaElement>('#answer');
+    const currentRunning = document.querySelector<HTMLTextAreaElement>('#running-notes');
+    return {
+      sameAnswer: windowRefs.__ldw36Answer === currentAnswer,
+      sameRunning: windowRefs.__ldw36Running === currentRunning,
+      focusedRunning: document.activeElement === currentRunning,
+      answerValue: currentAnswer?.value,
+      answerSelectionStart: currentAnswer?.selectionStart,
+      answerSelectionEnd: currentAnswer?.selectionEnd,
+      questionNote: document.querySelector<HTMLTextAreaElement>('#question-note')?.value,
+      runningNote: currentRunning?.value,
+    };
+  });
+  expect(snapshot).toEqual({
+    sameAnswer: true, sameRunning: true, focusedRunning: true,
+    answerValue: 'Existing synthetic context', answerSelectionStart: 4, answerSelectionEnd: 9,
+    questionNote: 'Synthetic private question note', runningNote: 'Synthetic private running note',
+  });
+});
+
 test('status radio keeps focus and node identity through autosave update', async ({ page }) => {
   await startFreshInterview(page);
   await page.locator('#answer').fill('Current state summary');
