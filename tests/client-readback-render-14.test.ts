@@ -126,6 +126,39 @@ describe('#35E dormant textContent-only read-back renderer', () => {
     expect(visible(host)).not.toContain('stale');
   });
 
+  it('replaces a reviewed preview with one generic role=alert when an answer changes after review', async () => {
+    const session = await fixture(), host = root();
+    const selected = await review(session, [{
+      questionId: 'primary-goal', publicLabel: 'SYNTHETIC REVIEWED GOAL',
+      reviewedValue: '<script>alert(1)</script> SYNTHETIC PUBLIC VALUE',
+    }]);
+    expect(await renderReviewedKnownFact14ReadBackForReview(
+      asHost(host), session, selected,
+    )).toBe('rendered');
+    expect(visible(host)).toContain('SYNTHETIC REVIEWED GOAL');
+
+    const changed = structuredClone(session);
+    changed.answers['primary-goal']!.value = 'PRIVATE UPDATED ANSWER';
+    // Keep the review's source snapshot current, but deliberately retain an
+    // obsolete reviewedValue to exercise the value-diff guard (not the earlier
+    // stale-snapshot rejection).
+    const mismatched = await review(changed, [{
+      questionId: 'primary-goal', publicLabel: 'SYNTHETIC REVIEWED GOAL',
+      reviewedValue: '<script>alert(1)</script> SYNTHETIC PUBLIC VALUE',
+    }]);
+    await expect(renderReviewedKnownFact14ReadBackForReview(
+      asHost(host), changed, mismatched,
+    )).rejects.toThrow(/differs/);
+
+    expect(host.children).toHaveLength(1);
+    expect(host.children[0]?.tag).toBe('p');
+    expect(host.children[0]?.getAttribute('role')).toBe('alert');
+    expect(visible(host)).toBe('Read-back unavailable. Review the current session before presenting.');
+    expect(visible(host)).not.toContain('SYNTHETIC REVIEWED GOAL');
+    expect(visible(host)).not.toContain('SYNTHETIC PUBLIC VALUE');
+    expect(visible(host)).not.toContain('PRIVATE UPDATED ANSWER');
+  });
+
   it('does not revive a superseded selection when concurrent renders race', async () => {
     const session = await fixture(), host = root();
     const olderReview = await review(session, [{
