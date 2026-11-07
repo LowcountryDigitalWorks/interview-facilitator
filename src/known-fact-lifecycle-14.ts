@@ -65,6 +65,34 @@ function same(left: unknown, right: unknown): boolean {
   return canonicalizeJson(left) === canonicalizeJson(right);
 }
 
+/**
+ * A completion/reopen chain may update answers and append evidence, but it
+ * cannot silently substitute a different pinned interview or rewrite earlier
+ * known-fact evidence. Mirror the immutable-source and append-only contract
+ * used by the separately reviewed 1.4 storage adapter.
+ */
+function assertLifecycleSourceContinuity(previous: KnownFactSession14, next: KnownFactSession14): void {
+  if (previous.sessionId !== next.sessionId
+    || previous.createdAt !== next.createdAt
+    || previous.interviewPackId !== next.interviewPackId
+    || previous.interviewPackVersion !== next.interviewPackVersion
+    || !same(previous.packSnapshot, next.packSnapshot)
+    || !same(previous.packIdentity, next.packIdentity)
+    || !same(previous.knownFacts, next.knownFacts)) {
+    throw new Error('Lifecycle history changed immutable pinned interview identity.');
+  }
+  const earlierFacts = previous.knownFactLedger.facts;
+  const laterFacts = next.knownFactLedger.facts;
+  const earlierAcceptances = previous.knownFactLedger.acceptances;
+  const laterAcceptances = next.knownFactLedger.acceptances;
+  if (laterFacts.length < earlierFacts.length
+    || laterAcceptances.length < earlierAcceptances.length
+    || !same(laterFacts.slice(0, earlierFacts.length), earlierFacts)
+    || !same(laterAcceptances.slice(0, earlierAcceptances.length), earlierAcceptances)) {
+    throw new Error('Lifecycle history must retain append-only known-fact provenance.');
+  }
+}
+
 /** Strict validator for the independent lifecycle envelope; future formats fail closed. */
 export async function validateKnownFactLifecycle14(raw: unknown): Promise<KnownFactLifecycle14> {
   const input = record(raw, 'Lifecycle envelope');
@@ -110,12 +138,24 @@ export async function validateKnownFactLifecycle14(raw: unknown): Promise<KnownF
     completedRevisions.push(checked);
   }
 
+  // Immutable completed snapshots are chronological; the active Draft must
+  // also preserve every earlier pinned source and append-only evidence root.
+  for (let i = 1; i < completedRevisions.length; i += 1) {
+    assertLifecycleSourceContinuity(
+      completedRevisions[i - 1]!.sessionSnapshot, completedRevisions[i]!.sessionSnapshot,
+    );
+  }
+  if (completedRevisions.length > 0) {
+    assertLifecycleSourceContinuity(completedRevisions.at(-1)!.sessionSnapshot, session);
+  }
+
   const events: KnownFactLifecycleEvent14[] = [];
   const eventIds = new Set<string>();
   const completionEventByRevision = new Map<string, string>();
   let previousTime = '';
   let replayStatus: 'draft' | 'completed' = 'draft';
   let replayRevisionId: string | null = null;
+  let pendingReopen: { fromRevisionId: string; reopenedAt: string } | null = null;
   for (const [index, rawEvent] of input.events.entries()) {
     const event = record(rawEvent, `Lifecycle event ${index}`);
     const type = event.type;
@@ -132,6 +172,13 @@ export async function validateKnownFactLifecycle14(raw: unknown): Promise<KnownF
       if (!entry || entry.completionEventId !== eventId || entry.completedAt !== occurredAt
         || !same(entry.acknowledgedFollowUpQuestionIds, acknowledged)) throw new Error('Completion event does not match its immutable completed snapshot.');
       if (replayStatus === 'completed' || (replayRevisionId !== null && replayRevisionId !== revisionId)) throw new Error('Completion event is out of lifecycle order or references a stale revision.');
+      if (pendingReopen !== null) {
+        if (entry.sessionSnapshot.parentRevisionId !== pendingReopen.fromRevisionId
+          || entry.sessionSnapshot.updatedAt < pendingReopen.reopenedAt) {
+          throw new Error('Completed reopened revision must link to its preserved parent and reopen time.');
+        }
+        pendingReopen = null;
+      }
       replayRevisionId = revisionId;
       replayStatus = 'completed';
       if (completionEventByRevision.has(revisionId)) throw new Error('A revision cannot be completed twice.');
@@ -149,6 +196,7 @@ export async function validateKnownFactLifecycle14(raw: unknown): Promise<KnownF
       if (replayRevisionId === newRevisionId || completionEventByRevision.has(newRevisionId)) throw new Error('Reopen revision ID already exists.');
       replayRevisionId = newRevisionId;
       replayStatus = 'draft';
+      pendingReopen = { fromRevisionId, reopenedAt: occurredAt };
       events.push({ type, eventId, fromRevisionId, newRevisionId, occurredAt });
     } else if (type === 'read-back-recorded') {
       onlyKeys(event, ['type', 'eventId', 'revisionId', 'occurredAt'], 'Read-back event');
@@ -160,11 +208,28 @@ export async function validateKnownFactLifecycle14(raw: unknown): Promise<KnownF
     } else throw new Error('Unsupported lifecycle event.');
   }
 
+  // The preserved snapshots are append-only in completion order. Otherwise
+  // reordering an otherwise valid array could bypass the provenance-prefix
+  // check above while event replay still points to the same revision IDs.
+  const completedEvents = events.filter((event) => event.type === 'completed');
+  if (completedEvents.length !== completedRevisions.length
+    || completedRevisions.some((item, index) => {
+      const event = completedEvents[index];
+      return event?.type !== 'completed'
+        || event.revisionId !== item.revisionId
+        || event.eventId !== item.completionEventId;
+    })) {
+    throw new Error('Completed revision records must follow lifecycle completion event order.');
+  }
   for (const item of completedRevisions) {
     if (completionEventByRevision.get(item.revisionId) !== item.completionEventId) throw new Error('Completed revision is missing its matching completion event.');
   }
   if (replayRevisionId !== null && replayRevisionId !== session.revisionId) throw new Error('Lifecycle history does not end at the current revision.');
   if (replayStatus !== input.status) throw new Error('Lifecycle status does not match its event history.');
+  if (pendingReopen !== null && (session.parentRevisionId !== pendingReopen.fromRevisionId
+    || session.updatedAt < pendingReopen.reopenedAt)) {
+    throw new Error('Reopened Draft must retain its completed parent and reopen time.');
+  }
   if (input.status === 'completed') {
     const completed = completedByRevision.get(session.revisionId);
     if (!completed || !same(completed.sessionSnapshot, session)) throw new Error('Completed lifecycle must retain the exact immutable current revision snapshot.');
