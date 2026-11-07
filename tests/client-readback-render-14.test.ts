@@ -139,8 +139,15 @@ describe('#35E dormant textContent-only read-back renderer', () => {
 
     const changed = structuredClone(session);
     changed.answers['primary-goal']!.value = 'PRIVATE UPDATED ANSWER';
+    // Keep the review's source snapshot current, but deliberately retain an
+    // obsolete reviewedValue to exercise the value-diff guard (not the earlier
+    // stale-snapshot rejection).
+    const mismatched = await review(changed, [{
+      questionId: 'primary-goal', publicLabel: 'SYNTHETIC REVIEWED GOAL',
+      reviewedValue: '<script>alert(1)</script> SYNTHETIC PUBLIC VALUE',
+    }]);
     await expect(renderReviewedKnownFact14ReadBackForReview(
-      asHost(host), changed, selected,
+      asHost(host), changed, mismatched,
     )).rejects.toThrow(/differs/);
 
     expect(host.children).toHaveLength(1);
