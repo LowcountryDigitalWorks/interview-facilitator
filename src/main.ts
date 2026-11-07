@@ -396,6 +396,8 @@ async function renderHome(): Promise<void> {
       const result = outcome.value;
 
       if (result.kind === 'imported' || result.kind === 'noop' || result.kind === 'forked' || result.kind === 'replaced') {
+        // A successful import, including a same-ID replacement, starts a new navigation context.
+        readBackReturnTarget = null;
         session = result.session;
         homeNotice = null;
         saveError = null;
@@ -443,6 +445,8 @@ async function renderHome(): Promise<void> {
       }
       const result = outcome.value;
       if (result.kind === 'opened') {
+        // Opening a stored copy must not inherit a prior Read-back correction target.
+        readBackReturnTarget = null;
         session = result.session;
         homeNotice = null;
         saveState = 'saved';
@@ -562,6 +566,8 @@ function renderNew(): void {
           await showOutgoingSaveFailure(outcome.error);
           return;
         }
+        // A newly created session never inherits transient correction navigation.
+        readBackReturnTarget = null;
         session = outcome.value;
         homeNotice = null;
         saveState = 'saved';
