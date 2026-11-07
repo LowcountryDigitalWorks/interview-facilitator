@@ -3,6 +3,7 @@ import { createSemanticSession } from '../src/semantic-session';
 import { generalDiscoveryPack } from '../src/pack';
 import { canonicalizeJson } from '../src/pack-identity';
 import { migrateSemantic13ToKnownFact14 } from '../src/known-fact-session';
+import { correctKnownFact } from '../src/known-fact-evidence';
 import {
   KNOWN_FACT_LIFECYCLE_FORMAT,
   completeKnownFactLifecycle14,
@@ -154,6 +155,33 @@ describe('#34B versioned dormant Draft / Completed / reopen contract', () => {
     await expect(validateKnownFactLifecycle14(changedOrigin))
       .rejects.toThrow(/immutable pinned interview identity/i);
     await expect(validateKnownFactLifecycle14(second)).resolves.toEqual(second);
+  });
+
+  it('rejects removal of independently valid correction evidence after completing and reopening', async () => {
+    const { session, lifecycle } = await draftLifecycle();
+    const initialFact = lifecycle.session.knownFactLedger.facts[0];
+    expect(initialFact).toBeDefined();
+    const source = structuredClone(lifecycle);
+    source.session.knownFactLedger = correctKnownFact(source.session.knownFactLedger, {
+      id: 'synthetic-corrected-fact', supersedesFactId: initialFact!.id,
+      value: 'Synthetic corrected fact', provenance: 'Synthetic reviewer evidence',
+      expectedRevisionId: session.revisionId, currentRevisionId: session.revisionId,
+    });
+    const completed = await completeKnownFactLifecycle14(source, {
+      expectedRevisionId: session.revisionId, eventId: 'complete-with-correction',
+      completedAt: '2026-11-05T12:05:00.000Z', acknowledgedFollowUpQuestionIds: [],
+    });
+    const reopened = await reopenKnownFactLifecycle14(completed, {
+      expectedRevisionId: session.revisionId, eventId: 'reopen-with-correction',
+      newRevisionId: 'synthetic-correction-next', reopenedAt: '2026-11-05T12:10:00.000Z',
+    });
+    expect(reopened.session.knownFactLedger.facts).toHaveLength(2);
+    const forged = structuredClone(reopened);
+    forged.session.knownFactLedger.facts.pop();
+    await expect(validateKnownFactLifecycle14(forged))
+      .rejects.toThrow(/append-only known-fact provenance/i);
+    await expect(validateKnownFactLifecycle14(reopened)).resolves.toEqual(reopened);
+    expect(completed.completedRevisions[0]!.sessionSnapshot.knownFactLedger.facts).toHaveLength(2);
   });
 
   it('rejects completion and read-back timestamps earlier than captured source evidence', async () => {
