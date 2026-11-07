@@ -13,6 +13,9 @@ class TextNode {
   readonly children: TextNode[] = [];
   readonly nodeType: number;
   textContent = '';
+  private readonly attributes = new Map<string, string>();
+  setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
+  getAttribute(name: string): string | null { return this.attributes.get(name) ?? null; }
   constructor(readonly tag: string, readonly ownerDocument: FakeDocument) {
     this.nodeType = tag === '#fragment' ? 11 : 1;
   }
@@ -103,6 +106,9 @@ describe('#35E dormant textContent-only read-back renderer', () => {
       expectedRevisionId: 'outdated', entries: [],
     })).rejects.toThrow(/stale/);
     expect(visible(host)).toBe('Read-back unavailable. Review the current session before presenting.');
+    expect(host.children).toHaveLength(1);
+    expect(host.children[0]?.tag).toBe('p');
+    expect(host.children[0]?.getAttribute('role')).toBe('alert');
     expect(visible(host)).not.toContain('SYNTHETIC PUBLIC VALUE');
     await expect(renderReviewedKnownFact14ReadBackForReview(asHost(host), session,
       await review(session, [{ questionId: 'booking-process', publicLabel: 'Booking',

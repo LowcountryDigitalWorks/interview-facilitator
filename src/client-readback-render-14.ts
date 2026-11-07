@@ -110,6 +110,11 @@ export async function renderReviewedKnownFact14ReadBackForReview(
   } catch (error) {
     if (renderSequence.get(host) === token) {
       const notice = doc.createElement('p');
+      // Announce the generic failure without revealing validator errors or
+      // previously approved client data to an assistive-technology listener.
+      // Success previews deliberately have no live region: disclosure requires
+      // human review and should not automatically read aloud the entire record.
+      notice.setAttribute('role', 'alert');
       notice.textContent = 'Read-back unavailable. Review the current session before presenting.';
       host.replaceChildren(notice);
     }
