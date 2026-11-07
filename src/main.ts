@@ -38,6 +38,8 @@ let saveError: unknown = null;
 let persistenceState: PersistenceState = 'unknown';
 let offlineReady = false;
 let presentationMode: PresentationMode = 'private';
+// Transient navigation only; never part of the canonical session or read-back consent.
+let readBackReturnTarget: { sessionId: string; questionId: string } | null = null;
 type HomeNotice =
   | null
   | { kind: 'read'; message: string }
@@ -182,6 +184,15 @@ function focusReviewHeading(): void {
   queueMicrotask(() => app.querySelector<HTMLElement>('#review-title')?.focus());
 }
 
+function focusReadBackChange(questionId: string, sessionId: string): void {
+  queueMicrotask(() => {
+    if (view !== 'review' || session?.sessionId !== sessionId) return;
+    const target = Array.from(app.querySelectorAll<HTMLElement>('[data-change]'))
+      .find((button) => button.dataset.change === questionId);
+    (target ?? app.querySelector<HTMLElement>('#review-title'))?.focus();
+  });
+}
+
 async function openStoredSessionForPack(sessionId: string): Promise<OpenStoredSessionResult<SemanticInterviewSession>> {
   const result = await openStoredSession({
     sessionId,
@@ -231,6 +242,7 @@ function chooseImportCollision(existing: SemanticInterviewSession): Promise<Impo
 }
 
 async function renderHome(): Promise<void> {
+  readBackReturnTarget = null;
   const listState = await readSessionList(listSessions);
   const storageError = listState.kind === 'error';
   const recent = listState.kind === 'ready' ? listState.sessions : [];
@@ -490,6 +502,7 @@ function renderHomeNotice(notice: Exclude<HomeNotice, null>): string {
 }
 
 function renderNew(): void {
+  readBackReturnTarget = null;
   app.innerHTML = `
     <header class="app-header"><div><strong>Interview Facilitator</strong><span>New interview</span></div>${updateSlotMarkup()}</header>
     <main id="main" class="form-shell">
@@ -589,6 +602,7 @@ function renderInterview(): void {
         <div class="answer-block">${answerControl(question, state.value ?? '')}</div>
         ${presenting ? '' : `<label class="notes-label">Question notes <span>internal</span><textarea id="question-note" rows="3" placeholder="Optional interviewer note">${escapeHtml(state.note)}</textarea></label>
         <fieldset class="status-fieldset"><legend>Question status</legend><div class="status-grid">${statusOptions.map((option) => { const selected = statusControlForState(state) === option.value; return `<label class="status-chip ${selected ? 'selected' : ''}"><input type="radio" name="status" value="${option.value}" ${selected ? 'checked' : ''}/><span>${escapeHtml(option.label)}</span></label>`; }).join('')}</div></fieldset>`}
+        ${readBackReturnTarget?.sessionId === session.sessionId ? '<div class="button-row"><button class="secondary" type="button" data-action="return-to-readback">Return to Read-back</button></div>' : ''}
         <div class="action-dock"><button class="secondary" data-action="back" ${nextVisibleQuestion(session, question.id, -1) ? '' : 'disabled'}>Back</button><button class="primary" data-action="next">${nextVisibleQuestion(session, question.id, 1) ? 'Continue' : 'Review interview'}</button></div>
       </section>
       ${presenting ? '' : `<aside class="context-rail" id="context-mobile-panel" aria-labelledby="context-panel-title">
@@ -719,7 +733,16 @@ function renderInterview(): void {
 
   app.querySelectorAll<HTMLElement>('[data-question-id]').forEach((button) => button.addEventListener('click', () => { applyAnswer(); if (session) session.currentQuestionId = button.dataset.questionId ?? session.currentQuestionId; renderInterview(); focusPrimaryAnswer(); }));
   app.querySelector('[data-action="back"]')?.addEventListener('click', () => { applyAnswer(); const previous = session && nextVisibleQuestion(session, question.id, -1); if (previous && session) session.currentQuestionId = previous.id; renderInterview(); focusPrimaryAnswer(); });
-  app.querySelector('[data-action="next"]')?.addEventListener('click', () => { applyAnswer(); const next = session && nextVisibleQuestion(session, question.id, 1); if (next && session) { session.currentQuestionId = next.id; renderInterview(); focusPrimaryAnswer(); } else { presentationMode = enterPresentation(); view = 'review'; renderReview(); focusReviewHeading(); } });
+  app.querySelector('[data-action="next"]')?.addEventListener('click', () => { applyAnswer(); const next = session && nextVisibleQuestion(session, question.id, 1); if (next && session) { session.currentQuestionId = next.id; renderInterview(); focusPrimaryAnswer(); } else { readBackReturnTarget = null; presentationMode = enterPresentation(); view = 'review'; renderReview(); focusReviewHeading(); } });
+  app.querySelector('[data-action="return-to-readback"]')?.addEventListener('click', () => {
+    if (!session || readBackReturnTarget?.sessionId !== session.sessionId) return;
+    const target = readBackReturnTarget;
+    applyAnswer();
+    readBackReturnTarget = null;
+    view = 'review';
+    renderReview();
+    focusReadBackChange(target.questionId, target.sessionId);
+  });
   app.querySelector('[data-action="enter-presentation"]')?.addEventListener('click', () => { applyAnswer(); presentationMode = enterPresentation(); renderInterview(); focusPrimaryAnswer(); });
   app.querySelector('[data-action="exit-presentation"]')?.addEventListener('click', () => { applyAnswer(); presentationMode = exitPresentation(); renderInterview(); focusPrimaryAnswer(); });
   app.querySelector('[data-action="export"]')?.addEventListener('click', () => { if (session) download(`${session.clientLabel.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-interview.json`, serializeSession(session), 'application/json'); });
@@ -869,8 +892,17 @@ function renderReview(): void {
         ? ''
         : '<div class="button-row"><button class="primary" data-action="enter-presentation">Open presentation view</button><button class="secondary" data-action="json">Export full JSON backup</button><button class="secondary" data-action="markdown">Export internal Markdown</button><button class="secondary" data-action="home">Home</button><button class="secondary" data-action="delete">Delete local session</button></div>'}
     </main>`;
-  app.querySelector('[data-action="return"]')?.addEventListener('click', () => { view = 'interview'; renderInterview(); focusPrimaryAnswer(); });
-  app.querySelectorAll<HTMLElement>('[data-change]').forEach((button) => button.addEventListener('click', () => { if (session) session.currentQuestionId = button.dataset.change ?? session.currentQuestionId; view = 'interview'; renderInterview(); focusPrimaryAnswer(); }));
+  app.querySelector('[data-action="return"]')?.addEventListener('click', () => { readBackReturnTarget = null; view = 'interview'; renderInterview(); focusPrimaryAnswer(); });
+  app.querySelectorAll<HTMLElement>('[data-change]').forEach((button) => button.addEventListener('click', () => {
+    if (!session) return;
+    const targetQuestionId = button.dataset.change;
+    if (!targetQuestionId || !visibleQuestions(session).some((question) => question.id === targetQuestionId)) return;
+    readBackReturnTarget = { sessionId: session.sessionId, questionId: targetQuestionId };
+    session.currentQuestionId = targetQuestionId;
+    view = 'interview';
+    renderInterview();
+    focusPrimaryAnswer();
+  }));
   app.querySelectorAll('[data-action="enter-presentation"]').forEach((button) => button.addEventListener('click', () => { presentationMode = enterPresentation(); renderReview(); focusReviewHeading(); }));
   app.querySelectorAll('[data-action="exit-presentation"]').forEach((button) => button.addEventListener('click', () => { presentationMode = exitPresentation(); renderReview(); focusReviewHeading(); }));
   app.querySelector('[data-action="json"]')?.addEventListener('click', () => { if (session) download('interview.json', serializeSession(session), 'application/json'); });
