@@ -56,6 +56,14 @@ input, textarea, select { width: 100%; border: 1px solid #aebdb9; border-radius:
 textarea { resize: vertical; line-height: 1.5; }
 .known-preview { padding: 1rem; border-left: 4px solid var(--teal); background: #eef6f4; }
 .known-preview p { margin: .35rem 0 0; color: var(--muted); }
+
+.prepare-fact { margin-top: .9rem; padding-top: .75rem; border-top: 1px solid var(--line); }
+.prepare-fact small { display: block; margin-top: .3rem; color: var(--muted); }
+.prepare-readiness { padding: 1rem; border: 1px solid var(--line); border-radius: 12px; }
+.prepare-readiness h2, .known-preview h2 { margin: 0 0 .5rem; font-size: 1.1rem; }
+.prepare-readiness dl { margin: 0; display: grid; gap: .7rem; }
+.prepare-readiness dt { font-weight: 700; }
+.prepare-readiness dd { margin: .15rem 0 0; color: var(--muted); line-height: 1.4; overflow-wrap: anywhere; }
 .cockpit { min-height: calc(100vh - 68px); display: grid; grid-template-columns: minmax(210px, 270px) minmax(0, 1fr) minmax(230px, 310px); }
 .coverage-rail, .context-rail { padding: 1.2rem; background: #fff; overflow: auto; }
 .coverage-rail { border-right: 1px solid var(--line); }
