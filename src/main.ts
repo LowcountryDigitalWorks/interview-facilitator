@@ -511,12 +511,33 @@ function renderNew(): void {
     <header class="app-header"><div><strong>Interview Facilitator</strong><span>New interview</span></div>${updateSlotMarkup()}</header>
     <main id="main" class="form-shell">
       <button class="text-button" data-action="home">← Back</button>
-      <p class="eyebrow">Pack 1 of 1</p><h1>${escapeHtml(pack.title)}</h1><p>${escapeHtml(pack.description)}</p>
+      <p class="eyebrow">Prepare · ${escapeHtml(pack.title)} · pack v${escapeHtml(pack.packVersion)}</p><h1>Prepare this interview</h1><p>${escapeHtml(pack.description)}</p>
       <form id="new-form" class="setup-card">
         <label>Project or client label<input name="clientLabel" required autocomplete="off" placeholder="Example Project" /></label>
         <label>Interviewer <span>(optional)</span><input name="interviewerLabel" autocomplete="off" /></label>
         <label>Interview mode<select name="interviewMode"><option>Conversation</option><option>Phone</option><option>Video call</option><option>In person</option></select></label>
-        <div class="known-preview"><strong>Known context ready</strong><p>${pack.knownFacts.length} synthetic fact is available to demonstrate provenance/reuse.</p></div>
+        <section class="known-preview" aria-labelledby="prepare-known-title">
+           <h2 id="prepare-known-title">Known context for review</h2>
+           <p>Reference only — starting this interview does not accept or confirm a known fact. Review and correct it during capture.</p>
+           ${pack.knownFacts.length
+             ? pack.knownFacts.map((fact) => `<div class="prepare-fact"><strong>${escapeHtml(fact.label)}</strong><p>${escapeHtml(fact.value)}</p><small>Source: ${escapeHtml(fact.provenance)}</small></div>`).join('')
+             : '<p>No known context supplied with this pack.</p>'}
+         </section>
+         <section class="prepare-readiness" aria-labelledby="prepare-readiness-title">
+           <h2 id="prepare-readiness-title">Before you start</h2>
+           <dl>
+             <div><dt>Local save</dt><dd data-prepare-save>Not saved yet. Start interview saves a new local record; keep an export backup separately.</dd></div>
+             <div><dt>Offline shell</dt><dd data-prepare-offline>${offlineReady
+               ? 'This exact application release reports its offline shell ready on this device. Client data still needs a separate backup.'
+               : 'Offline readiness has not been confirmed for this application release. The first load may need connectivity.'}</dd></div>
+             <div><dt>Browser storage</dt><dd data-prepare-storage>${persistenceState === 'persistent'
+               ? 'The browser previously reported protected storage for this origin; local data can still be cleared by user or device policy.'
+               : persistenceState === 'best-effort'
+                 ? 'Best effort on this device; browser data can be removed.'
+                 : 'Protection not yet checked for this interview. Local browser data is not a backup.'}</dd></div>
+             <div><dt>Backup</dt><dd>After starting, use Export JSON backup and store a copy outside this browser.</dd></div>
+           </dl>
+         </section>
         <button class="primary" type="submit">Start interview</button>
       </form>
     </main>`;
