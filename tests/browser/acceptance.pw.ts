@@ -275,6 +275,12 @@ test('mobile Quick capture autosaves out-of-order notes without changing coverag
 
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(parkingNotes).toHaveValue(note);
+  // Continue also schedules a save; prove the IndexedDB record is durable
+  // before simulating a reload rather than trusting a previous "Saved" label.
+  await expect.poll(async () => {
+    const stored = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+    return stored.find((item) => item.clientLabel === 'Synthetic Quick Capture')?.runningNotes;
+  }).toBe(note);
   await page.reload();
   await page.getByRole('button', { name: /Synthetic Quick Capture/ }).click();
   await expect(parkingNotes).toHaveValue(note);
