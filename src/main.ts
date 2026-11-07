@@ -640,7 +640,6 @@ function renderInterview(): void {
       ${presenting ? '' : `<aside class="context-rail" id="context-mobile-panel" aria-labelledby="context-panel-title">
         <button class="text-button mobile-panel-close" data-action="close-mobile-panel">Close context</button>
         <section><p class="eyebrow" id="context-panel-title">Known context</p>${facts.length ? facts.map((fact) => `<div class="fact-card"><strong>${escapeHtml(fact.label)}</strong><p>${escapeHtml(fact.value)}</p><small>${escapeHtml(fact.provenance)}</small></div>`).join('') : '<p class="muted">No known facts linked to this question.</p>'}</section>
-        
       </aside>`}
     </main>`;
 
