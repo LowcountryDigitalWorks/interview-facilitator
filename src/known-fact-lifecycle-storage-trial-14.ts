@@ -146,7 +146,7 @@ export async function loadKnownFactLifecycleTrial14ForReview(
   assertTrialDatabase(db);
   nonempty(sessionId);
   // Requests are queued synchronously: never await inside an idle IDB transaction.
-  const tx = db.transaction(STORES, 'readonly');
+  const tx = db.transaction([...STORES], 'readonly');
   const recordRequest = tx.objectStore('trial-lifecycle').get(sessionId);
   const sessionRequest = tx.objectStore('trial-session').get(sessionId);
   const backupRequest = tx.objectStore('trial-backup').get(sessionId);
@@ -253,7 +253,7 @@ export async function saveKnownFactLifecycleTrial14ForReview(
   const expectedSession = prior === null ? undefined : jsonMeaning(prior.lifecycle.session);
   const expectedBackup = prior === null ? undefined : await createLifecycleTrial14BackupForReview(prior.lifecycle);
   return new Promise<LifecycleTrialRecord14>((resolve, reject) => {
-    const tx = db.transaction(STORES, 'readwrite');
+    const tx = db.transaction([...STORES], 'readwrite');
     let failure: unknown;
     const fail = (error: unknown) => {
       if (failure !== undefined) return;
