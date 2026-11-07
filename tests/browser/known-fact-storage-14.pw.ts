@@ -12,9 +12,9 @@ test.beforeEach(async ({ page }) => {
 test('1.4 CAS keeps one concurrent writer, immutable history and verified backup', async ({ page }) => {
   const result = await page.evaluate(async () => {
     const load = (path: string) => import(/* @vite-ignore */ path);
-    const [pack, semantic, known, storage, backup] = await Promise.all([
+    const [pack, semantic, known, storage, backup, identity] = await Promise.all([
       '/src/pack.ts', '/src/semantic-session.ts', '/src/known-fact-session.ts',
-      '/src/storage.ts', '/src/known-fact-backup-14.ts',
+      '/src/storage.ts', '/src/known-fact-backup-14.ts', '/src/pack-identity.ts',
     ].map(load));
     const old = await semantic.createSemanticSession(pack.generalDiscoveryPack, {
       clientLabel: 'Synthetic concurrent storage',
@@ -65,7 +65,8 @@ test('1.4 CAS keeps one concurrent writer, immutable history and verified backup
       historyMatchesOriginal: JSON.stringify(archived) === JSON.stringify(first),
       historyCount: (historyKeys as unknown[]).length,
       currentNotes: current.runningNotes,
-      backupMatchesCurrent: JSON.stringify(restored) === JSON.stringify(current),
+      backupMatchesCurrent: identity.canonicalizeJson(JSON.parse(JSON.stringify(restored)))
+        === identity.canonicalizeJson(JSON.parse(JSON.stringify(current))),
       backupClassifiedInternal: bytes.includes('INTERNAL / CONFIDENTIAL'),
     };
   });
