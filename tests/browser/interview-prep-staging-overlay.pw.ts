@@ -44,7 +44,13 @@ test('synthetic private review -> source-bound overlay; client answers/read-back
     const outcome = document.createElement('section');
     outcome.id = 'staging-result';
     document.querySelector('main')!.appendChild(outcome);
-    const state = { session, packet, overlay: null as unknown, callbackCount: 0, errors: [] as string[] };
+    const state = {
+      session, packet, overlay: null as unknown, callbackCount: 0, errors: [] as string[],
+      publicReadback: () => presentation.projectSemanticReadBack(
+        session.packSnapshot.questions.find((q: { id: string }) => q.id === 'primary-goal'),
+        session.answers['primary-goal'],
+      ),
+    };
     ui.mountPrivateInterviewPrepReviewTrial(host,
       () => state.packet, () => state.session, (selection: unknown) => {
         state.callbackCount++;
@@ -57,14 +63,6 @@ test('synthetic private review -> source-bound overlay; client answers/read-back
             outcome.textContent = 'Private staging rejected; no canonical answers changed.';
           });
       });
-    (window as Window & { __staging?: typeof state & { publicReadback: () => unknown } }).__staging = {
-      ...state,
-      publicReadback: () => presentation.projectSemanticReadBack(
-        state.session.packSnapshot.questions.find((q: { id: string }) => q.id === 'primary-goal'),
-        state.session.answers['primary-goal'],
-      ),
-    };
-    // Keep mutable overlay/counters on the same exact object, not a spread copy.
     (window as Window & { __staging?: typeof state }).__staging = state;
   });
   const host = page.locator('#staging-review');
@@ -83,17 +81,20 @@ test('synthetic private review -> source-bound overlay; client answers/read-back
       overlay: { kind: string; candidates: Array<{ proposedValue: string; sourceRecordRef: string }> } | null,
       callbackCount: number,
       errors: string[],
+      publicReadback: () => { valueLabel: string; statusLabel: string },
     } }).__staging!;
     return {
       originalAnswer: s.session.answers['primary-goal'],
       overlay: s.overlay,
       count: s.callbackCount,
       errors: s.errors,
+      readback: s.publicReadback(),
     };
   });
   expect(state.count).toBe(1);
   expect(state.errors).toEqual([]);
   expect(state.originalAnswer).toMatchObject({ value: null, resolution: 'unresolved' });
+  expect(state.readback).toMatchObject({ valueLabel: 'No answer recorded', statusLabel: 'Open' });
   expect(state.overlay).toMatchObject({
     kind: 'private-interviewer-only-unconfirmed',
     candidates: [{
