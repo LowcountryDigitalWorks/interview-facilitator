@@ -4,7 +4,7 @@ import { defineConfig, devices } from '@playwright/test';
 // production build entry point and does not activate the 1.4 UI.
 export default defineConfig({
   testDir: './tests/browser',
-  testMatch: ['**/readback-renderer.pw.ts', '**/readback-accessibility.pw.ts', '**/known-fact-storage-14.pw.ts', '**/known-fact-lifecycle-trial-14.pw.ts', '**/known-fact-activation-preflight-14.pw.ts'],
+  testMatch: ['**/readback-renderer.pw.ts', '**/readback-accessibility.pw.ts', '**/known-fact-storage-14.pw.ts', '**/known-fact-lifecycle-trial-14.pw.ts', '**/known-fact-activation-preflight-14.pw.ts', '**/known-fact-recovery-ui-trial-14.pw.ts'],
   fullyParallel: false,
   workers: 1,
   timeout: 30_000,
