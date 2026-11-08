@@ -1,6 +1,6 @@
 # Interview preparation and Owner Console bridge — PREP-BRIDGE-001
 
-Status: **source-only synthetic proof; NOT connected, installed, launched, synced or pilot-accepted**  
+Status: **synthetic-only source contracts accepted; human-selection browser trial candidate; NOT connected, installed, launched, synced or pilot-accepted**  
 Owning authority: [Interview Facilitator #105](https://github.com/LowcountryDigitalWorks/interview-facilitator/issues/105), [roadmap #5](https://github.com/LowcountryDigitalWorks/interview-facilitator/issues/5), [Owner Console #16](https://github.com/LowcountryDigitalWorks/owner-console/issues/16), [client-operations parent business-operations #753](https://github.com/LowcountryDigitalWorks/business-operations/issues/753).
 
 ## Owner-directed outcome
@@ -49,9 +49,9 @@ Authoritative client/workflow stage -> authorized event, no new control plane
 
 | Stage | Status | Exit evidence |
 | --- | --- | --- |
-| Public source-only prep/result contracts | Candidate in PR; no live deployment | Unit tests, CI and independent exact-head review |
+| Public source-only prep/result contracts | ACCEPTED — #106 merged with exact-head IR + postmerge CI | Strict packet/unit proof; no live deployment |
 | Provider source mapping and automatic prep trigger | NOT IMPLEMENTED | Approved account access, field allowlists, engagement identity, retries, private packet retention and provenance |
-| Human import/prefill and offline resume | NOT IMPLEMENTED | Reviewed browser/UI trial, privacy/accessibility, conflict and stale revision handling |
+| Human import/prefill and offline resume | DORMANT synthetic human-selection browser trial candidate; import/persistence NOT IMPLEMENTED | Independent source review then actual private adapter, offline durability, conflict and stale revision handling |
 | Owner Console status card | NOT IMPLEMENTED | Product owner reconciles #11/PR #12, accepted #362 mapping, private Access, no client contents |
 | Owner Console secure launch | NOT IMPLEMENTED | Protected destination, owner identity/authorization and approved client resolution; no URL tokens/IDs |
 | Next-stage workflow adapter | NOT IMPLEMENTED | Validated private canonical export, idempotent adapter, human action controls |
@@ -59,7 +59,7 @@ Authoritative client/workflow stage -> authorized event, no new control plane
 
 ## Follow-on implementation order
 
-1. Accept source-only strict packet validator + tests under #105; retain current PWA 1.3 and dormant 1.4.
+1. Strict packet validator and projection accepted under #105 / merged PR #106; retain live PWA 1.3 and dormant 1.4.
 2. In the **owning client workflow**, identify earliest approved Interview Prep stage signal, authorized sources, data-classification policy, and stable packet store; only synthetic/dry-run until data path is approved.
 3. Add a human-only preview/acceptance import workflow and rehearse conflicts/staleness offline.
 4. Coordinate a **separate Owner Console** source candidate under #16 *after* #11/PR #12 owner disposition. This may start with clearly labeled synthetic/unavailable link-only status; do not route real clients to localhost.
@@ -67,3 +67,12 @@ Authoritative client/workflow stage -> authorized event, no new control plane
 6. Later only as observed value warrants: additional packs, bounded attachments, approved provider adapters, optional human-reviewed AI enrichment.
 
 $0 incremental; no new accounts, billing, license claims, provider mutations, real client records in public GitHub/CI, or production activation authorized by this document.
+
+
+## Human-selection trial — implementation scope and caveats
+
+The dormant `src/interview-prep-review-ui-trial.ts` is a **synthetic-only** private user-interface proof under #105. It renders source values and conflicting candidates in a clearly private interviewer-only screen. Nothing is selected by default. A person must choose a single candidate per relevant question, acknowledge that the information still needs client confirmation, and explicitly prepare an in-memory proposal. Hidden/irrelevant questions cannot be selected. A full canonical session and preparation-packet digest are both recomputed immediately before issuing the proposal. The only callback payload is a bounded list of **question ID + candidate ID**, with source/session fingerprints; it never includes client labels, source references, proposed values, credentials, or automatic answer/task mutations.
+
+This **does not** populate interview answers, persist a prepared packet offline, synchronize any source, establish engagement/job ownership, or provide a protected launch. The future, independently reviewed adapter must bind the prepared job to an authorized client/workspace and verify the digest and exact canonical source in the same authorized transaction where any promotion/persistence occurs; this browser callback alone cannot guarantee race-free downstream writes. An independent protected-host/UI privacy and physical device/AT gate remains mandatory. Do not screen-share the private preparation UI.
+
+A synthetic release is not an approved client-data pilot.
