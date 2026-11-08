@@ -146,19 +146,51 @@ test('stale parallel tab cannot overwrite completion; explicit reload shows winn
   await other.close();
 });
 
-test('isolated controls retain privacy and basic axe accessibility; dispose removes listeners and UI', async ({ page }) => {
+test('isolated controls minimize visible metadata, revoke handlers on dispose and pass axe floor', async ({ page }) => {
   await install(page, true);
   await expect(page.getByRole('status')).toContainText('Trial record loaded');
   const content = await page.locator('#synthetic-lifecycle').textContent();
   expect(content).not.toContain('PRIVATE SYNTHETIC');
   expect(content).not.toContain('RUNNING NOTES');
+  expect(content).not.toContain('Local generation');
+  expect(content).not.toContain('Preserved completed revisions');
   const a11y = await new AxeBuilder({ page }).include('main')
     .withTags(['wcag2a', 'wcag2aa']).analyze();
   expect(a11y.violations.filter(v => v.impact === 'critical' || v.impact === 'serious')).toEqual([]);
-  await page.evaluate(() => {
-    const controller = (window as Window & { __lifecycleTrial?: { dispose: () => void } })
-      .__lifecycleTrial!;
-    controller.dispose();
+  const teardown = await page.evaluate(async () => {
+    const controller = (window as Window & { __lifecycleTrial?: {
+      db: IDBDatabase; sessionId: string; dispose: () => void;
+    } }).__lifecycleTrial!;
+    const host = document.querySelector('#synthetic-lifecycle') as HTMLElement;
+    const button = Array.from(host.querySelectorAll('button'))
+      .find(node => node.textContent?.includes('Mark Draft complete'))!;
+    const originalAbort = AbortController.prototype.abort;
+    let abortCalls = 0;
+    AbortController.prototype.abort = function (this: AbortController, reason?: unknown) {
+      abortCalls++;
+      return originalAbort.call(this, reason);
+    };
+    try { controller.dispose(); }
+    finally { AbortController.prototype.abort = originalAbort; }
+    // An extension deliberately holds a detached button. Force it enabled
+    // so click() cannot pass vacuously due to disabled state. Detached controls
+    // must not be permitted to submit a new lifecycle write.
+    button.disabled = false;
+    button.click();
+    await Promise.resolve();
+    const load = (path: string) => import(/* @vite-ignore */ path);
+    const trial = await load('/src/known-fact-lifecycle-storage-trial-14.ts');
+    const current = await trial.loadKnownFactLifecycleTrial14ForReview(controller.db, controller.sessionId);
+    return {
+      abortCalls,
+      detached: button.isConnected === false,
+      hostEmpty: host.childNodes.length === 0,
+      generation: current.generation,
+      eventCount: current.lifecycle.events.length,
+    };
+  });
+  expect(teardown).toEqual({
+    abortCalls: 1, detached: true, hostEmpty: true, generation: 0, eventCount: 0,
   });
   await expect(page.locator('#synthetic-lifecycle')).toBeEmpty();
 });

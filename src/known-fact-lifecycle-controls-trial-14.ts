@@ -66,12 +66,17 @@ export function mountKnownFactLifecycleControlsTrial14ForReview(
   let record: LifecycleTrialRecord14 | null = null;
   let view: 'controls' | 'discussion' = 'controls';
   let epoch = 0;
+  // Disposing the host detaches all controls, even if a test or extension
+  // deliberately retains a reference to an otherwise detached DOM node.
+  const listeners = new AbortController();
 
   const heading = element(document, 'h2', 'Lifecycle controls — isolated 1.4 trial');
   const notice = element(document, 'p',
     'Internal synthetic trial only. No live interviews, customer consent, '
     + 'external backup or production activation. Complete does not mean all '
-    + 'questions are answered; outstanding follow-ups are retained.');
+    + 'questions are answered; outstanding follow-ups are retained. '
+    + 'Closing this panel cannot cancel a trial write already submitted. '
+    + 'Reload and verify current state before relying on its outcome.');
   const summary = element(document, 'p', 'Loading trial lifecycle…');
   const preview = element(document, 'p', '');
   const controls = element(document, 'div');
@@ -122,10 +127,10 @@ export function mountKnownFactLifecycleControlsTrial14ForReview(
     reopenButton.disabled = disabled || !completed || !controlsVisible || !reopenAck.checkbox.checked;
     // Never expose session ID, client label, notes, raw error, source links,
     // fact values or other private/unsanitized fields in controls.
+    // Lifecycle status is the only stored metadata needed on this trial
+    // display. Keep generation, internal lineage and counts inside storage.
     summary.textContent = record
-      ? 'Local trial state: ' + (draft ? 'Draft' : 'Completed')
-        + '. Preserved completed revisions: ' + record.lifecycle.completedRevisions.length
-        + '. Local generation: ' + record.generation + '.'
+      ? 'Local trial state: ' + (draft ? 'Draft' : 'Completed') + '.'
       : 'No selected trial lifecycle loaded.';
   }
 
@@ -215,22 +220,23 @@ export function mountKnownFactLifecycleControlsTrial14ForReview(
     reopenAck.checkbox.checked = false;
     update();
     status.textContent = 'Discussion guidance opened. No lifecycle change was made.';
-  });
+  }, { signal: listeners.signal });
   returnButton.addEventListener('click', () => {
     if (disposed || busy) return;
     view = 'controls';
     update();
     status.textContent = 'Returned to lifecycle controls. No lifecycle change was made.';
-  });
-  refreshButton.addEventListener('click', () => { void reload(); });
-  completeAck.checkbox.addEventListener('change', update);
-  reopenAck.checkbox.addEventListener('change', update);
-  completeButton.addEventListener('click', () => { void command('complete'); });
-  reopenButton.addEventListener('click', () => { void command('reopen'); });
+  }, { signal: listeners.signal });
+  refreshButton.addEventListener('click', () => { void reload(); }, { signal: listeners.signal });
+  completeAck.checkbox.addEventListener('change', update, { signal: listeners.signal });
+  reopenAck.checkbox.addEventListener('change', update, { signal: listeners.signal });
+  completeButton.addEventListener('click', () => { void command('complete'); }, { signal: listeners.signal });
+  reopenButton.addEventListener('click', () => { void command('reopen'); }, { signal: listeners.signal });
 
   function dispose(): void {
     if (disposed) return;
     disposed = true;
+    listeners.abort();
     epoch++;
     record = null;
     completeAck.checkbox.checked = false;
