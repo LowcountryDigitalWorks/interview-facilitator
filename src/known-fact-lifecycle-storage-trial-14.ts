@@ -52,12 +52,28 @@ export function openKnownFactLifecycleTrial14ForReview(): Promise<IDBDatabase> {
         if (!request.result.objectStoreNames.contains(name)) request.result.createObjectStore(name);
       }
     };
+    let blocked = false;
     request.onsuccess = () => {
-      try { assertTrialDatabase(request.result); resolve(request.result); }
-      catch (error) { request.result.close(); reject(error); }
+      const db = request.result;
+      // A blocked open can later succeed after the other tab closes. The
+      // caller has already been told it failed: do not strand that late
+      // connection or quietly return a handle from a rejected attempt.
+      if (blocked) { db.close(); return; }
+      try {
+        assertTrialDatabase(db);
+        // Another tab's explicit upgrade/delete must not be held hostage by
+        // this trial-only tab. Pending transactions finish before close.
+        // A caller using the old handle will receive an IndexedDB error and
+        // must explicitly reopen/revalidate; never silently replay writes.
+        db.onversionchange = () => db.close();
+        resolve(db);
+      } catch (error) { db.close(); reject(error); }
     };
     request.onerror = () => reject(request.error ?? new Error('Trial database open failed.'));
-    request.onblocked = () => reject(new Error('Trial database is blocked by another connection.'));
+    request.onblocked = () => {
+      blocked = true;
+      reject(new Error('Trial database is blocked by another connection.'));
+    };
   });
 }
 
