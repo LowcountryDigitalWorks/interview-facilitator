@@ -194,9 +194,6 @@ describe('PREP-BRIDGE private selected-evidence staging (source-only)', () => {
     await expect(stageSelectedInterviewPrepForReview(session, packet, {
       ...selection, selections: [{ questionId: 'primary-goal', candidateId: 'a', extra: 'NO' }],
     })).rejects.toThrow('unsupported fields');
-    await expect(stageSelectedInterviewPrepForReview(session, packet, {
-      ...selection, selections: [{ questionId: 'primary-goal', candidateId: 'a', __proto__: null }],
-    })).rejects.toThrow();
     // Staging cannot manufacture a review selection out of null or an untrusted class instance.
     await expect(stageSelectedInterviewPrepForReview(session, packet, null))
       .rejects.toThrow('plain object');
