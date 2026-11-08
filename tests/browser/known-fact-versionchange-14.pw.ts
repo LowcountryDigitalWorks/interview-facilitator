@@ -9,7 +9,8 @@ import { expect, test } from '@playwright/test';
 test('a second tab can delete the trial database because the first yields versionchange', async ({ page, context }) => {
   await page.goto('/tests/browser/fixtures/readback.html');
   const initial = await page.evaluate(async () => {
-    const trial = await import(/* @vite-ignore */ '/src/known-fact-lifecycle-storage-trial-14.ts');
+    const load = (path: string) => import(/* @vite-ignore */ path);
+    const trial = await load('/src/known-fact-lifecycle-storage-trial-14.ts');
     const db = await trial.openKnownFactLifecycleTrial14ForReview();
     (globalThis as typeof globalThis & { __trialConnection?: IDBDatabase }).__trialConnection = db;
     return { version: db.version, stores: db.objectStoreNames.length };
@@ -33,7 +34,8 @@ test('a second tab can delete the trial database because the first yields versio
       catch (e) { return (e as Error).name === 'InvalidStateError'; }
     });
     const fresh = await other.evaluate(async () => {
-      const trial = await import(/* @vite-ignore */ '/src/known-fact-lifecycle-storage-trial-14.ts');
+      const load = (path: string) => import(/* @vite-ignore */ path);
+      const trial = await load('/src/known-fact-lifecycle-storage-trial-14.ts');
       const db = await trial.openKnownFactLifecycleTrial14ForReview();
       try {
         return {
@@ -66,7 +68,8 @@ test('a second tab can delete the trial database because the first yields versio
 test('a rejected blocked trial open closes any later successful native handle', async ({ page }) => {
   await page.goto('/tests/browser/fixtures/readback.html');
   const result = await page.evaluate(async () => {
-    const trial = await import(/* @vite-ignore */ '/src/known-fact-lifecycle-storage-trial-14.ts');
+    const load = (path: string) => import(/* @vite-ignore */ path);
+    const trial = await load('/src/known-fact-lifecycle-storage-trial-14.ts');
     const originalOpen = indexedDB.open;
     let captured: IDBOpenDBRequest | null = null;
     indexedDB.open = (function (this: IDBFactory, name: string, version?: number) {
