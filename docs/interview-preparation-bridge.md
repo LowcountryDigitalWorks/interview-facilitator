@@ -1,6 +1,6 @@
 # Interview preparation and Owner Console bridge — PREP-BRIDGE-001
 
-Status: **synthetic-only source contracts accepted; human-selection browser trial candidate; NOT connected, installed, launched, synced or pilot-accepted**  
+Status: **synthetic-only source contracts and human-selection browser trial accepted; deterministic downstream handoff plan candidate; NOT connected, installed, launched, synced or pilot-accepted**  
 Owning authority: [Interview Facilitator #105](https://github.com/LowcountryDigitalWorks/interview-facilitator/issues/105), [roadmap #5](https://github.com/LowcountryDigitalWorks/interview-facilitator/issues/5), [Owner Console #16](https://github.com/LowcountryDigitalWorks/owner-console/issues/16), [client-operations parent business-operations #753](https://github.com/LowcountryDigitalWorks/business-operations/issues/753).
 
 ## Owner-directed outcome
@@ -51,10 +51,10 @@ Authoritative client/workflow stage -> authorized event, no new control plane
 | --- | --- | --- |
 | Public source-only prep/result contracts | ACCEPTED — #106 merged with exact-head IR + postmerge CI | Strict packet/unit proof; no live deployment |
 | Provider source mapping and automatic prep trigger | NOT IMPLEMENTED | Approved account access, field allowlists, engagement identity, retries, private packet retention and provenance |
-| Human import/prefill and offline resume | DORMANT synthetic human-selection browser trial candidate; import/persistence NOT IMPLEMENTED | Independent source review then actual private adapter, offline durability, conflict and stale revision handling |
+| Human import/prefill and offline resume | DORMANT synthetic human-selection browser trial ACCEPTED (#107); import/persistence NOT IMPLEMENTED | Independent source review then actual private adapter, offline durability, conflict and stale revision handling |
 | Owner Console status card | NOT IMPLEMENTED | Product owner reconciles #11/PR #12, accepted #362 mapping, private Access, no client contents |
 | Owner Console secure launch | NOT IMPLEMENTED | Protected destination, owner identity/authorization and approved client resolution; no URL tokens/IDs |
-| Next-stage workflow adapter | NOT IMPLEMENTED | Validated private canonical export, idempotent adapter, human action controls |
+| Next-stage workflow adapter | SOURCE-ONLY deterministic private handoff PLAN candidate; actual adapter NOT IMPLEMENTED | Validated private canonical export, provider-side conditional/idempotent write and client authorization |
 | Real-client pilot | BLOCKED | Explicit owner pilot approval, security/privacy, actual off-device backup + restore, physical iOS/Safari/AT and offline tests |
 
 ## Follow-on implementation order
@@ -76,3 +76,12 @@ The dormant `src/interview-prep-review-ui-trial.ts` is a **synthetic-only** priv
 This **does not** populate interview answers, persist a prepared packet offline, synchronize any source, establish engagement/job ownership, or provide a protected launch. The future, independently reviewed adapter must bind the prepared job to an authorized client/workspace and verify the digest and exact canonical source in the same authorized transaction where any promotion/persistence occurs; this browser callback alone cannot guarantee race-free downstream writes. An independent protected-host/UI privacy and physical device/AT gate remains mandatory. Do not screen-share the private preparation UI.
 
 A synthetic release is not an approved client-data pilot.
+
+
+## Downstream private handoff plan — source-only candidate
+
+`src/interview-handoff-plan.ts` proposes three **private** artifacts for a reviewed canonical 1.3 session: validated canonical JSON, deterministic internal Markdown, and currently relevant follow-up suggestions. The caller must explicitly assert that an operator reviewed the draft and provide a bounded opaque engagement reference plus exact session/revision/pinned pack identities. Malformed or conflicting identities fail closed. A private artifact's stable idempotency identity is derived from version, opaque engagement reference, session ID, revision ID, pack digest, artifact kind, and content SHA-256. Identical retries yield identical bytes and keys; changed internal content or a newer revision gets different keys.
+
+The outputs **contain confidential interview material** and must never be placed in Owner Console, URLs, public GitHub artifacts/logs, or unsecured storage. The plan has no destination, HTTP calls, provider credentials, local database, task creation, customer consent, real client approval, or capability to write. **A deterministic idempotency key is not idempotent delivery**: the future private adapter needs its own allowlisted client/workspace binding, authentication, unique-key conditional object creation/update, conflict resolution, retention and rollback, and verified off-device backup/restore. The engagement reference supplied to this pure function is **not independently verified** and must not be treated as proof of authority. Proposed next steps are informational, never autonomous client commitments.
+
+All work here remains synthetic-only, dormant and governed by [#105](https://github.com/LowcountryDigitalWorks/interview-facilitator/issues/105). Source acceptance is not production deployment or pilot authorization.
