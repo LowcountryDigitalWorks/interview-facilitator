@@ -58,6 +58,13 @@ async function inspect(page: Page): Promise<{
     const record = await trial.loadKnownFactLifecycleTrial14ForReview(held.db, held.sessionId);
     if (!record) throw new Error('Expected synthetic trial record.');
     const snapshot = record.lifecycle.completedRevisions[0]?.sessionSnapshot;
+    const historicalRequest = held.db.transaction('trial-history', 'readonly')
+      .objectStore('trial-history').get(trial.lifecycleTrialHistoryKey(held.sessionId, 1));
+    const historical = await new Promise<{ lifecycle: { session: unknown } } | undefined>(
+      (resolve, reject) => {
+        historicalRequest.onsuccess = () => resolve(historicalRequest.result);
+        historicalRequest.onerror = () => reject(historicalRequest.error);
+      });
     const canonical = (v: unknown) => identity.canonicalizeJson(JSON.parse(JSON.stringify(v)));
     return {
       status: record.lifecycle.status,
@@ -66,9 +73,8 @@ async function inspect(page: Page): Promise<{
       eventTypes: record.lifecycle.events.map((e: { type: string }) => e.type),
       parentLinked: snapshot
         ? record.lifecycle.session.parentRevisionId === snapshot.revisionId : false,
-      completedSnapshotMatches: snapshot
-        ? canonical(snapshot) === canonical(record.lifecycle.completedRevisions[0].sessionSnapshot)
-        : false,
+      completedSnapshotMatches: !!snapshot && !!historical
+        && canonical(snapshot) === canonical(historical.lifecycle.session),
       notesRetained: record.lifecycle.session.runningNotes
         === 'PRIVATE SYNTHETIC RUNNING NOTES NEVER DISPLAY',
     };
