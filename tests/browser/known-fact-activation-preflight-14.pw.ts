@@ -167,11 +167,14 @@ test('pure preflight rejects ambiguous storage keys, duplicate archives, and a c
     const source = await semantic.createSemanticSession(pack.generalDiscoveryPack, {
       clientLabel: 'PRIVATE SENSITIVE SOURCE',
     }, new Date('2026-11-07T13:01:00.000Z'));
-    const current = await known.migrateSemantic13ToKnownFact14(source);
+    const separateSource14 = await semantic.createSemanticSession(pack.generalDiscoveryPack, {
+      clientLabel: 'PRIVATE SECOND SOURCE FOR REPLAY',
+    }, new Date('2026-11-07T13:02:00.000Z'));
+    const current = await known.migrateSemantic13ToKnownFact14(separateSource14);
     const changed = structuredClone(current);
     changed.runningNotes = 'PRIVATE CHANGED SINCE MIGRATION';
     const archiveKey = migration.legacyArchiveKey(
-      source.sessionId, '1.3.0', known.SEMANTIC_13_TO_KNOWN_FACT_14_MIGRATION_ID,
+      separateSource14.sessionId, '1.3.0', known.SEMANTIC_13_TO_KNOWN_FACT_14_MIGRATION_ID,
     );
     const bogus = structuredClone(source);
     bogus.sessionId = 'different-in-value';
@@ -184,7 +187,7 @@ test('pure preflight rejects ambiguous storage keys, duplicate archives, and a c
         { key: null, value: source },
       ],
       archives: [
-        { key: archiveKey, value: source },
+        { key: archiveKey, value: separateSource14 },
         { key: archiveKey, value: { hidden: true } },
         { key: 42, value: source },
       ],
@@ -212,7 +215,7 @@ test('pure preflight rejects ambiguous storage keys, duplicate archives, and a c
             { key: null, value: source },
           ],
           archives: [
-            { key: archiveKey, value: source },
+            { key: archiveKey, value: separateSource14 },
             { key: archiveKey, value: { hidden: true } },
             { key: 42, value: source },
           ],
