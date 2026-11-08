@@ -1,6 +1,6 @@
 # Interview preparation and Owner Console bridge — PREP-BRIDGE-001
 
-Status: **synthetic-only source contracts and human-selection browser trial accepted; deterministic downstream handoff plan candidate; NOT connected, installed, launched, synced or pilot-accepted**  
+Status: **synthetic-only source contracts, human-selection trial, and private handoff plan accepted; private staging overlay candidate; NOT connected, installed, launched, synced or pilot-accepted**  
 Owning authority: [Interview Facilitator #105](https://github.com/LowcountryDigitalWorks/interview-facilitator/issues/105), [roadmap #5](https://github.com/LowcountryDigitalWorks/interview-facilitator/issues/5), [Owner Console #16](https://github.com/LowcountryDigitalWorks/owner-console/issues/16), [client-operations parent business-operations #753](https://github.com/LowcountryDigitalWorks/business-operations/issues/753).
 
 ## Owner-directed outcome
@@ -51,10 +51,10 @@ Authoritative client/workflow stage -> authorized event, no new control plane
 | --- | --- | --- |
 | Public source-only prep/result contracts | ACCEPTED — #106 merged with exact-head IR + postmerge CI | Strict packet/unit proof; no live deployment |
 | Provider source mapping and automatic prep trigger | NOT IMPLEMENTED | Approved account access, field allowlists, engagement identity, retries, private packet retention and provenance |
-| Human import/prefill and offline resume | DORMANT synthetic human-selection browser trial ACCEPTED (#107); import/persistence NOT IMPLEMENTED | Independent source review then actual private adapter, offline durability, conflict and stale revision handling |
+| Human import/prefill and offline resume | DORMANT human selection (#107) and staging overlay candidate; NO accepted fact import/persistence | Independent source review, actual private adapter, offline durability, conflict and stale revision handling |
 | Owner Console status card | NOT IMPLEMENTED | Product owner reconciles #11/PR #12, accepted #362 mapping, private Access, no client contents |
 | Owner Console secure launch | NOT IMPLEMENTED | Protected destination, owner identity/authorization and approved client resolution; no URL tokens/IDs |
-| Next-stage workflow adapter | SOURCE-ONLY deterministic private handoff PLAN candidate; actual adapter NOT IMPLEMENTED | Validated private canonical export, provider-side conditional/idempotent write and client authorization |
+| Next-stage workflow adapter | SOURCE-ONLY deterministic private handoff PLAN accepted (#108); actual adapter NOT IMPLEMENTED | Validated private canonical export, provider-side conditional/idempotent write and client authorization |
 | Real-client pilot | BLOCKED | Explicit owner pilot approval, security/privacy, actual off-device backup + restore, physical iOS/Safari/AT and offline tests |
 
 ## Follow-on implementation order
@@ -85,3 +85,12 @@ A synthetic release is not an approved client-data pilot.
 The outputs **contain confidential interview material** and must never be placed in Owner Console, URLs, public GitHub artifacts/logs, or unsecured storage. The plan has no destination, HTTP calls, provider credentials, local database, task creation, customer consent, real client approval, or capability to write. **A deterministic idempotency key is not idempotent delivery**: the future private adapter needs its own allowlisted client/workspace binding, authentication, unique-key conditional object creation/update, conflict resolution, retention and rollback, and verified off-device backup/restore. The engagement reference supplied to this pure function is **not independently verified** and must not be treated as proof of authority. Proposed next steps are informational, never autonomous client commitments.
 
 All work here remains synthetic-only, dormant and governed by [#105](https://github.com/LowcountryDigitalWorks/interview-facilitator/issues/105). Source acceptance is not production deployment or pilot authorization.
+
+
+## Source-bound private staging overlay — source-only candidate
+
+The dormant `src/interview-prep-staging-overlay.ts` joins the human-selected ID-only proposal from the accepted #107 private UI with the accepted #106 preparation packet and pinned canonical 1.3 session. It revalidates both full source fingerprints, exact job/session/revision/pack identities, selected question/candidate IDs, current relevance, valid answer options, existing stored answers, and preexisting known-fact collisions before producing an **interviewer-only in-memory overlay**. Only one selection per question is permitted. Source ordering cannot pick a conflict winner, and hidden/pending questions are refused.
+
+This avoids directly writing unconfirmed source text into `session.answers`. **Why:** the current schema 1.3 `projectSemanticReadBack` can render an unresolved answer's nonempty value on a client-facing surface, so using raw prefill could disclose unconfirmed private research. Instead, the overlay explicitly contains proposed values and private source references for a future protected interviewer-only review, and it never changes canonical JSON, known facts, confirmed answers, follow-ups, client-facing Read-back, Owner Console, or local/remote storage. A real confirmation/acceptance route requires a **separately reviewed, human-controlled, revision-safe** private adapter and client-safe projections, including explicit authorization and atomic replay/stale guards.
+
+The trial browser journey covers actual human UI selection -> callback -> strict private overlay with no accepted answers or client-facing evidence. It is not installed in the live 1.3 app, not launched from Owner Console, not a client preview, and not authorized for real client data or production use. The current live PWA's presentation/read-back privacy contract must be re-reviewed before any source values enter canonical session fields.
