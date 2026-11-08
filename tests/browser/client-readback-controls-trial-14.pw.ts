@@ -22,7 +22,7 @@ async function mount(page: Page): Promise<void> {
       resolution: 'captured', source: 'client-statement',
       needsConfirmation: false, confirmation: null,
       note: 'SYNTHETIC PRIVATE QUESTION NOTE NOT TO DISCLOSE',
-      followUp: { action: 'SYNTHETIC REVIEWABLE FOLLOW-UP', dueAt: null },
+      followUp: { action: 'SYNTHETIC REVIEWABLE FOLLOW-UP' },
     };
     const session = await known.migrateSemantic13ToKnownFact14(base);
     const privateHost = document.createElement('section');
