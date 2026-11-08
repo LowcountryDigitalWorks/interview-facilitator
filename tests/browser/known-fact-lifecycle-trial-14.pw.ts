@@ -57,6 +57,14 @@ test('atomic Draft→read-back→Completed→reopened Draft survives canonical e
     const canonical = (value: unknown) => identity.canonicalizeJson(JSON.parse(JSON.stringify(value)));
 
     const tx = db.transaction(['trial-session', 'trial-lifecycle', 'trial-history', 'trial-backup'], 'readonly');
+    // Individual request success events do not imply that the transaction has
+    // finished. Deleting the trial DB while it is still open can fire blocked.
+    // Arm completion BEFORE queuing requests to avoid missing the event.
+    const txFinished = new Promise<void>((resolve, reject) => {
+      tx.addEventListener('complete', () => resolve(), { once: true });
+      tx.addEventListener('abort', () => reject(tx.error ?? new Error('Trial read transaction aborted.')),
+        { once: true });
+    });
     const get = (request: IDBRequest) => new Promise<unknown>((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
@@ -76,6 +84,7 @@ test('atomic Draft→read-back→Completed→reopened Draft survives canonical e
       && historic[0]?.lifecycle?.status === 'draft'
       && historic[1]?.lifecycle?.status === 'draft'
       && historic[2]?.lifecycle?.status === 'completed';
+    await txFinished;
     db.close();
 
     // Simulate local trial database loss, then restore from explicitly held
