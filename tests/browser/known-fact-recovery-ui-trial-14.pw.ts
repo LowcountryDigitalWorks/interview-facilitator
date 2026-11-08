@@ -1,6 +1,5 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { readFile } from 'node:fs/promises';
 
 /**
  * Human-operated source-only 1.4 trial UI using synthetic Chromium.
@@ -9,6 +8,17 @@ import { readFile } from 'node:fs/promises';
 test.beforeEach(async ({ page }) => {
   await page.goto('/tests/browser/fixtures/readback.html');
 });
+
+/** Browser-native synthetic selection. No Node/Buffer types or new dependencies. */
+async function selectSyntheticBackup(page: Page, name: string, contents: string): Promise<void> {
+  await page.evaluate(({ name, contents }) => {
+    const input = document.querySelector('#synthetic-recovery input[type="file"]') as HTMLInputElement;
+    const data = new DataTransfer();
+    data.items.add(new File([contents], name, { type: 'application/json' }));
+    input.files = data.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, { name, contents });
+}
 
 test('human export download and explicit verified-file restore survive isolated trial DB loss', async ({ page }) => {
   const id = await page.evaluate(async () => {
@@ -43,22 +53,12 @@ test('human export download and explicit verified-file restore survive isolated 
   await page.getByRole('button', { name: 'Download selected trial backup' }).click();
   const download = await downloadWait;
   expect(download.suggestedFilename()).toBe('ldw-interview-lifecycle-1.4-trial-confidential.json');
-  const bytes = await readFile(await download.path(), 'utf8');
-  const validation = await page.evaluate(async (content) => {
-    const trial = await import('/src/known-fact-lifecycle-storage-trial-14.ts');
-    const lifecycle = await trial.validateLifecycleTrial14BackupForReview(content);
-    return { classification: JSON.parse(content).classification,
-      status: lifecycle.status, containsPrivate: content.includes('PRIVATE SYNTHETIC'),
-      sessionId: lifecycle.session.sessionId };
-  }, bytes);
-  expect(validation).toEqual({
-    classification: 'INTERNAL / CONFIDENTIAL', status: 'draft',
-    containsPrivate: true, sessionId: id,
-  });
+  const downloadedPath = await download.path();
+  expect(downloadedPath).toBeTruthy();
   await expect(page.getByRole('status')).toContainText('Local download requested');
 
   await page.evaluate(async () => {
-    const trial = await import('/src/known-fact-lifecycle-storage-trial-14.ts');
+    const trial = await import(/* @vite-ignore */ String('/src/known-fact-lifecycle-storage-trial-14.ts'));
     const handle = (window as Window & { __recoveryTrial?: { db: IDBDatabase; dispose: () => void } })
       .__recoveryTrial!;
     handle.dispose();
@@ -70,7 +70,7 @@ test('human export download and explicit verified-file restore survive isolated 
       request.onblocked = () => reject(new Error('Trial DB loss blocked.'));
     });
     const db = await trial.openKnownFactLifecycleTrial14ForReview();
-    const ui = await import('/src/known-fact-recovery-ui-trial-14.ts');
+    const ui = await import(/* @vite-ignore */ String('/src/known-fact-recovery-ui-trial-14.ts'));
     const host = document.querySelector('#synthetic-recovery') as HTMLElement;
     const mounted = ui.mountKnownFactRecoveryTrial14ForReview(host, db);
     (window as Window & { __recoveryTrial?: { db: IDBDatabase; dispose: () => void } })
@@ -80,7 +80,20 @@ test('human export download and explicit verified-file restore survive isolated 
   const restoreButton = page.getByRole('button', { name: 'Restore selected backup into empty trial slot' });
   await expect(restoreButton).toBeDisabled();
   await page.getByLabel('Choose a confidential trial backup JSON file')
-    .setInputFiles({ name: 'synthetic-confidential.json', mimeType: 'application/json', buffer: Buffer.from(bytes) });
+    .setInputFiles(downloadedPath!);
+  const validation = await page.evaluate(async () => {
+    const input = document.querySelector('#synthetic-recovery input[type="file"]') as HTMLInputElement;
+    const content = await input.files![0]!.text();
+    const trial = await import(/* @vite-ignore */ String('/src/known-fact-lifecycle-storage-trial-14.ts'));
+    const lifecycle = await trial.validateLifecycleTrial14BackupForReview(content);
+    return { classification: JSON.parse(content).classification,
+      status: lifecycle.status, containsPrivate: content.includes('PRIVATE SYNTHETIC'),
+      sessionId: lifecycle.session.sessionId };
+  });
+  expect(validation).toEqual({
+    classification: 'INTERNAL / CONFIDENTIAL', status: 'draft',
+    containsPrivate: true, sessionId: id,
+  });
   await expect(page.getByText(/Validated confidential trial backup/)).toBeVisible();
   await expect(restoreButton).toBeDisabled();
   await page.getByRole('checkbox', { name: /I understand this is an explicit restore/ }).check();
@@ -90,7 +103,7 @@ test('human export download and explicit verified-file restore survive isolated 
   await expect(restoreButton).toBeDisabled();
 
   const recovered = await page.evaluate(async (sessionId) => {
-    const trial = await import('/src/known-fact-lifecycle-storage-trial-14.ts');
+    const trial = await import(/* @vite-ignore */ String('/src/known-fact-lifecycle-storage-trial-14.ts'));
     const handle = (window as Window & { __recoveryTrial?: { db: IDBDatabase; dispose: () => void } })
       .__recoveryTrial!;
     const saved = await trial.loadKnownFactLifecycleTrial14ForReview(handle.db, sessionId);
@@ -129,13 +142,12 @@ test('invalid file, explicit cancellation and occupied trial restore never overw
   });
   const input = page.getByLabel('Choose a confidential trial backup JSON file');
   const restore = page.getByRole('button', { name: 'Restore selected backup into empty trial slot' });
-  await input.setInputFiles({ name: 'bad.json', mimeType: 'application/json',
-    buffer: Buffer.from('{"invalid":"PRIVATE MUST NEVER LEAK"}') });
+  await selectSyntheticBackup(page, 'bad.json', '{"invalid":"PRIVATE MUST NEVER LEAK"}');
   await expect(page.getByRole('status')).toContainText('Backup rejected');
   await expect(restore).toBeDisabled();
   expect(await page.locator('#synthetic-recovery').textContent()).not.toContain('PRIVATE MUST NEVER LEAK');
 
-  await input.setInputFiles({ name: 'good.json', mimeType: 'application/json', buffer: Buffer.from(bytes) });
+  await selectSyntheticBackup(page, 'good.json', bytes);
   await expect(page.getByRole('status')).toContainText('Backup validated locally');
   await page.getByRole('button', { name: 'Cancel selected backup' }).click();
   await expect(page.getByRole('status')).toContainText('Selection cancelled');
@@ -150,12 +162,12 @@ test('invalid file, explicit cancellation and occupied trial restore never overw
   });
   expect(empty).toBe(0);
 
-  await input.setInputFiles({ name: 'good.json', mimeType: 'application/json', buffer: Buffer.from(bytes) });
+  await selectSyntheticBackup(page, 'good.json', bytes);
   await expect(page.getByRole('status')).toContainText('Backup validated locally');
   await page.getByRole('checkbox', { name: /I understand this is an explicit restore/ }).check();
   await restore.click();
   await expect(page.getByRole('status')).toContainText('Trial restore committed locally');
-  await input.setInputFiles({ name: 'good.json', mimeType: 'application/json', buffer: Buffer.from(bytes) });
+  await selectSyntheticBackup(page, 'good.json', bytes);
   await expect(page.getByRole('status')).toContainText('Backup validated locally');
   await page.getByRole('checkbox', { name: /I understand this is an explicit restore/ }).check();
   await restore.click();
@@ -176,8 +188,8 @@ test('invalid file, explicit cancellation and occupied trial restore never overw
 
 test('source-only recovery controls pass automated accessibility floor without revealing contents', async ({ page }) => {
   await page.evaluate(async () => {
-    const trial = await import('/src/known-fact-lifecycle-storage-trial-14.ts');
-    const ui = await import('/src/known-fact-recovery-ui-trial-14.ts');
+    const trial = await import(/* @vite-ignore */ String('/src/known-fact-lifecycle-storage-trial-14.ts'));
+    const ui = await import(/* @vite-ignore */ String('/src/known-fact-recovery-ui-trial-14.ts'));
     const db = await trial.openKnownFactLifecycleTrial14ForReview();
     const host = document.createElement('section');
     host.id = 'synthetic-recovery';
