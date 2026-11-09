@@ -6,6 +6,7 @@ import { exportCanonicalSessionJsonForReview } from './versioned-session-io';
 import { semanticSessionToMarkdown, serializeSession } from './markdown';
 import { proposeInterviewNextStepsForReview } from './interview-workflow-bridge';
 import { canonicalizeJson } from './pack-identity';
+import { buildPrivateInterviewHandoffForReview } from './private-interview-handoff';
 import { formatConnectivityLabel, formatSaveLabel, type PersistenceState, type SaveState } from './indicators';
 import { SessionAutosaveCoordinator } from './autosave';
 import { readSessionList } from './session-list';
@@ -1005,7 +1006,7 @@ function renderReview(): void {
         : '<div class="known-preview"><strong>Private review</strong><p>Internal tools are available here. Use Presentation view before screen sharing or client read-back.</p></div>'}
       ${presenting
         ? ''
-        : '<div class="button-row"><button class="primary" data-action="enter-presentation">Open presentation view</button><button class="secondary" data-action="json">Export full JSON backup</button><button class="secondary" data-action="markdown">Export internal Markdown</button><button class="secondary" data-action="home">Home</button><button class="secondary" data-action="delete">Delete local session</button></div>'}
+        : '<div class="button-row"><button class="primary" data-action="enter-presentation">Open presentation view</button><button class="secondary" data-action="json">Export full JSON backup</button><button class="secondary" data-action="markdown">Export internal Markdown</button><button class="secondary" data-action="handoff">Export private handoff bundle JSON</button><button class="secondary" data-action="home">Home</button><button class="secondary" data-action="delete">Delete local session</button></div>'}
     </main>`;
   app.querySelector('[data-action="return"]')?.addEventListener('click', () => { readBackReturnTarget = null; view = 'interview'; renderInterview(); focusPrimaryAnswer(); });
   app.querySelectorAll<HTMLElement>('[data-change]').forEach((button) => button.addEventListener('click', () => {
@@ -1022,6 +1023,26 @@ function renderReview(): void {
   app.querySelectorAll('[data-action="exit-presentation"]').forEach((button) => button.addEventListener('click', () => { presentationMode = exitPresentation(); renderReview(); focusReviewHeading(); }));
   app.querySelector('[data-action="json"]')?.addEventListener('click', () => { if (session) download('interview.json', serializeSession(session), 'application/json'); });
   app.querySelector('[data-action="markdown"]')?.addEventListener('click', () => { if (session) download('interview.md', semanticSessionToMarkdown(session), 'text/markdown'); });
+  app.querySelector('[data-action="handoff"]')?.addEventListener('click', async () => {
+    if (!session || view !== 'review' || isPresentationMode(presentationMode)) return;
+    const targetId = session.sessionId;
+    try {
+      // Confidential full-session package, NOT an approved provider action.
+      await autosave.flushAndWait(targetId);
+      if (!session || session.sessionId !== targetId
+        || view !== 'review' || isPresentationMode(presentationMode)) return;
+      const source = structuredClone(session);
+      const sourceCanonical = canonicalizeJson(source);
+      const bytes = await buildPrivateInterviewHandoffForReview(source);
+      if (!session || session.sessionId !== source.sessionId
+        || session.revisionId !== source.revisionId
+        || canonicalizeJson(session) !== sourceCanonical || autosave.hasPending(targetId)
+        || view !== 'review' || isPresentationMode(presentationMode)) return;
+      download('interview-private-handoff.json', bytes, 'application/json');
+    } catch {
+      alert('Unable to verify and save the current local interview. No private handoff file was exported.');
+    }
+  });
   app.querySelector('[data-action="next-step-proposals"]')?.addEventListener('click', async () => {
     if (!session || view !== 'review' || isPresentationMode(presentationMode)) return;
     const targetId = session.sessionId;
