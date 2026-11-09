@@ -21,19 +21,21 @@ test('canonical private backup restores an isolated confirmed session after data
     session.answers['primary-goal'].value = 'SYNTHETIC CUSTOMER CONFIRMED CORRECTION';
     session.answers['primary-goal'].resolution = 'captured';
     session.answers['primary-goal'].source = 'client-statement';
-    let db: IDBDatabase | null = await trial.openConfirmationTrialDatabaseForReview();
+    const initial: IDBDatabase = await trial.openConfirmationTrialDatabaseForReview();
+    let db: IDBDatabase | null = initial;
     try {
-      await trial.seedConfirmationTrialForReview(db, session);
-      const bytes = await backup.exportConfirmationTrialBackupForReview(db, session.sessionId);
+      await trial.seedConfirmationTrialForReview(initial, session);
+      const bytes = await backup.exportConfirmationTrialBackupForReview(initial, session.sessionId);
       const expected = await backup.validateConfirmationTrialBackupForReview(bytes);
-      db.close(); db = null;
+      initial.close(); db = null;
       await trial.deleteConfirmationTrialDatabaseForReview();
-      db = await trial.openConfirmationTrialDatabaseForReview();
-      const restored = await backup.restoreConfirmationTrialBackupForReview(db, bytes);
-      const loaded = await trial.loadConfirmationTrialForReview(db, session.sessionId);
+      const restoredHandle: IDBDatabase = await trial.openConfirmationTrialDatabaseForReview();
+      db = restoredHandle;
+      const restored = await backup.restoreConfirmationTrialBackupForReview(restoredHandle, bytes);
+      const loaded = await trial.loadConfirmationTrialForReview(restoredHandle, session.sessionId);
       let duplicateRejected = false;
       try {
-        await backup.restoreConfirmationTrialBackupForReview(db, bytes);
+        await backup.restoreConfirmationTrialBackupForReview(restoredHandle, bytes);
       } catch {
         duplicateRejected = true;
       }
@@ -71,18 +73,19 @@ test('canonical private backup restores an isolated confirmed session after data
 
 test('held synthetic tab blocks deletion and the caller sees a failure, never false success', async ({ page }) => {
   const result = await page.evaluate(async () => {
-    const mod = await import(/* @vite-ignore */ '/src/interview-prep-confirmation-idb-trial.ts');
-    let db: IDBDatabase | null = await mod.openConfirmationTrialDatabaseForReview();
+    const path = '/src/interview-prep-confirmation-idb-trial.ts';
+    const mod = await import(/* @vite-ignore */ path);
+    const held: IDBDatabase = await mod.openConfirmationTrialDatabaseForReview();
     let versionChangeSeen = false;
     // Deliberately simulate a noncooperative second tab: no automatic close.
-    db.onversionchange = () => { versionChangeSeen = true; };
+    held.onversionchange = () => { versionChangeSeen = true; };
     let blockedReported = false;
     try {
       await mod.deleteConfirmationTrialDatabaseForReview();
     } catch (e) {
       blockedReported = e instanceof Error && e.message.includes('blocked');
     }
-    db.close(); db = null;
+    held.close();
     // The blocked native request may complete after the tab closes. Open will
     // wait for that native request to settle before creating the trial DB anew.
     const newDb = await mod.openConfirmationTrialDatabaseForReview();
@@ -95,7 +98,8 @@ test('held synthetic tab blocks deletion and the caller sees a failure, never fa
 
 test('synthetic versionchange closes old trial handle and requires explicit reopen', async ({ page }) => {
   const result = await page.evaluate(async () => {
-    const mod = await import(/* @vite-ignore */ '/src/interview-prep-confirmation-idb-trial.ts');
+    const path = '/src/interview-prep-confirmation-idb-trial.ts';
+    const mod = await import(/* @vite-ignore */ path);
     const db = await mod.openConfirmationTrialDatabaseForReview();
     try {
       const bumped = await new Promise<IDBDatabase>((resolve, reject) => {
