@@ -182,10 +182,11 @@ test('two synthetic tabs competing from same source cannot both overwrite origin
 
 test('synthetic DB refuses real-looking client data before any write', async ({ page }) => {
   const result = await page.evaluate(async () => {
+    const load = (path: string) => import(/* @vite-ignore */ path);
     const [pack, semantic, trial] = await Promise.all([
-      import('/src/pack.ts'), import('/src/semantic-session.ts'),
-      import('/src/interview-prep-confirmation-idb-trial.ts'),
-    ]);
+      '/src/pack.ts', '/src/semantic-session.ts',
+      '/src/interview-prep-confirmation-idb-trial.ts',
+    ].map(load));
     const session = await semantic.createSemanticSession(pack.generalDiscoveryPack, {
       clientLabel: 'UNAUTHORIZED REAL ENGAGEMENT',
     }, new Date('2026-11-08T14:00:00.000Z'));
