@@ -2,12 +2,15 @@ import { relevanceMap } from './live-session';
 import { validateSemanticSessionRecord } from './semantic-session';
 
 /**
- * PREP-BRIDGE-001. This PURE module is a dormant, provider-neutral,
- * SYNTHETIC-ONLY source proof. It does not import main.ts, open IndexedDB,
- * make network requests, populate canonical answers, or create downstream tasks.
+ * PREP-BRIDGE-001. Pure provider-neutral projections with no direct storage,
+ * network, automatic answer acceptance, Owner Console mutation or downstream
+ * tasks. Preparation packet + Owner Console status remain source-only contracts.
  *
- * Private packet fields and proposed follow-ups belong only inside an
- * authorized governed client workspace, never the public Owner Console or URL.
+ * The follow-up proposal projector is also usable by the LIVE offline PWA's
+ * private export after local validation: export is NOT external task routing,
+ * consent, an approved customer action or provider synchronization.
+ * Confidential packet values/proposed actions must never enter public GitHub,
+ * Owner Console snapshots, presentation mode or URL query strings.
  */
 export const INTERVIEW_PREP_PACKET_VERSION = 'ldw.interview-prep.v1' as const;
 export const INTERVIEW_OWNER_STATUS_VERSION = 'ldw.interview-owner-status.v1' as const;
