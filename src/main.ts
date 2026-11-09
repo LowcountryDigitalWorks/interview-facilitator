@@ -1,6 +1,6 @@
 import './styles.css';
 import type { AnswerStatus, Question } from './domain';
-import { generalDiscoveryPack as pack } from './pack';
+import { DEFAULT_INTERVIEW_PACK_ID, LIVE_INTERVIEW_PACK_OPTIONS, defaultLiveInterviewPack, findLiveInterviewPack } from './interview-packs';
 import { deleteSession, exportRecoveryBackup, listSessions, loadKnownFactSession14ForReview, loadSession, migrateLegacySession, replaceSessionWithHistory, requestPersistentStorage, RevisionConflictError, saveSession } from './storage';
 import { exportCanonicalSessionJsonForReview } from './versioned-session-io';
 import { semanticSessionToMarkdown, serializeSession } from './markdown';
@@ -507,18 +507,25 @@ function renderHomeNotice(notice: Exclude<HomeNotice, null>): string {
 
 function renderNew(): void {
   readBackReturnTarget = null;
+  const pack = defaultLiveInterviewPack();
   app.innerHTML = `
     <header class="app-header"><div><strong>Interview Facilitator</strong><span>New interview</span></div>${updateSlotMarkup()}</header>
     <main id="main" class="form-shell">
       <button class="text-button" data-action="home">← Back</button>
-      <p class="eyebrow">Prepare · ${escapeHtml(pack.title)} · pack v${escapeHtml(pack.packVersion)}</p><h1>Prepare this interview</h1><p>${escapeHtml(pack.description)}</p>
+      <p class="eyebrow">Prepare · <span data-prepare-pack-title>${escapeHtml(pack.title)}</span> · pack v<span data-prepare-pack-version>${escapeHtml(pack.packVersion)}</span></p><h1>Prepare this interview</h1><p data-prepare-pack-description>${escapeHtml(pack.description)}</p>
       <form id="new-form" class="setup-card">
+        <label>Interview type
+          <select id="interview-pack" name="packId" required>
+            ${LIVE_INTERVIEW_PACK_OPTIONS.map((option) => `<option value="${escapeHtml(option.id)}" ${option.id === DEFAULT_INTERVIEW_PACK_ID ? 'selected' : ''}>${escapeHtml(option.title)}</option>`).join('')}
+          </select>
+        </label>
+        <p class="helper-text" data-prepare-pack-summary>${pack.questions.length} guided questions. Client facts are not imported or accepted automatically.</p>
         <label>Project or client label<input name="clientLabel" required autocomplete="off" placeholder="Example Project" /></label>
         <label>Interviewer <span>(optional)</span><input name="interviewerLabel" autocomplete="off" /></label>
         <label>Interview mode<select name="interviewMode"><option>Conversation</option><option>Phone</option><option>Video call</option><option>In person</option></select></label>
         <section class="known-preview" aria-labelledby="prepare-known-title">
            <h2 id="prepare-known-title">Known context for review</h2>
-           <p>Reference only — starting this interview does not accept or confirm a known fact. Review and correct it during capture.</p>
+           <p>No client-specific information has been preloaded. Add confirmed answers during the interview; never enter credentials or other secrets. Any future private preparation requires separate authorized review.</p>
            ${pack.knownFacts.length
              ? pack.knownFacts.map((fact) => `<div class="prepare-fact"><strong>${escapeHtml(fact.label)}</strong><p>${escapeHtml(fact.value)}</p><small>Source: ${escapeHtml(fact.provenance)}</small></div>`).join('')
              : '<p>No known context supplied with this pack.</p>'}
@@ -542,12 +549,35 @@ function renderNew(): void {
       </form>
     </main>`;
   app.querySelector('[data-action="home"]')?.addEventListener('click', () => { view = 'home'; render(); });
+  const packPicker = app.querySelector<HTMLSelectElement>('#interview-pack');
+  packPicker?.addEventListener('change', () => {
+    const selected = findLiveInterviewPack(packPicker.value);
+    if (!selected) {
+      packPicker.setCustomValidity('Choose an available interview type.');
+      return;
+    }
+    packPicker.setCustomValidity('');
+    const title = app.querySelector<HTMLElement>('[data-prepare-pack-title]');
+    const version = app.querySelector<HTMLElement>('[data-prepare-pack-version]');
+    const description = app.querySelector<HTMLElement>('[data-prepare-pack-description]');
+    const summary = app.querySelector<HTMLElement>('[data-prepare-pack-summary]');
+    if (title) title.textContent = selected.title;
+    if (version) version.textContent = selected.packVersion;
+    if (description) description.textContent = selected.description;
+    if (summary) summary.textContent = `${selected.questions.length} guided questions. Client facts are not imported or accepted automatically.`;
+  });
   app.querySelector<HTMLFormElement>('#new-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = event.currentTarget as HTMLFormElement;
     const data = new FormData(form);
+    const selected = findLiveInterviewPack(data.get('packId'));
+    if (!selected) {
+      packPicker?.setCustomValidity('Choose an available interview type.');
+      packPicker?.reportValidity();
+      return;
+    }
     const gated = await sessionSwitchGate.run(async () => {
-      const next = await createSemanticSession(pack, {
+      const next = await createSemanticSession(selected, {
         clientLabel: String(data.get('clientLabel') ?? ''),
         interviewerLabel: String(data.get('interviewerLabel') ?? ''),
         interviewMode: String(data.get('interviewMode') ?? '')
