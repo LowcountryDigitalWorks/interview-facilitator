@@ -182,6 +182,13 @@ test('private follow-up capture exports validated action proposals but never tur
   await page.getByLabel('Proposed follow-up action').fill(action);
   await page.locator('#question-note').fill('SYNTHETIC INTERVIEWER NOTE EXCLUDED FROM ACTIONS');
   await expect(page.locator('[data-save-indicator]')).toContainText(/Saved/, { timeout: 5000 });
+  // The Save label can be satisfied by an earlier operation. Inspect the
+  // authoritative IndexedDB row before closing the page to prove durability.
+  await expect.poll(async () => {
+    const rows = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+    return rows.find(x => x.clientLabel === 'SYNTHETIC FOLLOW-UP EXPORT')
+      ?.answers['existing-presence']?.followUp?.action;
+  }, { timeout: 10_000 }).toBe(action);
 
   // Reopening proves the new private field is in the existing local
   // canonical session and not just transient DOM state.
