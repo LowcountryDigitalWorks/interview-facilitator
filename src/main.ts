@@ -5,6 +5,7 @@ import { deleteSession, exportRecoveryBackup, listSessions, loadKnownFactSession
 import { exportCanonicalSessionJsonForReview } from './versioned-session-io';
 import { semanticSessionToMarkdown, serializeSession } from './markdown';
 import { proposeInterviewNextStepsForReview } from './interview-workflow-bridge';
+import { canonicalizeJson } from './pack-identity';
 import { formatConnectivityLabel, formatSaveLabel, type PersistenceState, type SaveState } from './indicators';
 import { SessionAutosaveCoordinator } from './autosave';
 import { readSessionList } from './session-list';
@@ -659,8 +660,12 @@ function renderInterview(): void {
         ${question.help ? `<p id="question-help" class="question-help">${escapeHtml(question.help)}</p>` : ''}
         <div class="answer-block">${answerControl(question, state.value ?? '')}</div>
         ${presenting ? '' : `<label class="notes-label">Question notes <span>internal</span><textarea id="question-note" rows="3" placeholder="Optional interviewer note">${escapeHtml(state.note)}</textarea></label>
-        <label class="notes-label">Proposed follow-up action <span>internal, optional</span><textarea id="follow-up-action" rows="2" maxlength="2000" placeholder="Draft an action to review after the interview; no task is created">${escapeHtml(state.followUp?.action ?? '')}</textarea></label>
-        <p class="helper-text">Saved only with this local interview. Draft actions are not client commitments or workflow tasks. They are hidden in Presentation view.</p>
+        <fieldset class="follow-up-fields" aria-describedby="follow-up-help"><legend>Proposed next step <span>internal, optional</span></legend>
+          <label class="notes-label">Proposed follow-up action <textarea id="follow-up-action" rows="2" maxlength="2000" placeholder="Draft an action to review after the interview; no task is created">${escapeHtml(state.followUp?.action ?? '')}</textarea></label>
+          <label class="notes-label">Suggested owner <span>not an assignment</span><input id="follow-up-owner" type="text" maxlength="160" value="${escapeHtml(state.followUp?.owner ?? '')}" placeholder="Person or team (optional)"/></label>
+          <label class="notes-label">Suggested due date <span>not a commitment</span><input id="follow-up-due-date" type="text" value="${escapeHtml(state.followUp?.dueDate ?? '')}" placeholder="YYYY-MM-DD recommended; older notes are preserved"/></label>
+          <p id="follow-up-help" class="helper-text">Only an action is required. Owner and date are suggestions, not assignments or commitments. Drafts save locally and remain hidden in Presentation mode.${relevanceMap(session)[question.id] === 'pending' ? ' This conditional question is pending, so its draft is excluded from active next steps until it becomes relevant.' : ''}</p>
+        </fieldset>
         <section class="quick-capture" aria-labelledby="quick-capture-title">
           <h2 id="quick-capture-title">Quick capture</h2>
           <p id="quick-capture-help">Park volunteered or out-of-order details here. Notes autosave locally, stay private in Presentation view, and do not count toward coverage until you transfer them into a question answer.</p>
@@ -713,7 +718,18 @@ function renderInterview(): void {
     const followUpField = app.querySelector<HTMLTextAreaElement>('#follow-up-action');
     if (followUpField) {
       const action = followUpField.value.trim();
-      current.followUp = action ? { ...current.followUp, action } : null;
+      const owner = app.querySelector<HTMLInputElement>('#follow-up-owner')?.value.trim() ?? '';
+      const rawDueDate = app.querySelector<HTMLInputElement>('#follow-up-due-date')?.value ?? '';
+      // Preserve legacy free-text due dates on unrelated note/answer edits.
+      // No provider is allowed to parse or act on this unverified suggestion.
+      const dueDate = rawDueDate.trim() ? rawDueDate : '';
+      current.followUp = action
+        ? {
+          action,
+          ...(owner ? { owner } : {}),
+          ...(dueDate ? { dueDate } : {}),
+        }
+        : null;
     }
     session.answers[question.id] = current;
     session.runningNotes = app.querySelector<HTMLTextAreaElement>('#running-notes')?.value ?? session.runningNotes;
@@ -798,7 +814,12 @@ function renderInterview(): void {
     }
   });
   app.querySelector<HTMLTextAreaElement>('#question-note')?.addEventListener('input', () => { syncPrivateNotes(); scheduleSave(); });
-  app.querySelector<HTMLTextAreaElement>('#follow-up-action')?.addEventListener('input', () => { syncPrivateNotes(); scheduleSave(); });
+  for (const id of ['#follow-up-action', '#follow-up-owner', '#follow-up-due-date']) {
+    app.querySelector<HTMLElement>(id)?.addEventListener('input', () => { syncPrivateNotes(); scheduleSave(); });
+    if (id === '#follow-up-due-date') {
+      app.querySelector<HTMLElement>(id)?.addEventListener('change', () => { syncPrivateNotes(); scheduleSave(); });
+    }
+  }
   app.querySelector<HTMLTextAreaElement>('#running-notes')?.addEventListener('input', () => { syncPrivateNotes(); scheduleSave(); });
 
   app.querySelectorAll<HTMLElement>('[data-question-id]').forEach((button) => button.addEventListener('click', () => { applyAnswer(); if (session) session.currentQuestionId = button.dataset.questionId ?? session.currentQuestionId; renderInterview(); focusPrimaryAnswer(); }));
@@ -936,7 +957,13 @@ function renderReview(): void {
       && Boolean(session?.answers[question.id]?.followUp?.action.trim()))
     .map((question) => ({
       question: question.prompt, action: session!.answers[question.id]!.followUp!.action,
+      owner: session!.answers[question.id]!.followUp!.owner,
+      dueDate: session!.answers[question.id]!.followUp!.dueDate,
     }));
+  const deferredActionCount = session.packSnapshot.questions.filter(
+    (question) => relevance[question.id] !== 'relevant'
+      && Boolean(session?.answers[question.id]?.followUp?.action.trim()),
+  ).length;
   app.innerHTML = `
     <header class="app-header"><div><strong>${escapeHtml(session.clientLabel)}</strong><span>${presenting ? 'Presentation read-back' : 'Private review'}</span></div><div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator>${escapeHtml(saveLabel())}</span>${presenting ? '<button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : '<button class="secondary small" data-action="enter-presentation">Presentation view</button>'}${updateSlotMarkup()}</div><span class="sr-only" role="alert" data-save-alert>${escapeHtml(saveAlertMessage())}</span></header>
     <main id="main" class="review-shell">
@@ -967,8 +994,9 @@ function renderReview(): void {
       ${presenting ? '' : `<section class="review-section" aria-labelledby="next-steps-title">
         <h2 id="next-steps-title">Proposed next steps — internal only</h2>
         <p>These are drafts to review in the governed client workflow, not approved tasks, commitments or messages. Hidden or pending question actions are excluded from the export.</p>
+        ${deferredActionCount ? `<p class="helper-text" role="status">${deferredActionCount} draft action(s) on conditional or inactive questions were retained locally, but are not included in the active proposals.</p>` : ''}
         ${proposedActions.length
-          ? `<ul>${proposedActions.map((entry) => `<li><strong>${escapeHtml(entry.question)}</strong>: ${escapeHtml(entry.action)}</li>`).join('')}</ul>`
+          ? `<ul>${proposedActions.map((entry) => `<li><strong>${escapeHtml(entry.question)}</strong>: ${escapeHtml(entry.action)}${entry.owner ? ` · Proposed owner: ${escapeHtml(entry.owner)}` : ''}${entry.dueDate ? ` · Suggested due: ${escapeHtml(entry.dueDate)}` : ''}</li>`).join('')}</ul>`
           : '<p>No currently relevant follow-up proposals recorded.</p>'}
         <button class="secondary" type="button" data-action="next-step-proposals" ${proposedActions.length ? '' : 'disabled'}>Export proposed next steps JSON (private)</button>
       </section>`}
@@ -1002,8 +1030,12 @@ function renderReview(): void {
       await autosave.flushAndWait(targetId);
       if (session?.sessionId !== targetId || view !== 'review' || isPresentationMode(presentationMode)) return;
       const source = structuredClone(session);
+      const exactSnapshot = canonicalizeJson(source);
       const proposal = await proposeInterviewNextStepsForReview(source);
+      // Revision IDs alone do not catch in-flight local edits during async
+      // projection. Compare the full canonical snapshot and the save queue.
       if (session?.sessionId !== source.sessionId || session?.revisionId !== source.revisionId
+        || canonicalizeJson(session) !== exactSnapshot || autosave.hasPending(targetId)
         || view !== 'review' || isPresentationMode(presentationMode)) return;
       if (proposal.items.length === 0) return;
       download('interview-next-step-proposals-private.json', JSON.stringify(proposal, null, 2) + '\n', 'application/json');
