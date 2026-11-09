@@ -663,7 +663,7 @@ function renderInterview(): void {
         <fieldset class="follow-up-fields" aria-describedby="follow-up-help"><legend>Proposed next step <span>internal, optional</span></legend>
           <label class="notes-label">Proposed follow-up action <textarea id="follow-up-action" rows="2" maxlength="2000" placeholder="Draft an action to review after the interview; no task is created">${escapeHtml(state.followUp?.action ?? '')}</textarea></label>
           <label class="notes-label">Suggested owner <span>not an assignment</span><input id="follow-up-owner" type="text" maxlength="160" value="${escapeHtml(state.followUp?.owner ?? '')}" placeholder="Person or team (optional)"/></label>
-          <label class="notes-label">Suggested due date <span>not a commitment</span><input id="follow-up-due-date" type="date" value="${escapeHtml(state.followUp?.dueDate ?? '')}"/></label>
+          <label class="notes-label">Suggested due date <span>not a commitment</span><input id="follow-up-due-date" type="text" value="${escapeHtml(state.followUp?.dueDate ?? '')}" placeholder="YYYY-MM-DD recommended; older notes are preserved"/></label>
           <p id="follow-up-help" class="helper-text">Only an action is required. Owner and date are suggestions, not assignments or commitments. Drafts save locally and remain hidden in Presentation mode.${relevanceMap(session)[question.id] === 'pending' ? ' This conditional question is pending, so its draft is excluded from active next steps until it becomes relevant.' : ''}</p>
         </fieldset>
         <section class="quick-capture" aria-labelledby="quick-capture-title">
@@ -719,7 +719,10 @@ function renderInterview(): void {
     if (followUpField) {
       const action = followUpField.value.trim();
       const owner = app.querySelector<HTMLInputElement>('#follow-up-owner')?.value.trim() ?? '';
-      const dueDate = app.querySelector<HTMLInputElement>('#follow-up-due-date')?.value ?? '';
+      const rawDueDate = app.querySelector<HTMLInputElement>('#follow-up-due-date')?.value ?? '';
+      // Preserve legacy free-text due dates on unrelated note/answer edits.
+      // No provider is allowed to parse or act on this unverified suggestion.
+      const dueDate = rawDueDate.trim() ? rawDueDate : '';
       current.followUp = action
         ? {
           action,
