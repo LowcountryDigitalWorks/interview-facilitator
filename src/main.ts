@@ -4,6 +4,7 @@ import { DEFAULT_INTERVIEW_PACK_ID, LIVE_INTERVIEW_PACK_OPTIONS, defaultLiveInte
 import { deleteSession, exportRecoveryBackup, listSessions, loadKnownFactSession14ForReview, loadSession, migrateLegacySession, replaceSessionWithHistory, requestPersistentStorage, RevisionConflictError, saveSession } from './storage';
 import { exportCanonicalSessionJsonForReview } from './versioned-session-io';
 import { semanticSessionToMarkdown, serializeSession } from './markdown';
+import { proposeInterviewNextStepsForReview } from './interview-workflow-bridge';
 import { formatConnectivityLabel, formatSaveLabel, type PersistenceState, type SaveState } from './indicators';
 import { SessionAutosaveCoordinator } from './autosave';
 import { readSessionList } from './session-list';
@@ -658,6 +659,8 @@ function renderInterview(): void {
         ${question.help ? `<p id="question-help" class="question-help">${escapeHtml(question.help)}</p>` : ''}
         <div class="answer-block">${answerControl(question, state.value ?? '')}</div>
         ${presenting ? '' : `<label class="notes-label">Question notes <span>internal</span><textarea id="question-note" rows="3" placeholder="Optional interviewer note">${escapeHtml(state.note)}</textarea></label>
+        <label class="notes-label">Proposed follow-up action <span>internal, optional</span><textarea id="follow-up-action" rows="2" maxlength="2000" placeholder="Draft an action to review after the interview; no task is created">${escapeHtml(state.followUp?.action ?? '')}</textarea></label>
+        <p class="helper-text">Saved only with this local interview. Draft actions are not client commitments or workflow tasks. They are hidden in Presentation view.</p>
         <section class="quick-capture" aria-labelledby="quick-capture-title">
           <h2 id="quick-capture-title">Quick capture</h2>
           <p id="quick-capture-help">Park volunteered or out-of-order details here. Notes autosave locally, stay private in Presentation view, and do not count toward coverage until you transfer them into a question answer.</p>
@@ -707,6 +710,11 @@ function renderInterview(): void {
     if (!session || presenting) return;
     const current = session.answers[question.id] ?? blankSemanticState();
     current.note = app.querySelector<HTMLTextAreaElement>('#question-note')?.value ?? current.note;
+    const followUpField = app.querySelector<HTMLTextAreaElement>('#follow-up-action');
+    if (followUpField) {
+      const action = followUpField.value.trim();
+      current.followUp = action ? { ...current.followUp, action } : null;
+    }
     session.answers[question.id] = current;
     session.runningNotes = app.querySelector<HTMLTextAreaElement>('#running-notes')?.value ?? session.runningNotes;
   };
@@ -790,6 +798,7 @@ function renderInterview(): void {
     }
   });
   app.querySelector<HTMLTextAreaElement>('#question-note')?.addEventListener('input', () => { syncPrivateNotes(); scheduleSave(); });
+  app.querySelector<HTMLTextAreaElement>('#follow-up-action')?.addEventListener('input', () => { syncPrivateNotes(); scheduleSave(); });
   app.querySelector<HTMLTextAreaElement>('#running-notes')?.addEventListener('input', () => { syncPrivateNotes(); scheduleSave(); });
 
   app.querySelectorAll<HTMLElement>('[data-question-id]').forEach((button) => button.addEventListener('click', () => { applyAnswer(); if (session) session.currentQuestionId = button.dataset.questionId ?? session.currentQuestionId; renderInterview(); focusPrimaryAnswer(); }));
@@ -919,6 +928,15 @@ function renderReview(): void {
   const questions = visibleQuestions(session);
   const buckets = coverageBucketMap(session);
   const presenting = isPresentationMode(presentationMode);
+  // Private display only; the exported source is validated separately by the
+  // canonical #105 projection before a local file is generated.
+  const relevance = relevanceMap(session);
+  const proposedActions = session.packSnapshot.questions
+    .filter((question) => relevance[question.id] === 'relevant'
+      && Boolean(session?.answers[question.id]?.followUp?.action.trim()))
+    .map((question) => ({
+      question: question.prompt, action: session!.answers[question.id]!.followUp!.action,
+    }));
   app.innerHTML = `
     <header class="app-header"><div><strong>${escapeHtml(session.clientLabel)}</strong><span>${presenting ? 'Presentation read-back' : 'Private review'}</span></div><div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator>${escapeHtml(saveLabel())}</span>${presenting ? '<button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : '<button class="secondary small" data-action="enter-presentation">Presentation view</button>'}${updateSlotMarkup()}</div><span class="sr-only" role="alert" data-save-alert>${escapeHtml(saveAlertMessage())}</span></header>
     <main id="main" class="review-shell">
@@ -946,6 +964,14 @@ function renderReview(): void {
         }).join('')}</section>`;
       }).join('')}
       <section class="review-section unresolved"><h2>Needs confirmation</h2>${questions.filter((question) => buckets[question.id] === 'needs-confirmation').map((question) => `<p>• ${escapeHtml(question.prompt)}</p>`).join('') || '<p>None.</p>'}</section>
+      ${presenting ? '' : `<section class="review-section" aria-labelledby="next-steps-title">
+        <h2 id="next-steps-title">Proposed next steps — internal only</h2>
+        <p>These are drafts to review in the governed client workflow, not approved tasks, commitments or messages. Hidden or pending question actions are excluded from the export.</p>
+        ${proposedActions.length
+          ? `<ul>${proposedActions.map((entry) => `<li><strong>${escapeHtml(entry.question)}</strong>: ${escapeHtml(entry.action)}</li>`).join('')}</ul>`
+          : '<p>No currently relevant follow-up proposals recorded.</p>'}
+        <button class="secondary" type="button" data-action="next-step-proposals" ${proposedActions.length ? '' : 'disabled'}>Export proposed next steps JSON (private)</button>
+      </section>`}
       ${presenting
         ? '<div class="known-preview"><strong>Presentation view</strong><p>Internal notes, provenance, coverage details, delete controls, and internal exports are excluded. This view cannot guarantee that free-text answers themselves contain no sensitive information.</p></div>'
         : '<div class="known-preview"><strong>Private review</strong><p>Internal tools are available here. Use Presentation view before screen sharing or client read-back.</p></div>'}
@@ -968,6 +994,23 @@ function renderReview(): void {
   app.querySelectorAll('[data-action="exit-presentation"]').forEach((button) => button.addEventListener('click', () => { presentationMode = exitPresentation(); renderReview(); focusReviewHeading(); }));
   app.querySelector('[data-action="json"]')?.addEventListener('click', () => { if (session) download('interview.json', serializeSession(session), 'application/json'); });
   app.querySelector('[data-action="markdown"]')?.addEventListener('click', () => { if (session) download('interview.md', semanticSessionToMarkdown(session), 'text/markdown'); });
+  app.querySelector('[data-action="next-step-proposals"]')?.addEventListener('click', async () => {
+    if (!session || view !== 'review' || isPresentationMode(presentationMode)) return;
+    const targetId = session.sessionId;
+    try {
+      // Do not represent an unsaved or stale draft as a workflow-ready export.
+      await autosave.flushAndWait(targetId);
+      if (session?.sessionId !== targetId || view !== 'review' || isPresentationMode(presentationMode)) return;
+      const source = structuredClone(session);
+      const proposal = await proposeInterviewNextStepsForReview(source);
+      if (session?.sessionId !== source.sessionId || session?.revisionId !== source.revisionId
+        || view !== 'review' || isPresentationMode(presentationMode)) return;
+      if (proposal.items.length === 0) return;
+      download('interview-next-step-proposals-private.json', JSON.stringify(proposal, null, 2) + '\\n', 'application/json');
+    } catch {
+      alert('Could not verify or save the current local interview. No proposed next-step file was exported.');
+    }
+  });
   app.querySelector('[data-action="home"]')?.addEventListener('click', () => { presentationMode = exitPresentation(); view = 'home'; render(); });
   app.querySelector('[data-action="delete"]')?.addEventListener('click', async () => {
     if (!session) return;
