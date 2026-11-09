@@ -65,11 +65,12 @@ test('human-attested private answer persists atomically across synthetic databas
       );
       const after = await trial.loadConfirmationTrialForReview(db, session.sessionId);
       // A second open tab carries the old revision; replay cannot overwrite.
-      second = await trial.openConfirmationTrialDatabaseForReview();
+      const secondHandle: IDBDatabase = await trial.openConfirmationTrialDatabaseForReview();
+      second = secondHandle;
       const stale = await confirm.commitClientConfirmedPrepForReview(
-        session, packet, overlay, input, trial.confirmationTrialStoreForReview(second),
+        session, packet, overlay, input, trial.confirmationTrialStoreForReview(secondHandle),
       );
-      second.close();
+      secondHandle.close();
       second = null;
       db.close();
       const reopened = await trial.openConfirmationTrialDatabaseForReview();
