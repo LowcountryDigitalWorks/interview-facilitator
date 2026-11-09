@@ -1006,7 +1006,7 @@ function renderReview(): void {
       if (session?.sessionId !== source.sessionId || session?.revisionId !== source.revisionId
         || view !== 'review' || isPresentationMode(presentationMode)) return;
       if (proposal.items.length === 0) return;
-      download('interview-next-step-proposals-private.json', JSON.stringify(proposal, null, 2) + '\\n', 'application/json');
+      download('interview-next-step-proposals-private.json', JSON.stringify(proposal, null, 2) + '\n', 'application/json');
     } catch {
       alert('Could not verify or save the current local interview. No proposed next-step file was exported.');
     }
