@@ -225,7 +225,7 @@ test('private follow-up capture exports validated action proposals but never tur
   expect(json.notice).toContain('no task');
   expect(JSON.stringify(json)).not.toContain('INTERVIEWER NOTE EXCLUDED');
 
-  await page.getByRole('button', { name: 'Presentation view' }).click();
+  await page.getByRole('button', { name: 'Presentation view', exact: true }).click();
   await expect(page.getByText('Proposed next steps — internal only')).toHaveCount(0);
   await expect(page.locator('[data-action="next-step-proposals"]')).toHaveCount(0);
 });
