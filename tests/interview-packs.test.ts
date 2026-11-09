@@ -7,7 +7,7 @@ import {
 } from '../src/interview-packs';
 import { createSemanticSession, validateSemanticSessionRecord } from '../src/semantic-session';
 import { canonicalizeJson } from '../src/pack-identity';
-import { visibleQuestions } from '../src/live-session';
+import { relevanceMap, visibleQuestions } from '../src/live-session';
 
 describe('five live offline interview packs', () => {
   it('offers the five owner-requested interview categories without test-only synthetic facts', () => {
@@ -96,10 +96,14 @@ describe('five live offline interview packs', () => {
     const session = await createSemanticSession(pack, {
       clientLabel: 'SYNTHETIC CONDITIONAL JOURNEY',
     });
-    expect(visibleQuestions(session).some(x => x.id === 'booking-details')).toBe(false);
+    // The live app deliberately displays pending questions until the trigger
+    // is resolved. They are not yet relevant or accepted as client facts.
+    expect(relevanceMap(session)['booking-details']).toBe('pending');
+    expect(visibleQuestions(session).some(x => x.id === 'booking-details')).toBe(true);
     session.answers['needs-booking']!.value = 'Yes';
     session.answers['needs-booking']!.resolution = 'captured';
     session.answers['needs-booking']!.source = 'client-statement';
+    expect(relevanceMap(session)['booking-details']).toBe('relevant');
     expect(visibleQuestions(session).some(x => x.id === 'booking-details')).toBe(true);
   });
 });
