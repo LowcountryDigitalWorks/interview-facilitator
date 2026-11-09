@@ -172,6 +172,82 @@ for (const choice of livePackChoices) {
   });
 }
 
+test('private follow-up capture exports validated action proposals but never turns them into client presentation or tasks', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill('SYNTHETIC FOLLOW-UP EXPORT');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+
+  const action = 'SYNTHETIC PRIVATE <img src=x onerror=alert(1)> Review account ownership';
+  await page.getByLabel('Proposed follow-up action').fill(action);
+  await page.locator('#question-note').fill('SYNTHETIC INTERVIEWER NOTE EXCLUDED FROM ACTIONS');
+  await expect(page.locator('[data-save-indicator]')).toContainText(/Saved/, { timeout: 5000 });
+  // The Save label can be satisfied by an earlier operation. Inspect the
+  // authoritative IndexedDB row before closing the page to prove durability.
+  await expect.poll(async () => {
+    const rows = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+    return rows.find(x => x.clientLabel === 'SYNTHETIC FOLLOW-UP EXPORT')
+      ?.answers['existing-presence']?.followUp?.action;
+  }, { timeout: 10_000 }).toBe(action);
+
+  // Reopening proves the new private field is in the existing local
+  // canonical session and not just transient DOM state.
+  await page.reload();
+  await page.getByRole('button', { name: /SYNTHETIC FOLLOW-UP EXPORT/ }).click();
+  await expect(page.getByLabel('Proposed follow-up action')).toHaveValue(action);
+  const stored = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+  const persisted = stored.find(x => x.clientLabel === 'SYNTHETIC FOLLOW-UP EXPORT');
+  expect(persisted?.answers['existing-presence']?.followUp?.action).toBe(action);
+  expect(persisted?.answers['existing-presence']?.resolution).toBe('unresolved');
+
+  await page.locator('[data-question-id="must-have"]').click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await expect(page.getByText('Proposed next steps — internal only')).toHaveCount(0);
+  await expect(page.locator('[data-action="next-step-proposals"]')).toHaveCount(0);
+  await expect(page.locator('main')).not.toContainText(action);
+
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  const region = page.getByRole('region', { name: 'Proposed next steps — internal only' });
+  await expect(region).toContainText(action);
+  await expect(region.locator('img')).toHaveCount(0);
+  await expect(region).toContainText('not approved tasks');
+  const downloading = page.waitForEvent('download');
+  await region.getByRole('button', { name: 'Export proposed next steps JSON (private)' }).click();
+  const artifact = await downloading;
+  expect(artifact.suggestedFilename()).toBe('interview-next-step-proposals-private.json');
+  const json = await readDownloadJson(artifact) as {
+    schemaVersion: string; kind: string; sessionId: string; revisionId: string;
+    items: Array<{ questionId: string; action: string }>; notice: string;
+  };
+  expect(json.kind).toBe('private-human-review-only');
+  expect(json.schemaVersion).toBe('ldw.interview-next-steps.v1');
+  expect(json.items).toEqual([{ questionId: 'existing-presence', action }]);
+  expect(json.notice).toContain('no task');
+  expect(JSON.stringify(json)).not.toContain('INTERVIEWER NOTE EXCLUDED');
+
+  await page.getByRole('button', { name: 'Presentation view', exact: true }).click();
+  await expect(page.getByText('Proposed next steps — internal only')).toHaveCount(0);
+  await expect(page.locator('[data-action="next-step-proposals"]')).toHaveCount(0);
+});
+
+test('empty action drafts do not export and clearing a follow-up removes its saved proposal', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill('SYNTHETIC EMPTY ACTION');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  await page.getByLabel('Proposed follow-up action').fill('SYNTHETIC TEMPORARY ACTION');
+  await page.getByLabel('Proposed follow-up action').fill('   ');
+  await expect(page.locator('[data-save-indicator]')).toContainText(/Saved/, { timeout: 5000 });
+  await page.locator('[data-question-id="must-have"]').click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  const region = page.getByRole('region', { name: 'Proposed next steps — internal only' });
+  await expect(region).toContainText('No currently relevant follow-up proposals recorded.');
+  await expect(region.getByRole('button', { name: 'Export proposed next steps JSON (private)' })).toBeDisabled();
+  const rows = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+  expect(rows[0]?.answers['existing-presence']?.followUp).toBeNull();
+});
+
 test('one malformed IndexedDB row does not hide a healthy local interview', async ({ page }) => {
   await page.goto('/');
   await putRawSession(page, await syntheticSession());
@@ -270,7 +346,7 @@ test('answer, question note, and running note keep focus and selection through a
   await page.getByLabel('Project or client label').fill('Synthetic Focus Test');
   await page.getByRole('button', { name: 'Start interview' }).click();
 
-  for (const selector of ['#answer', '#question-note', '#running-notes']) {
+  for (const selector of ['#answer', '#question-note', '#follow-up-action', '#running-notes']) {
     const field = page.locator(selector);
     await field.fill('abcdefghij');
     await field.focus();
