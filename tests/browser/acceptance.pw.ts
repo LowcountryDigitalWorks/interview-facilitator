@@ -296,6 +296,36 @@ test('pending conditional action remains private and is excluded until its quest
   await expect(activeReview).toContainText('not approved tasks');
 });
 
+test('legacy non-ISO follow-up due date survives unrelated edits and autosave', async ({ page }) => {
+  const legacy = await syntheticSession('synthetic-legacy-date');
+  legacy.clientLabel = 'SYNTHETIC LEGACY DUE DATE';
+  legacy.answers['existing-presence']!.followUp = {
+    action: 'SYNTHETIC LEGACY TASK DRAFT',
+    dueDate: 'after owner handover / TBD',
+    owner: 'SYNTHETIC TEAM',
+  };
+  await page.goto('/');
+  await putRawSession(page, legacy);
+  await page.reload();
+  await page.getByRole('button', { name: /SYNTHETIC LEGACY DUE DATE/ }).click();
+  const dueField = page.getByLabel('Suggested due date');
+  await expect(dueField).toHaveValue('after owner handover / TBD');
+  await page.locator('#question-note').fill('SYNTHETIC UNRELATED NOTES CHANGE');
+  await expect.poll(async () => {
+    const rows = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+    return rows[0]?.answers['existing-presence']?.note;
+  }).toBe('SYNTHETIC UNRELATED NOTES CHANGE');
+  await page.reload();
+  await page.getByRole('button', { name: /SYNTHETIC LEGACY DUE DATE/ }).click();
+  await expect(dueField).toHaveValue('after owner handover / TBD');
+  const saved = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+  expect(saved[0]?.answers['existing-presence']?.followUp).toEqual({
+    action: 'SYNTHETIC LEGACY TASK DRAFT',
+    dueDate: 'after owner handover / TBD',
+    owner: 'SYNTHETIC TEAM',
+  });
+});
+
 test('one malformed IndexedDB row does not hide a healthy local interview', async ({ page }) => {
   await page.goto('/');
   await putRawSession(page, await syntheticSession());
