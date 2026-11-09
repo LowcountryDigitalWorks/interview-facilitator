@@ -110,12 +110,12 @@ test('Prepare exposes pinned pack, reference provenance and distinct readiness w
   await page.getByRole('button', { name: 'New interview' }).click();
 
   await expect(page.getByRole('heading', { name: 'Prepare this interview' })).toBeVisible();
-  await expect(page.getByText('Prepare · General discovery · pack v1.0.0')).toBeVisible();
+  await expect(page.locator('[data-prepare-pack-title]')).toHaveText('General discovery');
+  await expect(page.locator('#interview-pack')).toHaveValue('general-discovery-blank');
   const context = page.getByRole('region', { name: 'Known context for review' });
-  await expect(context).toContainText('Existing online presence');
-  await expect(context).toContainText('A basic public website already exists.');
-  await expect(context).toContainText('Source: Synthetic pre-interview research');
-  await expect(context).toContainText('does not accept or confirm');
+  await expect(context).toContainText('No client-specific information has been preloaded');
+  await expect(context).toContainText('No known context supplied with this pack');
+  await expect(context).not.toContainText('Synthetic pre-interview research');
 
   const readiness = page.getByRole('region', { name: 'Before you start' });
   await expect(readiness.locator('[data-prepare-save]')).toContainText('Not saved yet');
@@ -137,8 +137,40 @@ test('Prepare exposes pinned pack, reference provenance and distinct readiness w
   expect(stored?.answers['existing-presence']).toMatchObject({
     value: null, resolution: 'unresolved', source: null, confirmation: null,
   });
-  expect(stored?.knownFacts[0]?.provenance).toBe('Synthetic pre-interview research');
+  expect(stored?.knownFacts).toEqual([]);
+  expect(stored?.interviewPackId).toBe('general-discovery-blank');
 });
+
+const livePackChoices = [
+  { id: 'website-greenfield', title: 'New website / online presence', first: 'What should the website accomplish for the business?' },
+  { id: 'website-takeover', title: 'Existing website / platform takeover', first: 'What website, platform or digital property exists today?' },
+  { id: 'workflow-automation', title: 'Workflow / automation', first: 'What result should this workflow reliably produce?' },
+  { id: 'technology-ownership', title: 'Technology / ownership review', first: 'Which business services or capabilities depend on this technology?' },
+] as const;
+
+for (const choice of livePackChoices) {
+  test(`New interview selects ${choice.id} and pins a clean offline pack`, async ({ page }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: 'New interview' }).click();
+    const selector = page.getByRole('combobox', { name: 'Interview type' });
+    await selector.selectOption(choice.id);
+    await expect(page.locator('[data-prepare-pack-title]')).toHaveText(choice.title);
+    await expect(page.locator('[data-prepare-pack-summary]')).toContainText('guided questions');
+    await expect(page.getByRole('region', { name: 'Known context for review' }))
+      .toContainText('No known context supplied with this pack');
+    await page.getByLabel('Project or client label').fill('SYNTHETIC ' + choice.id);
+    await page.getByRole('button', { name: 'Start interview' }).click();
+    await expect(page.getByRole('heading', { name: choice.first, level: 1 })).toBeVisible();
+    const rows = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.interviewPackId).toBe(choice.id);
+    expect(rows[0]?.packSnapshot.title).toBe(choice.title);
+    expect(rows[0]?.knownFacts).toEqual([]);
+    expect(Object.values(rows[0]!.answers).every(answer =>
+      answer.value === null && answer.source === null && answer.resolution === 'unresolved'
+    )).toBe(true);
+  });
+}
 
 test('one malformed IndexedDB row does not hide a healthy local interview', async ({ page }) => {
   await page.goto('/');
