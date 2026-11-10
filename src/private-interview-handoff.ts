@@ -97,7 +97,9 @@ function preflightPrivateHandoffSource(raw: unknown): void {
       continue;
     }
     if (value === null || typeof value === 'number' || typeof value === 'boolean') continue;
-    if (typeof value !== 'object') reject();
+    if (typeof value !== 'object') {
+      throw new Error('Private interview handoff source exceeds safe input limits.');
+    }
     if (activePath.has(value)) {
       throw new Error('Private interview handoff source contains a cycle.');
     }
