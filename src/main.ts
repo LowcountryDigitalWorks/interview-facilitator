@@ -1041,11 +1041,13 @@ function renderReview(): void {
       if (!session || session.sessionId !== targetId
         || view !== 'review' || isPresentationMode(presentationMode)) return;
       const source = structuredClone(session);
-      const sourceCanonical = canonicalizeJson(source);
+      // The producer performs its bounded raw preflight before any
+      // large canonicalization in this export path.
       const bytes = await buildPrivateInterviewHandoffForReview(source);
+      const sourceCanonical = canonicalizeJson(source);
       if (!session || session.sessionId !== source.sessionId
         || session.revisionId !== source.revisionId
-        || canonicalizeJson(session) !== sourceCanonical || autosave.hasPending(targetId)
+        || autosave.hasPending(targetId) || canonicalizeJson(session) !== sourceCanonical
         || view !== 'review' || isPresentationMode(presentationMode)) return;
       download('interview-private-handoff.json', bytes, 'application/json');
     } catch {
