@@ -384,6 +384,36 @@ test('private handoff export bundles pinned canonical interview, confidential no
   await expect(page.locator('main')).not.toContainText('SYNTHETIC CONFIDENTIAL NOTE IN BUNDLE');
 });
 
+test('rapid private handoff clicks create only one local download and leave the button usable', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill('SYNTHETIC SINGLE EXPORT');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  await page.locator('[data-question-id="must-have"]').click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  const button = page.getByRole('button', { name: 'Export private handoff bundle JSON' });
+  await expect(button).toBeEnabled();
+  const downloads: Download[] = [];
+  page.on('download', (artifact) => downloads.push(artifact));
+  // Fire twice in ONE browser turn: the first async handler must acquire its
+  // guard synchronously before the second click can start another export.
+  await page.evaluate(() => {
+    const button = document.querySelector<HTMLButtonElement>('[data-action="handoff"]');
+    if (!button) throw new Error('Private export control was not rendered.');
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => downloads.length).toBe(1);
+  await expect(button).toBeEnabled();
+  await page.waitForTimeout(250);
+  expect(downloads).toHaveLength(1);
+  expect(downloads[0]?.suggestedFilename()).toBe('interview-private-handoff.json');
+  const bundle = await readDownloadJson(downloads[0]!);
+  expect((bundle as { canonicalSession: SemanticInterviewSession }).canonicalSession.clientLabel)
+    .toBe('SYNTHETIC SINGLE EXPORT');
+});
+
 test('private handoff is available for a clean interview without inventing next-step tasks', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'New interview' }).click();
