@@ -101,6 +101,27 @@ describe('private offline handoff bundle, no provider I/O', () => {
     })).rejects.toThrow();
   });
 
+  it('rejects oversized producer source before canonicalizing private derived artifacts', async () => {
+    const session = await fixture();
+    const originalSessionId = session.sessionId;
+    session.runningNotes = 'SYNTHETIC OVERSIZED PRIVATE NOTES ' + 'x'.repeat(5_000_200);
+    await expect(buildPrivateInterviewHandoffForReview(session))
+      .rejects.toThrow('source exceeds safe input limits');
+    expect(session.sessionId).toBe(originalSessionId);
+    expect(session.runningNotes).toHaveLength(5_000_234);
+    // The producer resource preflight also rejects accessor-based input
+    // without reading the getter or exposing its private data.
+    const accessorSession = await fixture();
+    let getterRead = false;
+    Object.defineProperty(accessorSession, 'runningNotes', {
+      enumerable: true,
+      get() { getterRead = true; throw new Error('SYNTHETIC PRIVATE GETTER'); },
+    });
+    await expect(buildPrivateInterviewHandoffForReview(accessorSession))
+      .rejects.toThrow('source exceeds safe input limits');
+    expect(getterRead).toBe(false);
+  });
+
   it('returns a full private bundle with zero workflow tasks when no proposals exist', async () => {
     const session = await createSemanticSession(generalDiscoveryPack, {
       clientLabel: 'SYNTHETIC EMPTY OUTPUT',
