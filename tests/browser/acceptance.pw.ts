@@ -1265,6 +1265,9 @@ test('private synthetic prep file is reviewed offline without altering saved ans
   await page.reload();
   await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
   await page.getByRole('button', { name: 'Review interview' }).click();
+  // Next-to-Review defaults to protected Presentation; leave it explicitly.
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.locator('#synthetic-prep-file')).toBeVisible();
   const before = await readStorageSnapshot(page);
   const review = page.getByRole('region', { name: 'Synthetic preparation candidate review' });
   const syntheticValue = 'SYNTHETIC <img src=x onerror=alert(1)> REVIEW FACT';
@@ -1311,6 +1314,9 @@ test('synthetic prep UI rejects wrong revision and disappears entirely for norma
   await page.reload();
   await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
   await page.getByRole('button', { name: 'Review interview' }).click();
+  // Next-to-Review defaults to protected Presentation; leave it explicitly.
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.locator('#synthetic-prep-file')).toBeVisible();
   const before = await readStorageSnapshot(page);
   await setSyntheticPrepInput(page, JSON.stringify({
     schemaVersion: 'ldw.interview-prep.v1',
