@@ -61,9 +61,61 @@ function checkSize(value: string): void {
   }
 }
 
+/**
+ * Apply a bounded raw-input preflight BEFORE source validation, full JSON
+ * canonicalization, Markdown rendering and the final 5MB envelope check.
+ * Those steps allocate multiple derived private strings, so a final-only
+ * output limit is not sufficient protection against an oversized draft.
+ *
+ * This is a resource guard, NOT a replacement for semantic validation or
+ * cryptographic integrity. Never inspect or log confidential field values.
+ */
+function preflightPrivateHandoffSource(raw: unknown): void {
+  const encoder = new TextEncoder();
+  const stack: Array<{ value: unknown; depth: number }> = [{ value: raw, depth: 0 }];
+  let visited = 0;
+  let textBytes = 0;
+  const reject = (): never => {
+    throw new Error('Private interview handoff source exceeds safe input limits.');
+  };
+  while (stack.length > 0) {
+    const { value, depth } = stack.pop()!;
+    if (++visited > 100_000 || depth > 80) reject();
+    if (typeof value === 'string') {
+      if (value.length > MAX_HANDOFF_BYTES - textBytes) reject();
+      textBytes += encoder.encode(value).byteLength;
+      if (textBytes > MAX_HANDOFF_BYTES) reject();
+      continue;
+    }
+    if (value === null || typeof value === 'number' || typeof value === 'boolean') continue;
+    if (typeof value !== 'object') reject();
+    if (Array.isArray(value)) {
+      if (value.length > 100_000) reject();
+      for (let i = value.length - 1; i >= 0; i--) {
+        stack.push({ value: value[i], depth: depth + 1 });
+      }
+      continue;
+    }
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) reject();
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record);
+    if (keys.length > 100_000) reject();
+    for (const key of keys) {
+      if (key.length > MAX_HANDOFF_BYTES - textBytes) reject();
+      textBytes += encoder.encode(key).byteLength;
+      if (textBytes > MAX_HANDOFF_BYTES) reject();
+      const descriptor = Object.getOwnPropertyDescriptor(record, key);
+      if (!descriptor || !('value' in descriptor)) reject();
+      stack.push({ value: descriptor.value, depth: depth + 1 });
+    }
+  }
+}
+
 /** Deterministic: same validated source revision => same full private bytes. */
 export async function buildPrivateInterviewHandoffForReview(rawSession: unknown):
 Promise<string> {
+  preflightPrivateHandoffSource(rawSession);
   const session = await validateSemanticSessionRecord(rawSession);
   const proposedNextSteps = await proposeInterviewNextStepsForReview(session);
   const envelope: PrivateInterviewHandoffForReview = {
