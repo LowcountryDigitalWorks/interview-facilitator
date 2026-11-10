@@ -1245,6 +1245,18 @@ test('failed legacy upgrade aborts its transaction and preserves source and arch
 });
 
 
+async function setSyntheticPrepInput(page: Page, json: string): Promise<void> {
+  // Populate an actual in-browser File without requiring Node's Buffer types.
+  await page.evaluate((data) => {
+    const input = document.querySelector<HTMLInputElement>('#synthetic-prep-file');
+    if (!input) throw new Error('Synthetic preparation picker missing');
+    const files = new DataTransfer();
+    files.items.add(new File([data], 'synthetic-prep.json', { type: 'application/json' }));
+    input.files = files.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  }, json);
+}
+
 test('private synthetic prep file is reviewed offline without altering saved answers or Presentation', async ({ page }) => {
   await page.goto('/');
   const row = await syntheticSession('synthetic-local-prep-ui');
@@ -1270,10 +1282,7 @@ test('private synthetic prep file is reviewed offline without altering saved ans
       observedAt: '2026-11-09T14:00:00.000Z', confidence: 'unverified',
     }],
   };
-  await page.locator('#synthetic-prep-file').setInputFiles({
-    name: 'synthetic-prep.json', mimeType: 'application/json',
-    buffer: Buffer.from(JSON.stringify(packet)),
-  });
+  await setSyntheticPrepInput(page, JSON.stringify(packet));
   await expect(review.getByRole('heading', { name: 'Private preparation — candidate review trial' }))
     .toBeVisible();
   await expect(review).toContainText(syntheticValue);
@@ -1303,18 +1312,15 @@ test('synthetic prep UI rejects wrong revision and disappears entirely for norma
   await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
   await page.getByRole('button', { name: 'Review interview' }).click();
   const before = await readStorageSnapshot(page);
-  await page.locator('#synthetic-prep-file').setInputFiles({
-    name: 'wrong-session.json', mimeType: 'application/json',
-    buffer: Buffer.from(JSON.stringify({
-      schemaVersion: 'ldw.interview-prep.v1',
-      jobKey: 'SYNTHETIC-WRONG-REVISION',
-      sessionId: row.sessionId,
-      expectedRevisionId: 'stale-revision',
-      expectedPackDigest: row.packIdentity.digest,
-      preparedAt: '2026-11-09T14:30:00.000Z',
-      candidates: [],
-    })),
-  });
+  await setSyntheticPrepInput(page, JSON.stringify({
+    schemaVersion: 'ldw.interview-prep.v1',
+    jobKey: 'SYNTHETIC-WRONG-REVISION',
+    sessionId: row.sessionId,
+    expectedRevisionId: 'stale-revision',
+    expectedPackDigest: row.packIdentity.digest,
+    preparedAt: '2026-11-09T14:30:00.000Z',
+    candidates: [],
+  }));
   await expect(page.getByRole('region', { name: 'Synthetic preparation candidate review' }))
     .toContainText('packet was rejected or became stale');
   expect(await readStorageSnapshot(page)).toEqual(before);
