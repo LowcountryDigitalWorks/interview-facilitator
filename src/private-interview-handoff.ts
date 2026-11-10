@@ -108,7 +108,9 @@ function preflightPrivateHandoffSource(raw: unknown): void {
       for (let i = value.length - 1; i >= 0; i--) {
         // Never invoke a getter while traversing a hostile local value.
         const descriptor = Object.getOwnPropertyDescriptor(value, String(i));
-        if (!descriptor || !('value' in descriptor)) reject();
+        if (!descriptor || !('value' in descriptor)) {
+          throw new Error('Private interview handoff source exceeds safe input limits.');
+        }
         stack.push({ value: descriptor.value, depth: depth + 1 });
       }
       continue;
