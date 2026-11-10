@@ -326,6 +326,149 @@ test('legacy non-ISO follow-up due date survives unrelated edits and autosave', 
   });
 });
 
+test('private handoff export bundles pinned canonical interview, confidential notes and human-only next steps', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill('SYNTHETIC PRIVATE BUNDLE');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  await page.getByLabel('Proposed follow-up action').fill('SYNTHETIC DRAFT REVIEW SCOPED WORK');
+  await page.getByLabel('Suggested owner').fill('SYNTHETIC INTERNAL REVIEWER');
+  await page.getByLabel('Suggested due date').fill('after synthetic approval');
+  await page.locator('#question-note').fill('SYNTHETIC CONFIDENTIAL NOTE IN BUNDLE ONLY');
+  await page.locator('#running-notes').fill('SYNTHETIC PARKING LOT PRIVATE');
+  await expect.poll(async () => {
+    const rows = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+    return rows[0]?.answers['existing-presence']?.followUp?.action;
+  }).toBe('SYNTHETIC DRAFT REVIEW SCOPED WORK');
+  await page.locator('[data-question-id="must-have"]').click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+
+  // Initial presentation mode must never expose internal bundle controls.
+  await expect(page.getByRole('button', { name: 'Export private handoff bundle JSON' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  const handoff = page.getByRole('button', { name: 'Export private handoff bundle JSON' });
+  await expect(handoff).toBeVisible();
+  const started = page.waitForEvent('download');
+  await handoff.click();
+  const download = await started;
+  expect(download.suggestedFilename()).toBe('interview-private-handoff.json');
+  const bundle = await readDownloadJson(download) as {
+    schemaVersion: string; kind: string; notice: string;
+    source: { sessionId: string; revisionId: string; packDigest: string; canonicalSha256: string };
+    canonicalSession: SemanticInterviewSession;
+    internalMarkdown: string;
+    proposedNextSteps: { kind: string; items: Array<{ questionId: string; action: string; owner?: string; dueDate?: string }> };
+  };
+  expect(bundle.schemaVersion).toBe('ldw.interview-private-handoff.v1');
+  expect(bundle.kind).toBe('private-human-review-only');
+  expect(bundle.source.sessionId).toBe(bundle.canonicalSession.sessionId);
+  expect(bundle.source.revisionId).toBe(bundle.canonicalSession.revisionId);
+  expect(bundle.source.packDigest).toBe(bundle.canonicalSession.packIdentity.digest);
+  expect(bundle.source.canonicalSha256)
+    .toBe(await sha256Hex(canonicalizeJson(bundle.canonicalSession)));
+  expect(bundle.canonicalSession.clientLabel).toBe('SYNTHETIC PRIVATE BUNDLE');
+  expect(bundle.canonicalSession.answers['existing-presence']!.note)
+    .toBe('SYNTHETIC CONFIDENTIAL NOTE IN BUNDLE ONLY');
+  expect(bundle.internalMarkdown).toContain('SYNTHETIC PARKING LOT PRIVATE');
+  expect(bundle.proposedNextSteps.kind).toBe('private-human-review-only');
+  expect(bundle.proposedNextSteps.items).toEqual([{
+    questionId: 'existing-presence',
+    action: 'SYNTHETIC DRAFT REVIEW SCOPED WORK',
+    owner: 'SYNTHETIC INTERNAL REVIEWER',
+    dueDate: 'after synthetic approval',
+  }]);
+  expect(JSON.stringify(bundle.proposedNextSteps)).not.toContain('CONFIDENTIAL NOTE IN BUNDLE');
+  expect(bundle.notice).toContain('not a task approval');
+  await page.getByRole('button', { name: 'Presentation view', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Export private handoff bundle JSON' })).toHaveCount(0);
+  await expect(page.locator('main')).not.toContainText('SYNTHETIC CONFIDENTIAL NOTE IN BUNDLE');
+});
+
+test('rapid private handoff clicks create only one local download and leave the button usable', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill('SYNTHETIC SINGLE EXPORT');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  await page.locator('[data-question-id="must-have"]').click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  const button = page.getByRole('button', { name: 'Export private handoff bundle JSON' });
+  await expect(button).toBeEnabled();
+  const downloads: Download[] = [];
+  page.on('download', (artifact) => downloads.push(artifact));
+  // Fire twice in ONE browser turn: the first async handler must acquire its
+  // guard synchronously before the second click can start another export.
+  await page.evaluate(() => {
+    const button = document.querySelector<HTMLButtonElement>('[data-action="handoff"]');
+    if (!button) throw new Error('Private export control was not rendered.');
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => downloads.length).toBe(1);
+  await expect(button).toBeEnabled();
+  await page.waitForTimeout(250);
+  expect(downloads).toHaveLength(1);
+  expect(downloads[0]?.suggestedFilename()).toBe('interview-private-handoff.json');
+  const bundle = await readDownloadJson(downloads[0]!);
+  expect((bundle as { canonicalSession: SemanticInterviewSession }).canonicalSession.clientLabel)
+    .toBe('SYNTHETIC SINGLE EXPORT');
+});
+
+test('private handoff busy state survives a Review re-render and clears on current control', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill('SYNTHETIC RE-RENDER BUSY');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  await page.locator('[data-question-id="must-have"]').click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+
+  const downloads: Download[] = [];
+  page.on('download', artifact => downloads.push(artifact));
+  const during = await page.evaluate(() => {
+    const first = document.querySelector<HTMLButtonElement>('[data-action="handoff"]');
+    if (!first) throw new Error('Private handoff button unavailable.');
+    // Begin async export, then synchronously rebuild the Review view via
+    // Presentation -> private. No microtask can finish the export between
+    // these operations in the same browser JavaScript turn.
+    first.click();
+    document.querySelector<HTMLButtonElement>('[data-action="enter-presentation"]')?.click();
+    document.querySelector<HTMLButtonElement>('[data-action="exit-presentation"]')?.click();
+    const current = document.querySelector<HTMLButtonElement>('[data-action="handoff"]');
+    return {
+      replaced: Boolean(current && current !== first),
+      disabled: current?.disabled ?? false,
+      busy: current?.getAttribute('aria-busy'),
+    };
+  });
+  expect(during).toEqual({ replaced: true, disabled: true, busy: 'true' });
+  const currentButton = page.getByRole('button', { name: 'Export private handoff bundle JSON' });
+  await expect.poll(() => downloads.length).toBe(1);
+  await expect(currentButton).toBeEnabled();
+  await expect(currentButton).not.toHaveAttribute('aria-busy', 'true');
+  expect(downloads).toHaveLength(1);
+  expect((await readDownloadJson(downloads[0]!)) as { canonicalSession: SemanticInterviewSession })
+    .toMatchObject({ canonicalSession: { clientLabel: 'SYNTHETIC RE-RENDER BUSY' } });
+});
+
+test('private handoff is available for a clean interview without inventing next-step tasks', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill('SYNTHETIC ZERO TASK HANDOFF');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  await page.locator('[data-question-id="must-have"]').click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  const started = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export private handoff bundle JSON' }).click();
+  const bundle = await readDownloadJson(await started) as {
+    canonicalSession: SemanticInterviewSession;
+    proposedNextSteps: { items: unknown[] };
+  };
+  expect(bundle.canonicalSession.clientLabel).toBe('SYNTHETIC ZERO TASK HANDOFF');
+  expect(bundle.proposedNextSteps.items).toEqual([]);
+});
+
 test('one malformed IndexedDB row does not hide a healthy local interview', async ({ page }) => {
   await page.goto('/');
   await putRawSession(page, await syntheticSession());

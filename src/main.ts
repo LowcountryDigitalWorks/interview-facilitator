@@ -6,6 +6,7 @@ import { exportCanonicalSessionJsonForReview } from './versioned-session-io';
 import { semanticSessionToMarkdown, serializeSession } from './markdown';
 import { proposeInterviewNextStepsForReview } from './interview-workflow-bridge';
 import { canonicalizeJson } from './pack-identity';
+import { buildPrivateInterviewHandoffForReview } from './private-interview-handoff';
 import { formatConnectivityLabel, formatSaveLabel, type PersistenceState, type SaveState } from './indicators';
 import { SessionAutosaveCoordinator } from './autosave';
 import { readSessionList } from './session-list';
@@ -40,6 +41,8 @@ let saveError: unknown = null;
 let persistenceState: PersistenceState = 'unknown';
 let offlineReady = false;
 let presentationMode: PresentationMode = 'private';
+// Global across review re-renders: one confidential handoff download at a time.
+let privateHandoffExportInFlight = false;
 // Transient navigation only; never part of the canonical session or read-back consent.
 let readBackReturnTarget: { sessionId: string; questionId: string } | null = null;
 type HomeNotice =
@@ -1005,7 +1008,7 @@ function renderReview(): void {
         : '<div class="known-preview"><strong>Private review</strong><p>Internal tools are available here. Use Presentation view before screen sharing or client read-back.</p></div>'}
       ${presenting
         ? ''
-        : '<div class="button-row"><button class="primary" data-action="enter-presentation">Open presentation view</button><button class="secondary" data-action="json">Export full JSON backup</button><button class="secondary" data-action="markdown">Export internal Markdown</button><button class="secondary" data-action="home">Home</button><button class="secondary" data-action="delete">Delete local session</button></div>'}
+        : `<div class="button-row"><button class="primary" data-action="enter-presentation">Open presentation view</button><button class="secondary" data-action="json">Export full JSON backup</button><button class="secondary" data-action="markdown">Export internal Markdown</button><button class="secondary" data-action="handoff" ${privateHandoffExportInFlight ? 'disabled aria-busy="true"' : ''}>Export private handoff bundle JSON</button><button class="secondary" data-action="home">Home</button><button class="secondary" data-action="delete">Delete local session</button></div>`}
     </main>`;
   app.querySelector('[data-action="return"]')?.addEventListener('click', () => { readBackReturnTarget = null; view = 'interview'; renderInterview(); focusPrimaryAnswer(); });
   app.querySelectorAll<HTMLElement>('[data-change]').forEach((button) => button.addEventListener('click', () => {
@@ -1022,6 +1025,46 @@ function renderReview(): void {
   app.querySelectorAll('[data-action="exit-presentation"]').forEach((button) => button.addEventListener('click', () => { presentationMode = exitPresentation(); renderReview(); focusReviewHeading(); }));
   app.querySelector('[data-action="json"]')?.addEventListener('click', () => { if (session) download('interview.json', serializeSession(session), 'application/json'); });
   app.querySelector('[data-action="markdown"]')?.addEventListener('click', () => { if (session) download('interview.md', semanticSessionToMarkdown(session), 'text/markdown'); });
+  const handoffButton = app.querySelector<HTMLButtonElement>('[data-action="handoff"]');
+  handoffButton?.addEventListener('click', async () => {
+    if (privateHandoffExportInFlight || !session
+      || view !== 'review' || isPresentationMode(presentationMode)) return;
+    // Synchronize the guard BEFORE the first await. A second click on the
+    // same button or a newly rendered Review button must not double-download.
+    privateHandoffExportInFlight = true;
+    handoffButton.disabled = true;
+    handoffButton.setAttribute('aria-busy', 'true');
+    const targetId = session.sessionId;
+    try {
+      // Confidential full-session package, NOT an approved provider action.
+      await autosave.flushAndWait(targetId);
+      if (!session || session.sessionId !== targetId
+        || view !== 'review' || isPresentationMode(presentationMode)) return;
+      const source = structuredClone(session);
+      // The producer performs its bounded raw preflight before any
+      // large canonicalization in this export path.
+      const bytes = await buildPrivateInterviewHandoffForReview(source);
+      const sourceCanonical = canonicalizeJson(source);
+      if (!session || session.sessionId !== source.sessionId
+        || session.revisionId !== source.revisionId
+        || autosave.hasPending(targetId) || canonicalizeJson(session) !== sourceCanonical
+        || view !== 'review' || isPresentationMode(presentationMode)) return;
+      download('interview-private-handoff.json', bytes, 'application/json');
+    } catch {
+      alert('Unable to verify and save the current local interview. No private handoff file was exported.');
+    } finally {
+      privateHandoffExportInFlight = false;
+      // Review may have re-rendered while the async export was running.
+      // Release the CURRENT control, not just the original detached node.
+      const currentHandoffButton = view === 'review' && !isPresentationMode(presentationMode)
+        ? app.querySelector<HTMLButtonElement>('[data-action="handoff"]')
+        : null;
+      if (currentHandoffButton) {
+        currentHandoffButton.disabled = false;
+        currentHandoffButton.removeAttribute('aria-busy');
+      }
+    }
+  });
   app.querySelector('[data-action="next-step-proposals"]')?.addEventListener('click', async () => {
     if (!session || view !== 'review' || isPresentationMode(presentationMode)) return;
     const targetId = session.sessionId;
