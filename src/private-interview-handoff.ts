@@ -72,14 +72,23 @@ function checkSize(value: string): void {
  */
 function preflightPrivateHandoffSource(raw: unknown): void {
   const encoder = new TextEncoder();
-  const stack: Array<{ value: unknown; depth: number }> = [{ value: raw, depth: 0 }];
+  // Track only objects on the active traversal path. A shared object
+  // referenced by two independent fields is not a cycle in canonical JSON.
+  const activePath = new WeakSet<object>();
+  const stack: Array<{ value: unknown; depth: number; exit?: true }> = [
+    { value: raw, depth: 0 },
+  ];
   let visited = 0;
   let textBytes = 0;
   const reject = (): never => {
     throw new Error('Private interview handoff source exceeds safe input limits.');
   };
   while (stack.length > 0) {
-    const { value, depth } = stack.pop()!;
+    const { value, depth, exit } = stack.pop()!;
+    if (exit) {
+      activePath.delete(value as object);
+      continue;
+    }
     if (++visited > 100_000 || depth > 80) reject();
     if (typeof value === 'string') {
       if (value.length > MAX_HANDOFF_BYTES - textBytes) reject();
@@ -89,10 +98,18 @@ function preflightPrivateHandoffSource(raw: unknown): void {
     }
     if (value === null || typeof value === 'number' || typeof value === 'boolean') continue;
     if (typeof value !== 'object') reject();
+    if (activePath.has(value)) {
+      throw new Error('Private interview handoff source contains a cycle.');
+    }
+    activePath.add(value);
+    stack.push({ value, depth, exit: true });
     if (Array.isArray(value)) {
       if (value.length > 100_000) reject();
       for (let i = value.length - 1; i >= 0; i--) {
-        stack.push({ value: value[i], depth: depth + 1 });
+        // Never invoke a getter while traversing a hostile local value.
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(i));
+        if (!descriptor || !('value' in descriptor)) reject();
+        stack.push({ value: descriptor.value, depth: depth + 1 });
       }
       continue;
     }
