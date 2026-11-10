@@ -122,6 +122,34 @@ describe('private offline handoff bundle, no provider I/O', () => {
     expect(getterRead).toBe(false);
   });
 
+  it('detects cycles immediately without rejecting repeated references in separate fields', async () => {
+    const cyclic = await fixture();
+    (cyclic as typeof cyclic & { self?: unknown }).self = cyclic;
+    await expect(buildPrivateInterviewHandoffForReview(cyclic))
+      .rejects.toThrow('source contains a cycle');
+
+    // Canonical JSON may serialize two independent properties referring
+    // to the same plain value, without that making an ancestor cycle.
+    const shared = await fixture();
+    shared.answers['must-have'] = shared.answers['primary-goal']!;
+    await expect(buildPrivateInterviewHandoffForReview(shared))
+      .resolves.toContain('ldw.interview-private-handoff.v1');
+  });
+
+  it('never invokes accessor properties in array-backed malicious input', async () => {
+    const session = await fixture();
+    let accessed = false;
+    const malicious = ['SYNTHETIC'];
+    Object.defineProperty(malicious, '0', {
+      enumerable: true,
+      get() { accessed = true; throw new Error('SYNTHETIC ARRAY GETTER LEAK'); },
+    });
+    (session as typeof session & { malformedExtra?: unknown }).malformedExtra = malicious;
+    await expect(buildPrivateInterviewHandoffForReview(session))
+      .rejects.toThrow('source exceeds safe input limits');
+    expect(accessed).toBe(false);
+  });
+
   it('returns a full private bundle with zero workflow tasks when no proposals exist', async () => {
     const session = await createSemanticSession(generalDiscoveryPack, {
       clientLabel: 'SYNTHETIC EMPTY OUTPUT',
