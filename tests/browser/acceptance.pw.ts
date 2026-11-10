@@ -1243,3 +1243,93 @@ test('failed legacy upgrade aborts its transaction and preserves source and arch
   expect(snapshot.archives).toEqual([]);
   expect(snapshot.archiveKeys).toEqual([]);
 });
+
+
+test('private synthetic prep file is reviewed offline without altering saved answers or Presentation', async ({ page }) => {
+  await page.goto('/');
+  const row = await syntheticSession('synthetic-local-prep-ui');
+  row.currentQuestionId = 'must-have';
+  await putRawSession(page, row);
+  await page.reload();
+  await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  const before = await readStorageSnapshot(page);
+  const review = page.getByRole('region', { name: 'Synthetic preparation candidate review' });
+  const syntheticValue = 'SYNTHETIC <img src=x onerror=alert(1)> REVIEW FACT';
+  const packet = {
+    schemaVersion: 'ldw.interview-prep.v1',
+    jobKey: 'SYNTHETIC-PREP-LOCAL-01',
+    sessionId: row.sessionId,
+    expectedRevisionId: row.revisionId,
+    expectedPackDigest: row.packIdentity.digest,
+    preparedAt: '2026-11-09T14:30:00.000Z',
+    candidates: [{
+      candidateId: 'candidate-a', questionId: 'existing-presence',
+      proposedValue: syntheticValue, sourceSystem: 'manual',
+      sourceRecordRef: 'SYNTHETIC-REF-LOCAL-01',
+      observedAt: '2026-11-09T14:00:00.000Z', confidence: 'unverified',
+    }],
+  };
+  await page.locator('#synthetic-prep-file').setInputFiles({
+    name: 'synthetic-prep.json', mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(packet)),
+  });
+  await expect(review.getByRole('heading', { name: 'Private preparation — candidate review trial' }))
+    .toBeVisible();
+  await expect(review).toContainText(syntheticValue);
+  // Untrusted source markup remains literal text, not an executable element.
+  expect(await review.locator('img[src="x"]').count()).toBe(0);
+  await expect(review.getByRole('button', { name: /Prepare selected candidate proposal/ })).toBeDisabled();
+  await review.getByRole('radio').check();
+  await review.getByRole('checkbox').check();
+  await review.getByRole('button', { name: /Prepare selected candidate proposal/ }).click();
+  await expect(review).toContainText('Private candidate proposal assembled in local memory');
+  expect(await readStorageSnapshot(page)).toEqual(before);
+  await page.getByRole('button', { name: 'Open presentation view' }).click();
+  await expect(page.getByText(syntheticValue)).toHaveCount(0);
+  await expect(page.locator('#synthetic-prep-file')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.getByRole('region', { name: 'Synthetic preparation candidate review' }))
+    .toContainText('No synthetic preparation packet loaded');
+  expect(await readStorageSnapshot(page)).toEqual(before);
+});
+
+test('synthetic prep UI rejects wrong revision and disappears entirely for normal client sessions', async ({ page }) => {
+  await page.goto('/');
+  const row = await syntheticSession('synthetic-local-prep-negative');
+  row.currentQuestionId = 'must-have';
+  await putRawSession(page, row);
+  await page.reload();
+  await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  const before = await readStorageSnapshot(page);
+  await page.locator('#synthetic-prep-file').setInputFiles({
+    name: 'wrong-session.json', mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify({
+      schemaVersion: 'ldw.interview-prep.v1',
+      jobKey: 'SYNTHETIC-WRONG-REVISION',
+      sessionId: row.sessionId,
+      expectedRevisionId: 'stale-revision',
+      expectedPackDigest: row.packIdentity.digest,
+      preparedAt: '2026-11-09T14:30:00.000Z',
+      candidates: [],
+    })),
+  });
+  await expect(page.getByRole('region', { name: 'Synthetic preparation candidate review' }))
+    .toContainText('packet was rejected or became stale');
+  expect(await readStorageSnapshot(page)).toEqual(before);
+  await page.getByRole('button', { name: 'Discard preparation review' }).click();
+  await expect(page.getByRole('region', { name: 'Synthetic preparation candidate review' }))
+    .toContainText('No synthetic preparation packet loaded');
+
+  await page.getByRole('button', { name: 'Home' }).click();
+  const ordinary = await syntheticSession('trial-hidden-for-real-client');
+  ordinary.clientLabel = 'Normal Business — demo data only';
+  ordinary.currentQuestionId = 'must-have';
+  await putRawSession(page, ordinary);
+  await page.reload();
+  await page.getByRole('button', { name: /Normal Business/ }).click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await expect(page.locator('#synthetic-prep-file')).toHaveCount(0);
+  await expect(page.getByText('Synthetic preparation — private review trial')).toHaveCount(0);
+});
