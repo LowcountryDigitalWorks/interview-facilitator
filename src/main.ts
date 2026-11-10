@@ -41,6 +41,8 @@ let saveError: unknown = null;
 let persistenceState: PersistenceState = 'unknown';
 let offlineReady = false;
 let presentationMode: PresentationMode = 'private';
+// Global across review re-renders: one confidential handoff download at a time.
+let privateHandoffExportInFlight = false;
 // Transient navigation only; never part of the canonical session or read-back consent.
 let readBackReturnTarget: { sessionId: string; questionId: string } | null = null;
 type HomeNotice =
@@ -1023,8 +1025,15 @@ function renderReview(): void {
   app.querySelectorAll('[data-action="exit-presentation"]').forEach((button) => button.addEventListener('click', () => { presentationMode = exitPresentation(); renderReview(); focusReviewHeading(); }));
   app.querySelector('[data-action="json"]')?.addEventListener('click', () => { if (session) download('interview.json', serializeSession(session), 'application/json'); });
   app.querySelector('[data-action="markdown"]')?.addEventListener('click', () => { if (session) download('interview.md', semanticSessionToMarkdown(session), 'text/markdown'); });
-  app.querySelector('[data-action="handoff"]')?.addEventListener('click', async () => {
-    if (!session || view !== 'review' || isPresentationMode(presentationMode)) return;
+  const handoffButton = app.querySelector<HTMLButtonElement>('[data-action="handoff"]');
+  handoffButton?.addEventListener('click', async () => {
+    if (privateHandoffExportInFlight || !session
+      || view !== 'review' || isPresentationMode(presentationMode)) return;
+    // Synchronize the guard BEFORE the first await. A second click on the
+    // same button or a newly rendered Review button must not double-download.
+    privateHandoffExportInFlight = true;
+    handoffButton.disabled = true;
+    handoffButton.setAttribute('aria-busy', 'true');
     const targetId = session.sessionId;
     try {
       // Confidential full-session package, NOT an approved provider action.
@@ -1041,6 +1050,12 @@ function renderReview(): void {
       download('interview-private-handoff.json', bytes, 'application/json');
     } catch {
       alert('Unable to verify and save the current local interview. No private handoff file was exported.');
+    } finally {
+      privateHandoffExportInFlight = false;
+      if (handoffButton.isConnected) {
+        handoffButton.disabled = false;
+        handoffButton.removeAttribute('aria-busy');
+      }
     }
   });
   app.querySelector('[data-action="next-step-proposals"]')?.addEventListener('click', async () => {
