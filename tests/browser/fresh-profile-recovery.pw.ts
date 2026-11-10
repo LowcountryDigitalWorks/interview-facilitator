@@ -84,7 +84,9 @@ test('existing private 1.3 JSON backup restores in a fresh browser profile with 
     await sourcePage.getByRole('button', { name: 'Exit presentation' }).click();
     const downloadStarted = sourcePage.waitForEvent('download');
     await sourcePage.getByRole('button', { name: 'Export full JSON backup' }).click();
-    const backupText = await downloadedText(await downloadStarted);
+    const backupDownload = await downloadStarted;
+    const backupText = await downloadedText(backupDownload);
+    const backupPath = await backupDownload.path();
     const source = await validateSemanticSessionRecord(JSON.parse(backupText) as unknown);
     expect(source.sessionSchemaVersion).toBe('1.3.0');
     expect(source.clientLabel).toBe('SYNTHETIC PORTABLE RECOVERY');
@@ -97,11 +99,9 @@ test('existing private 1.3 JSON backup restores in a fresh browser profile with 
     await destinationPage.goto('/');
     expect(await storedSessions(destinationPage)).toEqual([]);
     await expect(destinationPage.getByText('No saved interviews yet.')).toBeVisible();
-    await destinationPage.locator('#import-file').setInputFiles({
-      name: 'synthetic-portable-interview.json',
-      mimeType: 'application/json',
-      buffer: Buffer.from(backupText, 'utf8'),
-    });
+    // Reuse the real downloaded temporary JSON file, not an in-memory
+    // fabricated payload or shared browser storage.
+    await destinationPage.locator('#import-file').setInputFiles(backupPath);
     await expect(destinationPage.locator('.app-header')).toContainText('SYNTHETIC PORTABLE RECOVERY');
     await expect.poll(async () => (await storedSessions(destinationPage)).length).toBe(1);
     const restored = (await storedSessions(destinationPage))[0]!;
@@ -150,11 +150,18 @@ test('a malformed pinned pack backup fails closed in a distinct clean profile', 
     const { syntheticSemanticSession } = await import('./synthetic-session');
     const source = await syntheticSemanticSession({ clientLabel: 'SYNTHETIC INVALID BACKUP' });
     source.packIdentity.digest = '0'.repeat(64);
-    await page.locator('#import-file').setInputFiles({
-      name: 'synthetic-corrupted-pack.json',
-      mimeType: 'application/json',
-      buffer: Buffer.from(JSON.stringify(source), 'utf8'),
-    });
+    // Browser-native File + change event exercises the real Home import
+    // listener without introducing Node typings or writing a temp fixture.
+    await page.evaluate((text) => {
+      const input = document.querySelector<HTMLInputElement>('#import-file');
+      if (!input) throw new Error('Synthetic import picker unavailable.');
+      const dt = new DataTransfer();
+      dt.items.add(new File([text], 'synthetic-corrupted-pack.json', {
+        type: 'application/json',
+      }));
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }, JSON.stringify(source));
     await expect.poll(() => alerts.length).toBe(1);
     expect(alerts[0]).toMatch(/pack|digest|identity/i);
     await expect(page.getByText('No saved interviews yet.')).toBeVisible();
