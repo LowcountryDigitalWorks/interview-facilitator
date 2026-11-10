@@ -195,12 +195,35 @@ describe('PREP-BRIDGE full synthetic human authority journey', () => {
     expect(restored.runningNotes).toBe('SYNTHETIC PRIVATE INTERNAL NOTES');
     expect(semanticSessionToMarkdown(restored))
       .toContain('SYNTHETIC HUMAN-DRAFTED REVIEW ACTION');
-    const afterConsole = JSON.stringify(projectOwnerInterviewPreparationForReview(review));
+    // Simulate a NEW private preparation snapshot after the client's
+    // statement was confirmed. This is not the initial pre-commit review:
+    // a source adapter would have to authorize and supply a fresh packet.
+    const refreshedPacket: InterviewPrepPacket = {
+      ...packet,
+      expectedRevisionId: restored.revisionId,
+      preparedAt: '2026-11-08T15:10:00.000Z',
+      candidates: [],
+    };
+    const refreshedReview = await prepareInterviewCandidateReviewForReview(
+      refreshedPacket, restored,
+    );
+    expect(refreshedReview).toMatchObject({
+      status: 'no_source_evidence', questions: [], conflictCount: 0,
+      revisionId: restored.revisionId,
+    });
+    const refreshedConsole = projectOwnerInterviewPreparationForReview(refreshedReview);
+    expect(refreshedConsole).toMatchObject({
+      readiness: 'unknown', readCondition: 'unknown',
+      escalation: 'none', actionMode: 'link-only',
+      launch: { available: false, href: null },
+    });
+    const afterConsole = JSON.stringify(refreshedConsole);
     for (const secret of [
       confirmation.clientStatement, 'SYNTHETIC HUMAN-DRAFTED REVIEW ACTION',
       'SYNTHETIC PENDING ACTION NEVER TO ROUTE', session.clientLabel,
+      restored.sessionId, restored.revisionId, refreshedPacket.jobKey,
+      session.runningNotes, packet.candidates[0]!.sourceRecordRef,
     ]) expect(afterConsole).not.toContain(secret);
-    expect(projectOwnerInterviewPreparationForReview(review).launch.available).toBe(false);
   });
 
   it('stops altered evidence and stale full-session state without producing a confirmed draft', async () => {
