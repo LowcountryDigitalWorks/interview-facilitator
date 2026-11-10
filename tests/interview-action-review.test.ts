@@ -3,6 +3,7 @@ import { createSemanticSession } from '../src/semantic-session';
 import { generalDiscoveryPack } from '../src/pack';
 import { canonicalizeJson, sha256Hex } from '../src/pack-identity';
 import { proposeInterviewNextStepsForReview } from '../src/interview-workflow-bridge';
+import { relevanceMap } from '../src/live-session';
 import {
   OPERATOR_ACTION_REVIEW_VERSION,
   stageOperatorSelectedActionsForReview,
@@ -107,13 +108,40 @@ describe('private operator-selected next-step staging: source-only', () => {
     })).rejects.toThrow('contents changed');
   });
 
-  it('rejects hidden, pending and nonexistent proposals, not only malformed IDs', async () => {
+  it('rejects hidden and nonexistent proposals, not only malformed IDs', async () => {
     const { session, selection } = await fixture();
     for (const questionId of ['booking-process', 'needs-booking', 'unrecognized-question']) {
       await expect(stageOperatorSelectedActionsForReview(session, {
         ...selection, selectedQuestionIds: [questionId],
       })).rejects.toThrow('absent, hidden, pending');
     }
+  });
+
+  it('rejects an actual pending conditional action whose parent is unresolved', async () => {
+    const { session, selection } = await fixture();
+    const pending = structuredClone(session);
+    pending.answers['needs-booking'] = {
+      value: null, resolution: 'unresolved', source: null,
+      needsConfirmation: false, confirmation: null, followUp: null, note: '',
+    };
+    pending.answers['booking-process']!.followUp = {
+      action: 'SYNTHETIC NOT-YET-RELEVANT BOOKING ACTION',
+    };
+    // This is genuinely PENDING, rather than irrelevant after a captured "No".
+    expect(relevanceMap(pending)['booking-process']).toBe('pending');
+    const projection = await proposeInterviewNextStepsForReview(pending);
+    expect(projection.items.some(x => x.questionId === 'booking-process')).toBe(false);
+    const pendingSelection: OperatorActionSelection = {
+      ...selection,
+      expectedSessionDigest: await sha256Hex(canonicalizeJson(pending)),
+      expectedProposalDigest: await sha256Hex(canonicalizeJson(projection)),
+      selectedQuestionIds: ['booking-process'],
+    };
+    await expect(stageOperatorSelectedActionsForReview(pending, pendingSelection))
+      .rejects.toThrow('absent, hidden, pending');
+    // Selecting the invalid action must not alter the original private draft.
+    expect(pending.answers['booking-process']!.followUp?.action)
+      .toBe('SYNTHETIC NOT-YET-RELEVANT BOOKING ACTION');
   });
 
   it('refuses noncanonical or impossible due dates without changing the local proposal', async () => {
