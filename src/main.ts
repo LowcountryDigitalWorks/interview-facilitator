@@ -1008,7 +1008,7 @@ function renderReview(): void {
         : '<div class="known-preview"><strong>Private review</strong><p>Internal tools are available here. Use Presentation view before screen sharing or client read-back.</p></div>'}
       ${presenting
         ? ''
-        : '<div class="button-row"><button class="primary" data-action="enter-presentation">Open presentation view</button><button class="secondary" data-action="json">Export full JSON backup</button><button class="secondary" data-action="markdown">Export internal Markdown</button><button class="secondary" data-action="handoff" ${privateHandoffExportInFlight ? 'disabled aria-busy="true"' : ''}>Export private handoff bundle JSON</button><button class="secondary" data-action="home">Home</button><button class="secondary" data-action="delete">Delete local session</button></div>'}
+        : `<div class="button-row"><button class="primary" data-action="enter-presentation">Open presentation view</button><button class="secondary" data-action="json">Export full JSON backup</button><button class="secondary" data-action="markdown">Export internal Markdown</button><button class="secondary" data-action="handoff" ${privateHandoffExportInFlight ? 'disabled aria-busy="true"' : ''}>Export private handoff bundle JSON</button><button class="secondary" data-action="home">Home</button><button class="secondary" data-action="delete">Delete local session</button></div>`}
     </main>`;
   app.querySelector('[data-action="return"]')?.addEventListener('click', () => { readBackReturnTarget = null; view = 'interview'; renderInterview(); focusPrimaryAnswer(); });
   app.querySelectorAll<HTMLElement>('[data-change]').forEach((button) => button.addEventListener('click', () => {
