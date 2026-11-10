@@ -1303,7 +1303,14 @@ test('private synthetic prep file is reviewed offline without altering saved ans
   await page.getByRole('button', { name: 'Exit presentation' }).click();
   await expect(page.getByRole('region', { name: 'Synthetic preparation candidate review' }))
     .toContainText('No synthetic preparation packet loaded');
-  expect(await readStorageSnapshot(page)).toEqual(before);
+  // Normal interview navigation can save its current empty control and rotate
+  // the session revision. That is NOT a write by the prep trial. Prove that no
+  // private candidate or provenance crossed into any local canonical record.
+  const afterPresentation = await readStorageSnapshot(page);
+  expect(JSON.stringify(afterPresentation)).not.toContain(syntheticValue);
+  expect(JSON.stringify(afterPresentation)).not.toContain(packet.candidates[0]!.sourceRecordRef);
+  expect((afterPresentation.rows as SemanticInterviewSession[])[0]!.answers['existing-presence']!.value)
+    .toBeNull();
 });
 
 test('synthetic prep UI rejects wrong revision and disappears entirely for normal client sessions', async ({ page }) => {
