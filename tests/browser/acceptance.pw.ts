@@ -414,6 +414,43 @@ test('rapid private handoff clicks create only one local download and leave the 
     .toBe('SYNTHETIC SINGLE EXPORT');
 });
 
+test('private handoff busy state survives a Review re-render and clears on current control', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill('SYNTHETIC RE-RENDER BUSY');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  await page.locator('[data-question-id="must-have"]').click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+
+  const downloads: Download[] = [];
+  page.on('download', artifact => downloads.push(artifact));
+  const during = await page.evaluate(() => {
+    const first = document.querySelector<HTMLButtonElement>('[data-action="handoff"]');
+    if (!first) throw new Error('Private handoff button unavailable.');
+    // Begin async export, then synchronously rebuild the Review view via
+    // Presentation -> private. No microtask can finish the export between
+    // these operations in the same browser JavaScript turn.
+    first.click();
+    document.querySelector<HTMLButtonElement>('[data-action="enter-presentation"]')?.click();
+    document.querySelector<HTMLButtonElement>('[data-action="exit-presentation"]')?.click();
+    const current = document.querySelector<HTMLButtonElement>('[data-action="handoff"]');
+    return {
+      replaced: Boolean(current && current !== first),
+      disabled: current?.disabled ?? false,
+      busy: current?.getAttribute('aria-busy'),
+    };
+  });
+  expect(during).toEqual({ replaced: true, disabled: true, busy: 'true' });
+  const currentButton = page.getByRole('button', { name: 'Export private handoff bundle JSON' });
+  await expect.poll(() => downloads.length).toBe(1);
+  await expect(currentButton).toBeEnabled();
+  await expect(currentButton).not.toHaveAttribute('aria-busy', 'true');
+  expect(downloads).toHaveLength(1);
+  expect((await readDownloadJson(downloads[0]!)) as { canonicalSession: SemanticInterviewSession })
+    .toMatchObject({ canonicalSession: { clientLabel: 'SYNTHETIC RE-RENDER BUSY' } });
+});
+
 test('private handoff is available for a clean interview without inventing next-step tasks', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'New interview' }).click();
