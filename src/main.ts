@@ -7,6 +7,8 @@ import { semanticSessionToMarkdown, serializeSession } from './markdown';
 import { proposeInterviewNextStepsForReview } from './interview-workflow-bridge';
 import { canonicalizeJson } from './pack-identity';
 import { buildPrivateInterviewHandoffForReview } from './private-interview-handoff';
+import { compareAndSaveSyntheticConfirmedStatement } from './storage';
+import { mountSyntheticConfirmationPanel } from './synthetic-private-confirmation-panel';
 import { mountPrivateInterviewPrepReviewTrial } from './interview-prep-review-ui-trial';
 import { isSyntheticPrepTrialSession, readSyntheticPrepPacketForReview } from './synthetic-private-prep-file';
 import { formatConnectivityLabel, formatSaveLabel, type PersistenceState, type SaveState } from './indicators';
@@ -49,10 +51,14 @@ let privateHandoffExportInFlight = false;
 // and pending file-read epochs are invalidated on every view transition.
 let privatePrepEpoch = 0;
 let privatePrepMount: { dispose: () => void } | null = null;
+let privatePrepConfirmationMount: { dispose: () => void } | null = null;
+let syntheticConfirmationNotice: string | null = null;
 function clearPrivatePrepTrial(): void {
   privatePrepEpoch++;
   privatePrepMount?.dispose();
   privatePrepMount = null;
+  privatePrepConfirmationMount?.dispose();
+  privatePrepConfirmationMount = null;
 }
 // Transient navigation only; never part of the canonical session or read-back consent.
 let readBackReturnTarget: { sessionId: string; questionId: string } | null = null;
@@ -258,6 +264,7 @@ function chooseImportCollision(existing: SemanticInterviewSession): Promise<Impo
 }
 
 async function renderHome(): Promise<void> {
+  syntheticConfirmationNotice = null;
   clearPrivatePrepTrial();
   readBackReturnTarget = null;
   const listState = await readSessionList(listSessions);
@@ -523,6 +530,7 @@ function renderHomeNotice(notice: Exclude<HomeNotice, null>): string {
 }
 
 function renderNew(): void {
+  syntheticConfirmationNotice = null;
   clearPrivatePrepTrial();
   readBackReturnTarget = null;
   const pack = defaultLiveInterviewPack();
@@ -640,6 +648,7 @@ function answerControl(question: Question, value: string): string {
 }
 
 function renderInterview(): void {
+  syntheticConfirmationNotice = null;
   clearPrivatePrepTrial();
   if (!session) { view = 'home'; void render(); return; }
   const question = currentQuestion();
@@ -1025,6 +1034,8 @@ function renderReview(): void {
         <input id="synthetic-prep-file" type="file" accept=".json,application/json" autocomplete="off" />
         <button class="secondary" type="button" data-action="discard-prep-trial">Discard preparation review</button>
         <div data-prep-trial-output role="region" aria-label="Synthetic preparation candidate review"><p>No synthetic preparation packet loaded.</p></div>
+        <div data-synthetic-confirmation role="region" aria-label="Synthetic client confirmation trial"></div>
+        ${syntheticConfirmationNotice ? `<p role="status" data-synthetic-confirmation-saved>${escapeHtml(syntheticConfirmationNotice)}</p>` : ''}
       </section>` : ''}
       ${presenting
         ? '<div class="known-preview"><strong>Presentation view</strong><p>Internal notes, provenance, coverage details, delete controls, and internal exports are excluded. This view cannot guarantee that free-text answers themselves contain no sensitive information.</p></div>'
@@ -1060,7 +1071,46 @@ function renderReview(): void {
       // The existing reviewed widget presents evidence only in private DOM,
       // and emits an ID-only proposal. Nothing here persists or confirms it.
       privatePrepMount = mountPrivateInterviewPrepReviewTrial(
-        host, () => packet, currentSession, () => { /* trial-only; no session write */ },
+        host, () => packet, currentSession, (selection) => {
+          if (token !== privatePrepEpoch || !host.isConnected) return;
+          const confirmationHost = app.querySelector<HTMLElement>('[data-synthetic-confirmation]');
+          if (!confirmationHost) return;
+          confirmationHost.textContent = 'Verifying selected synthetic evidence for separate client confirmation…';
+          void mountSyntheticConfirmationPanel(
+            confirmationHost, currentSession(), packet, selection, {
+              readCurrent: currentSession,
+              isCurrent: () => token === privatePrepEpoch && confirmationHost.isConnected
+                && view === 'review' && !isPresentationMode(presentationMode)
+                && session?.sessionId === source.sessionId,
+              flushPending: async () => {
+                await autosave.flushAndWait(source.sessionId);
+                // Never let the normal autosave coordinator write with an old
+                // expected revision after a successful independent CAS.
+                currentSession();
+                await autosave.cancelAndWait(source.sessionId);
+              },
+              store: { compareAndSave: compareAndSaveSyntheticConfirmedStatement },
+              onSaved: (saved) => {
+                if (token !== privatePrepEpoch || !session
+                  || session.sessionId !== saved.sessionId) return;
+                session = saved;
+                saveError = null;
+                saveState = 'saved';
+                syntheticConfirmationNotice = 'Synthetic client statement saved locally. Reopen the preparation file to review another question.';
+                renderReview();
+              },
+            },
+          ).then((mounted) => {
+            if (token !== privatePrepEpoch || !confirmationHost.isConnected) {
+              mounted.dispose();
+              return;
+            }
+            privatePrepConfirmationMount = mounted;
+          }).catch(() => {
+            if (token !== privatePrepEpoch || !confirmationHost.isConnected) return;
+            confirmationHost.textContent = 'Selection was stale or could not be staged. Reload the synthetic preparation file.';
+          });
+        },
       );
     } catch {
       if (!host.isConnected || token !== privatePrepEpoch) return;
@@ -1074,6 +1124,10 @@ function renderReview(): void {
     clearPrivatePrepTrial();
     const host = app.querySelector<HTMLElement>('[data-prep-trial-output]');
     if (host) host.textContent = 'No synthetic preparation packet loaded.';
+    const confirm = app.querySelector<HTMLElement>('[data-synthetic-confirmation]');
+    if (confirm) confirm.replaceChildren();
+    syntheticConfirmationNotice = null;
+    app.querySelector('[data-synthetic-confirmation-saved]')?.remove();
   });
   app.querySelector('[data-action="return"]')?.addEventListener('click', () => { readBackReturnTarget = null; view = 'interview'; renderInterview(); focusPrimaryAnswer(); });
   app.querySelectorAll<HTMLElement>('[data-change]').forEach((button) => button.addEventListener('click', () => {
