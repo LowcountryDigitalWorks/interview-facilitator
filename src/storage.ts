@@ -325,6 +325,127 @@ export async function replaceSessionWithHistory(imported: SemanticInterviewSessi
   }
 }
 
+/**
+ * #105 SYNTHETIC-ONLY explicit human client-statement save.
+ *
+ * This is NOT the normal autosave writer and NOT a provider/client adapter.
+ * The complete canonical source must match the stored IDB row in one strict
+ * native transaction. Archive the exact old row and replace with the already
+ * independently validated proposed revision atomically, or return null stale.
+ * Never use this demo gate as proof of real client identity or consent.
+ */
+export async function compareAndSaveSyntheticConfirmedStatement(
+  sessionId: string,
+  expectedCanonical: string,
+  proposed: SemanticInterviewSession,
+): Promise<SemanticInterviewSession | null> {
+  if (typeof expectedCanonical !== 'string' || expectedCanonical.length < 1
+    || expectedCanonical.length > 2_000_000) {
+    throw new Error('Synthetic confirmation requires bounded canonical input.');
+  }
+  let expected: SemanticInterviewSession;
+  try {
+    expected = await validateSemanticSessionRecord(JSON.parse(expectedCanonical));
+  } catch {
+    throw new Error('Synthetic confirmation source is invalid.');
+  }
+  await validateSemanticSessionRecord(proposed);
+  const synthetic = (label: string) => /^synthetic(?:\\s|[-_])/i.test(label);
+  if (!synthetic(expected.clientLabel) || !synthetic(proposed.clientLabel)
+    || expected.sessionId !== sessionId || proposed.sessionId !== sessionId
+    || expected.sessionSchemaVersion !== '1.3.0' || proposed.sessionSchemaVersion !== '1.3.0'
+    || canonicalizeJson(expected) !== expectedCanonical
+    || proposed.parentRevisionId !== expected.revisionId
+    || proposed.revisionId === expected.revisionId
+    || Date.parse(proposed.updatedAt) < Date.parse(expected.updatedAt)) {
+    throw new Error('Synthetic confirmation identity or revision is invalid.');
+  }
+
+  // Enforce a SINGLE independently client-entered answer change. The source,
+  // pack, other answers, notes, facts, follow-ups and metadata remain exact.
+  const changed = Object.keys(expected.answers).filter(
+    key => canonicalizeJson(expected.answers[key]) !== canonicalizeJson(proposed.answers[key]),
+  );
+  if (changed.length !== 1) throw new Error('Synthetic confirmation must modify exactly one answer.');
+  const questionId = changed[0]!;
+  const before = expected.answers[questionId]!;
+  const after = proposed.answers[questionId]!;
+  if (!before || !after || before.value !== null || before.resolution !== 'unresolved'
+    || before.source !== null || before.confirmation !== null || before.needsConfirmation
+    || before.followUp !== null || typeof after.value !== 'string' || !after.value.trim()
+    || after.resolution !== 'captured' || after.source !== 'client-statement'
+    || after.needsConfirmation !== false || after.confirmation !== null) {
+    throw new Error('Synthetic confirmation cannot overwrite prior or sourced evidence.');
+  }
+  const onlyAllowed = structuredClone(expected);
+  onlyAllowed.answers[questionId] = {
+    ...before, value: after.value, resolution: 'captured',
+    source: 'client-statement', needsConfirmation: false, confirmation: null,
+  };
+  onlyAllowed.parentRevisionId = expected.revisionId;
+  onlyAllowed.revisionId = proposed.revisionId;
+  onlyAllowed.updatedAt = proposed.updatedAt;
+  if (canonicalizeJson(onlyAllowed) !== canonicalizeJson(proposed)) {
+    throw new Error('Synthetic confirmation changed unrelated interview data.');
+  }
+
+  const db = await openDb();
+  try {
+    return await new Promise<SemanticInterviewSession | null>((resolve, reject) => {
+      const tx = openTransaction(db, [STORE, REVISION_HISTORY_STORE], 'readwrite');
+      const sessions = tx.objectStore(STORE);
+      const history = tx.objectStore(REVISION_HISTORY_STORE);
+      let result: SemanticInterviewSession | null = null;
+      let failure: unknown = null;
+      const abort = (reason: unknown): void => {
+        if (failure !== null) return;
+        failure = reason;
+        try { tx.abort(); } catch { /* already finished */ }
+      };
+      tx.oncomplete = () => failure === null ? resolve(result) : reject(failure);
+      tx.onerror = () => {
+        if (failure === null) failure = tx.error ?? new Error('Synthetic local confirmation failed.');
+      };
+      tx.onabort = () => reject(failure ?? tx.error ?? new Error('Synthetic local confirmation aborted.'));
+
+      const current = sessions.get(sessionId);
+      current.onerror = () => abort(current.error ?? new Error('Could not verify local interview.'));
+      current.onsuccess = () => {
+        try {
+          const raw = current.result as Record<string, unknown> | undefined;
+          // A changed (or absent) row is an ordinary stale result, NO write.
+          if (raw === undefined || canonicalizeJson(raw) !== expectedCanonical) return;
+          const key = revisionHistoryKey(sessionId, expected.revisionId);
+          const check = history.get(key);
+          check.onerror = () => abort(check.error ?? new Error('Could not verify revision history.'));
+          check.onsuccess = () => {
+            try {
+              if (check.result !== undefined) {
+                if (canonicalizeJson(check.result) !== expectedCanonical) {
+                  abort(new RevisionHistoryConflictError('Synthetic prior revision history differs.'));
+                  return;
+                }
+              } else {
+                const archive = history.put(structuredClone(expected), key);
+                archive.onerror = () => abort(archive.error ?? new Error('Could not archive prior revision.'));
+              }
+              const write = sessions.put(structuredClone(proposed));
+              write.onerror = () => abort(write.error ?? new Error('Could not save client-confirmed revision.'));
+              result = structuredClone(proposed);
+            } catch (error) {
+              abort(error);
+            }
+          };
+        } catch (error) {
+          abort(error);
+        }
+      };
+    });
+  } finally {
+    db.close();
+  }
+}
+
 export async function saveSession(session: SemanticInterviewSession, expectedRevisionId: string | null): Promise<SemanticInterviewSession> {
   await validateSemanticSessionRecord(session);
   const db = await openDb();
