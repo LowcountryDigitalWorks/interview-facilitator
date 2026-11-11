@@ -55,6 +55,7 @@ export async function auditRetainedLocalRevisionsForReview(
   let linkedCount = 0;
   let missing = false;
   let parent = current.parentRevisionId;
+  let childUpdatedAt = current.updatedAt;
   const visited = new Set<string>([current.revisionId]);
   while (parent !== null) {
     if (visited.has(parent)) {
@@ -67,10 +68,11 @@ export async function auditRetainedLocalRevisionsForReview(
       break;
     }
     // A parent link must never run forward in semantic saved time.
-    if (Date.parse(previous.updatedAt) > Date.parse(current.updatedAt)) {
+    if (Date.parse(previous.updatedAt) > Date.parse(childUpdatedAt)) {
       throw new Error('Retained revision has a future timestamp.');
     }
     linkedCount++;
+    childUpdatedAt = previous.updatedAt;
     parent = previous.parentRevisionId;
   }
   const unlinkedCount = retained.length - linkedCount;
