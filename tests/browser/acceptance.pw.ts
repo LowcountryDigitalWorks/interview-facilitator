@@ -1363,6 +1363,9 @@ test('synthetic private selection needs separate human client statement and save
   await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
   await page.getByRole('button', { name: 'Review interview' }).click();
   await page.getByRole('button', { name: 'Exit presentation' }).click();
+  // The normal Review navigation can schedule a 180ms local autosave.
+  // Pin the synthetic packet to a completed, not transient, revision.
+  await expect(page.locator('[data-save-indicator]')).toContainText(/^Saved/);
   await expect(page.locator('#synthetic-prep-file')).toBeVisible();
   const savedBefore = (await readStorageSnapshot(page)).rows[0] as SemanticInterviewSession;
   const packet = {
@@ -1447,6 +1450,9 @@ test('synthetic confirmation refuses an unseen same-revision storage edit withou
   await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
   await page.getByRole('button', { name: 'Review interview' }).click();
   await page.getByRole('button', { name: 'Exit presentation' }).click();
+  // The normal Review navigation can schedule a 180ms local autosave.
+  // Pin the synthetic packet to a completed, not transient, revision.
+  await expect(page.locator('[data-save-indicator]')).toContainText(/^Saved/);
   const saved = (await readStorageSnapshot(page)).rows[0] as SemanticInterviewSession;
   const packet = {
     schemaVersion: 'ldw.interview-prep.v1',
