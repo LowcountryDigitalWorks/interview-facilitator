@@ -1447,7 +1447,10 @@ test('synthetic private selection needs separate human client statement and save
   await page.getByRole('button', { name: 'Check retained local revision continuity' }).click();
   const audit = page.getByRole('region', { name: 'Local revision continuity result' });
   await expect(audit).toContainText('1 local archived revision(s); 1 linked to current, 0 unlinked');
-  await expect(audit).toContainText('No off-device copy');
+  // The explicit confirmation archived its immediate parent, but ordinary
+  // preceding autosave revisions are NOT all retained. This must report
+  // a real gap rather than a falsely complete recovery chain.
+  await expect(audit).toContainText('missing at least one prior revision');
   expect(await readStorageSnapshot(page)).toEqual(beforeAudit);
   await page.getByRole('button', { name: 'Open presentation view' }).click();
   await expect(page.getByRole('region', { name: 'Local revision continuity result' })).toHaveCount(0);
