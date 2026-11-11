@@ -1268,6 +1268,9 @@ test('private synthetic prep file is reviewed offline without altering saved ans
   // Next-to-Review defaults to protected Presentation; leave it explicitly.
   await page.getByRole('button', { name: 'Exit presentation' }).click();
   await expect(page.locator('#synthetic-prep-file')).toBeVisible();
+  // The trial now flushes normal autosave before pinning the packet; wait for
+  // its stable stored revision, rather than using the obsolete fixture SHA.
+  await expect(page.locator('[data-save-indicator]')).toContainText(/^Saved/);
   const before = await readStorageSnapshot(page);
   const review = page.getByRole('region', { name: 'Synthetic preparation candidate review' });
   const syntheticValue = 'SYNTHETIC <img src=x onerror=alert(1)> REVIEW FACT';
@@ -1275,7 +1278,7 @@ test('private synthetic prep file is reviewed offline without altering saved ans
     schemaVersion: 'ldw.interview-prep.v1',
     jobKey: 'SYNTHETIC-PREP-LOCAL-01',
     sessionId: row.sessionId,
-    expectedRevisionId: row.revisionId,
+    expectedRevisionId: (before.rows[0] as SemanticInterviewSession).revisionId,
     expectedPackDigest: row.packIdentity.digest,
     preparedAt: '2026-11-09T14:30:00.000Z',
     candidates: [{
@@ -1324,6 +1327,9 @@ test('synthetic prep UI rejects wrong revision and disappears entirely for norma
   // Next-to-Review defaults to protected Presentation; leave it explicitly.
   await page.getByRole('button', { name: 'Exit presentation' }).click();
   await expect(page.locator('#synthetic-prep-file')).toBeVisible();
+  // The trial now flushes normal autosave before pinning the packet; wait for
+  // its stable stored revision, rather than using the obsolete fixture SHA.
+  await expect(page.locator('[data-save-indicator]')).toContainText(/^Saved/);
   const before = await readStorageSnapshot(page);
   await setSyntheticPrepInput(page, JSON.stringify({
     schemaVersion: 'ldw.interview-prep.v1',
