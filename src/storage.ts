@@ -1126,7 +1126,7 @@ export async function inspectSyntheticLocalRevisionContinuity(
   source: SemanticInterviewSession,
 ): Promise<LocalRevisionContinuityReport> {
   await validateSemanticSessionRecord(source);
-  if (!/^synthetic(?:\\s|[-_])/i.test(source.clientLabel)) {
+  if (!/^synthetic(?:\s|[-_])/i.test(source.clientLabel)) {
     throw new Error('Local revision continuity trial accepts synthetic interviews only.');
   }
   const db = await openDb();
@@ -1138,7 +1138,7 @@ export async function inspectSyntheticLocalRevisionContinuity(
       tx.onabort = () => reject(tx.error ?? new Error('Local history check was aborted.'));
     });
     const prefix = revisionHistorySessionPrefix(source.sessionId);
-    const range = IDBKeyRange.bound(prefix, `${prefix}\\uffff`);
+    const range = IDBKeyRange.bound(prefix, `${prefix}\uffff`);
     const current = tx.objectStore(STORE).get(source.sessionId);
     const history = tx.objectStore(REVISION_HISTORY_STORE);
     const keysRequest = history.getAllKeys(range);
