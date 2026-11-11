@@ -7,7 +7,7 @@ import { semanticSessionToMarkdown, serializeSession } from './markdown';
 import { proposeInterviewNextStepsForReview } from './interview-workflow-bridge';
 import { canonicalizeJson } from './pack-identity';
 import { buildPrivateInterviewHandoffForReview } from './private-interview-handoff';
-import { compareAndSaveSyntheticConfirmedStatement } from './storage';
+import { compareAndSaveSyntheticConfirmedStatement, inspectSyntheticLocalRevisionContinuity } from './storage';
 import { mountSyntheticConfirmationPanel } from './synthetic-private-confirmation-panel';
 import { mountPrivateInterviewPrepReviewTrial } from './interview-prep-review-ui-trial';
 import { isSyntheticPrepTrialSession, readSyntheticPrepPacketForReview } from './synthetic-private-prep-file';
@@ -1036,6 +1036,12 @@ function renderReview(): void {
         <div data-prep-trial-output role="region" aria-label="Synthetic preparation candidate review"><p>No synthetic preparation packet loaded.</p></div>
         <div data-synthetic-confirmation role="region" aria-label="Synthetic client confirmation trial"></div>
         ${syntheticConfirmationNotice ? `<p role="status" data-synthetic-confirmation-saved>${escapeHtml(syntheticConfirmationNotice)}</p>` : ''}
+        <div class="known-preview">
+          <strong>Retained local revision continuity — synthetic audit</strong>
+          <p>This reads only local snapshots for this synthetic interview. It does not make a backup or prove encrypted off-device recovery.</p>
+          <button class="secondary" type="button" data-action="inspect-local-revisions">Check retained local revision continuity</button>
+          <div data-local-revision-result role="region" aria-label="Local revision continuity result"><p>No local history inspection performed.</p></div>
+        </div>
       </section>` : ''}
       ${presenting
         ? '<div class="known-preview"><strong>Presentation view</strong><p>Internal notes, provenance, coverage details, delete controls, and internal exports are excluded. This view cannot guarantee that free-text answers themselves contain no sensitive information.</p></div>'
@@ -1133,6 +1139,30 @@ function renderReview(): void {
       notice.setAttribute('role', 'alert');
       notice.textContent = 'Synthetic preparation packet was rejected or became stale. No interview answer changed.';
       host.replaceChildren(notice);
+    }
+  });
+  app.querySelector('[data-action="inspect-local-revisions"]')?.addEventListener('click', async () => {
+    const host = app.querySelector<HTMLElement>('[data-local-revision-result]');
+    if (!host || !session || !isSyntheticPrepTrialSession(session.clientLabel)
+      || view !== 'review' || isPresentationMode(presentationMode)) return;
+    const token = privatePrepEpoch;
+    const id = session.sessionId;
+    host.textContent = 'Checking retained local revision snapshots…';
+    try {
+      await autosave.flushAndWait(id);
+      if (token !== privatePrepEpoch || !host.isConnected || !session
+        || session.sessionId !== id || view !== 'review'
+        || isPresentationMode(presentationMode)) return;
+      const report = await inspectSyntheticLocalRevisionContinuity(structuredClone(session));
+      if (token !== privatePrepEpoch || !host.isConnected || !session
+        || session.sessionId !== id || view !== 'review'
+        || isPresentationMode(presentationMode)) return;
+      // Never include interview IDs, answers, client labels or source refs in
+      // this status. Neither a green local chain nor a digest proves backup.
+      host.textContent = `${report.retainedCount} local archived revision(s); ${report.linkedCount} linked to current, ${report.unlinkedCount} unlinked. ${report.notice}`;
+    } catch {
+      if (token !== privatePrepEpoch || !host.isConnected) return;
+      host.textContent = 'Local history could not be verified. No data was changed; no recovery claim is made.';
     }
   });
   app.querySelector('[data-action="discard-prep-trial"]')?.addEventListener('click', () => {
