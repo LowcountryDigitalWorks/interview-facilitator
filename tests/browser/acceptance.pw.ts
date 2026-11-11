@@ -1357,6 +1357,7 @@ test('synthetic prep UI rejects wrong revision and disappears entirely for norma
   await page.getByRole('button', { name: 'Review interview' }).click();
   await expect(page.locator('#synthetic-prep-file')).toHaveCount(0);
   await expect(page.getByText('Synthetic preparation — private review trial')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Check retained local revision continuity' })).toHaveCount(0);
 });
 
 
@@ -1440,7 +1441,16 @@ test('synthetic private selection needs separate human client statement and save
   });
   expect(history).toHaveLength(1);
   expect(history[0]).toEqual(savedBefore);
+  // This is a READ-ONLY inventory: one retained parent chain, not an
+  // off-device or encrypted history archive.
+  const beforeAudit = await readStorageSnapshot(page);
+  await page.getByRole('button', { name: 'Check retained local revision continuity' }).click();
+  const audit = page.getByRole('region', { name: 'Local revision continuity result' });
+  await expect(audit).toContainText('1 local archived revision(s); 1 linked to current, 0 unlinked');
+  await expect(audit).toContainText('No off-device copy');
+  expect(await readStorageSnapshot(page)).toEqual(beforeAudit);
   await page.getByRole('button', { name: 'Open presentation view' }).click();
+  await expect(page.getByRole('region', { name: 'Local revision continuity result' })).toHaveCount(0);
   await expect(page.locator('#synthetic-prep-file')).toHaveCount(0);
   await expect(page.getByText(packet.candidates[0]!.proposedValue)).toHaveCount(0);
   await expect(page.getByText(packet.candidates[0]!.sourceRecordRef)).toHaveCount(0);
