@@ -1051,10 +1051,25 @@ function renderReview(): void {
     if (!file || !session || view !== 'review' || isPresentationMode(presentationMode)) return;
     clearPrivatePrepTrial();
     const token = privatePrepEpoch;
-    const source = structuredClone(session);
-    const sourceCanonical = canonicalizeJson(source);
+    const targetId = session.sessionId;
     const host = app.querySelector<HTMLElement>('[data-prep-trial-output]');
     if (!host) return;
+    host.textContent = 'Saving the exact local interview before checking synthetic preparation…';
+    try {
+      // Enter the trial from a persisted revision, not an in-flight normal
+      // navigation autosave that could rotate it after selection is pinned.
+      await autosave.flushAndWait(targetId);
+    } catch {
+      if (token === privatePrepEpoch && host.isConnected) {
+        host.textContent = 'The current local interview could not be saved. No preparation file was imported.';
+      }
+      return;
+    }
+    if (token !== privatePrepEpoch || !host.isConnected || !session
+      || session.sessionId !== targetId || view !== 'review'
+      || isPresentationMode(presentationMode)) return;
+    const source = structuredClone(session);
+    const sourceCanonical = canonicalizeJson(source);
     host.textContent = 'Checking the local synthetic packet…';
     const currentSession = (): SemanticInterviewSession => {
       if (token !== privatePrepEpoch || !session || session.sessionId !== source.sessionId
