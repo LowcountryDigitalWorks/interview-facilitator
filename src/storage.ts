@@ -392,7 +392,21 @@ export async function compareAndSaveSyntheticConfirmedStatement(
   const db = await openDb();
   try {
     return await new Promise<SemanticInterviewSession | null>((resolve, reject) => {
-      const tx = openTransaction(db, [STORE, REVISION_HISTORY_STORE], 'readwrite');
+      // This explicit, human-attested confirmation must never silently
+      // downgrade to browser-default durability. On unsupported/ignored strict
+      // options refuse BEFORE any row or revision-history write is requested.
+      let tx: IDBTransaction;
+      try {
+        tx = db.transaction([STORE, REVISION_HISTORY_STORE], 'readwrite', { durability: 'strict' });
+      } catch {
+        reject(new Error('Strict local transaction durability unavailable; no confirmation was saved.'));
+        return;
+      }
+      if (tx.durability !== 'strict') {
+        try { tx.abort(); } catch { /* no writes were requested */ }
+        reject(new Error('Strict local transaction durability unverified; no confirmation was saved.'));
+        return;
+      }
       const sessions = tx.objectStore(STORE);
       const history = tx.objectStore(REVISION_HISTORY_STORE);
       let result: SemanticInterviewSession | null = null;
