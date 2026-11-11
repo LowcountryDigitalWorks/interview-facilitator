@@ -1511,6 +1511,13 @@ test('synthetic confirmation refuses an unseen same-revision storage edit withou
   await panel.getByRole('checkbox').check();
   await panel.getByRole('button', { name: 'Save synthetic client-confirmed answer locally' }).click();
   await expect(panel).toContainText('The local interview changed. No confirmation was saved.');
+  // A rejected full-CAS attempt must unlock the form, but never silently
+  // reuse the old acknowledgment or claim that its contents were saved.
+  await expect(panel.getByRole('textbox', { name: 'What the synthetic client actually confirmed' })).toBeEnabled();
+  await expect(panel.getByRole('combobox', { name: 'Question for explicit client confirmation' })).toBeEnabled();
+  await expect(panel.getByRole('checkbox')).toBeEnabled();
+  await expect(panel.getByRole('checkbox')).not.toBeChecked();
+  await expect(panel.getByRole('button', { name: 'Save synthetic client-confirmed answer locally' })).toBeDisabled();
   const after = (await readStorageSnapshot(page)).rows[0] as SemanticInterviewSession;
   expect(after.runningNotes).toBe('SYNTHETIC CONCURRENT LOCAL EDIT');
   expect(after.revisionId).toBe(saved.revisionId);
@@ -1587,6 +1594,11 @@ test('synthetic confirmation refuses unsupported strict durability before writin
   await panel.getByRole('checkbox').check();
   await panel.getByRole('button', { name: 'Save synthetic client-confirmed answer locally' }).click();
   await expect(panel).toContainText('Could not verify the synthetic confirmation save.');
+  await expect(panel.getByRole('textbox', { name: 'What the synthetic client actually confirmed' })).toBeEnabled();
+  await expect(panel.getByRole('combobox', { name: 'Question for explicit client confirmation' })).toBeEnabled();
+  await expect(panel.getByRole('checkbox')).toBeEnabled();
+  await expect(panel.getByRole('checkbox')).not.toBeChecked();
+  await expect(panel.getByRole('button', { name: 'Save synthetic client-confirmed answer locally' })).toBeDisabled();
   expect((await readStorageSnapshot(page)).rows).toEqual([before]);
   const historyCount = await page.evaluate(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
