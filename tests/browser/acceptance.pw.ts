@@ -1352,3 +1352,172 @@ test('synthetic prep UI rejects wrong revision and disappears entirely for norma
   await expect(page.locator('#synthetic-prep-file')).toHaveCount(0);
   await expect(page.getByText('Synthetic preparation — private review trial')).toHaveCount(0);
 });
+
+
+test('synthetic private selection needs separate human client statement and saves one atomic revision with old history', async ({ page }) => {
+  await page.goto('/');
+  const seeded = await syntheticSession('synthetic-confirmation-success');
+  seeded.currentQuestionId = 'must-have';
+  await putRawSession(page, seeded);
+  await page.reload();
+  await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.locator('#synthetic-prep-file')).toBeVisible();
+  const savedBefore = (await readStorageSnapshot(page)).rows[0] as SemanticInterviewSession;
+  const packet = {
+    schemaVersion: 'ldw.interview-prep.v1',
+    jobKey: 'SYNTHETIC-HUMAN-CONFIRM-01',
+    sessionId: savedBefore.sessionId,
+    expectedRevisionId: savedBefore.revisionId,
+    expectedPackDigest: savedBefore.packIdentity.digest,
+    preparedAt: '2026-11-09T14:30:00.000Z',
+    candidates: [{
+      candidateId: 'source-01', questionId: 'existing-presence',
+      proposedValue: 'SYNTHETIC SOURCE SUGGESTION NOT THE CLIENT ANSWER',
+      sourceSystem: 'manual',
+      sourceRecordRef: 'SYNTHETIC-RESEARCH-PRIVATE-REF',
+      observedAt: '2026-11-09T14:00:00.000Z',
+      confidence: 'unverified',
+    }],
+  };
+  await setSyntheticPrepInput(page, JSON.stringify(packet));
+  const candidate = page.getByRole('region', { name: 'Synthetic preparation candidate review' });
+  await expect(candidate).toContainText(packet.candidates[0]!.proposedValue);
+  await candidate.getByRole('radio').check();
+  await candidate.getByRole('checkbox').check();
+  await candidate.getByRole('button', { name: /Prepare selected candidate proposal/ }).click();
+  const confirmedPanel = page.getByRole('region', { name: 'Synthetic client confirmation trial' });
+  await expect(confirmedPanel.getByRole('heading', { name: /Record a separate client-confirmed statement/ }))
+    .toBeVisible();
+  const save = confirmedPanel.getByRole('button', { name: 'Save synthetic client-confirmed answer locally' });
+  await expect(save).toBeDisabled();
+  await confirmedPanel.getByRole('textbox', { name: 'What the synthetic client actually confirmed' })
+    .fill('SYNTHETIC CLIENT INDEPENDENTLY CONFIRMED AN EXISTING WEBSITE');
+  await expect(save).toBeDisabled();
+  await confirmedPanel.getByRole('checkbox').check();
+  await expect(save).toBeEnabled();
+  const beforeCommit = await readStorageSnapshot(page);
+  expect(beforeCommit.rows).toEqual([savedBefore]);
+  await save.click();
+  await expect(page.locator('[data-synthetic-confirmation-saved]'))
+    .toContainText('Synthetic client statement saved locally');
+  const after = (await readStorageSnapshot(page)).rows[0] as SemanticInterviewSession;
+  expect(after.answers['existing-presence']).toMatchObject({
+    value: 'SYNTHETIC CLIENT INDEPENDENTLY CONFIRMED AN EXISTING WEBSITE',
+    resolution: 'captured', source: 'client-statement', confirmation: null,
+  });
+  expect(after.parentRevisionId).toBe(savedBefore.revisionId);
+  expect(after.revisionId).not.toBe(savedBefore.revisionId);
+  expect(after.sessionId).toBe(savedBefore.sessionId);
+  expect(JSON.stringify(after)).not.toContain(packet.candidates[0]!.sourceRecordRef);
+  expect(JSON.stringify(after)).not.toContain(packet.candidates[0]!.proposedValue);
+  expect(after.answers['existing-presence']!.value).not.toEqual(packet.candidates[0]!.proposedValue);
+
+  const history = await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('ldw-interview-facilitator', 4);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const records = await new Promise<unknown[]>((resolve, reject) => {
+      const request = db.transaction('revision-history', 'readonly')
+        .objectStore('revision-history').getAll();
+      request.onsuccess = () => resolve(request.result as unknown[]);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return records;
+  });
+  expect(history).toHaveLength(1);
+  expect(history[0]).toEqual(savedBefore);
+  await page.getByRole('button', { name: 'Open presentation view' }).click();
+  await expect(page.locator('#synthetic-prep-file')).toHaveCount(0);
+  await expect(page.getByText(packet.candidates[0]!.proposedValue)).toHaveCount(0);
+  await expect(page.getByText(packet.candidates[0]!.sourceRecordRef)).toHaveCount(0);
+  await expect(page.getByText('SYNTHETIC CLIENT INDEPENDENTLY CONFIRMED AN EXISTING WEBSITE')).toBeVisible();
+});
+
+test('synthetic confirmation refuses an unseen same-revision storage edit without writing a client answer', async ({ page }) => {
+  await page.goto('/');
+  const seeded = await syntheticSession('synthetic-confirmation-stale');
+  seeded.currentQuestionId = 'must-have';
+  await putRawSession(page, seeded);
+  await page.reload();
+  await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  const saved = (await readStorageSnapshot(page)).rows[0] as SemanticInterviewSession;
+  const packet = {
+    schemaVersion: 'ldw.interview-prep.v1',
+    jobKey: 'SYNTHETIC-HUMAN-CONFIRM-STALE',
+    sessionId: saved.sessionId, expectedRevisionId: saved.revisionId,
+    expectedPackDigest: saved.packIdentity.digest,
+    preparedAt: '2026-11-09T14:30:00.000Z',
+    candidates: [{
+      candidateId: 'a', questionId: 'existing-presence',
+      proposedValue: 'SYNTHETIC RESEARCH VALUE NOT ACCEPTED',
+      sourceSystem: 'manual', sourceRecordRef: 'SYNTHETIC-REF-STALE',
+      observedAt: '2026-11-09T14:00:00.000Z', confidence: 'unverified',
+    }],
+  };
+  await setSyntheticPrepInput(page, JSON.stringify(packet));
+  const candidate = page.getByRole('region', { name: 'Synthetic preparation candidate review' });
+  await expect(candidate.getByRole('radio')).toBeVisible();
+  await candidate.getByRole('radio').check();
+  await candidate.getByRole('checkbox').check();
+  await candidate.getByRole('button', { name: /Prepare selected candidate proposal/ }).click();
+  const panel = page.getByRole('region', { name: 'Synthetic client confirmation trial' });
+  await expect(panel.getByRole('heading', { name: /Record a separate client-confirmed statement/ })).toBeVisible();
+
+  // Simulate another writer changing the stored canonical JSON without
+  // advancing the revision. A revision-only CAS would accept this; full CAS
+  // must refuse and preserve the other writer's content.
+  await page.evaluate(async (sessionId) => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('ldw-interview-facilitator', 4);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('sessions', 'readwrite');
+      const store = tx.objectStore('sessions');
+      const request = store.get(sessionId);
+      request.onsuccess = () => {
+        const value = request.result as SemanticInterviewSession;
+        value.runningNotes = 'SYNTHETIC CONCURRENT LOCAL EDIT';
+        store.put(value);
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+    db.close();
+  }, saved.sessionId);
+
+  await panel.getByRole('textbox', { name: 'What the synthetic client actually confirmed' })
+    .fill('SYNTHETIC NEW CLIENT STATEMENT CANNOT OVERWRITE');
+  await panel.getByRole('checkbox').check();
+  await panel.getByRole('button', { name: 'Save synthetic client-confirmed answer locally' }).click();
+  await expect(panel).toContainText('The local interview changed. No confirmation was saved.');
+  const after = (await readStorageSnapshot(page)).rows[0] as SemanticInterviewSession;
+  expect(after.runningNotes).toBe('SYNTHETIC CONCURRENT LOCAL EDIT');
+  expect(after.revisionId).toBe(saved.revisionId);
+  expect(after.answers['existing-presence']!.value).toBeNull();
+  expect(JSON.stringify(after)).not.toContain(packet.candidates[0]!.sourceRecordRef);
+  const count = await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('ldw-interview-facilitator', 4);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const result = await new Promise<number>((resolve, reject) => {
+      const request = db.transaction('revision-history', 'readonly')
+        .objectStore('revision-history').count();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return result;
+  });
+  expect(count).toBe(0);
+});
