@@ -100,6 +100,10 @@ export async function mountSyntheticConfirmationPanel(
   submit.addEventListener('click', () => {
     if (!eligible() || !overlay.candidates.some(c => c.questionId === choices.value)) return;
     busy = true;
+    // Freeze the attested inputs until the exact local commit settles.
+    choices.disabled = true;
+    statement.disabled = true;
+    acknowledge.disabled = true;
     submit.disabled = true;
     submit.setAttribute('aria-busy', 'true');
     status.textContent = 'Checking and saving the exact synthetic interview…';
@@ -141,9 +145,15 @@ export async function mountSyntheticConfirmationPanel(
       } finally {
         busy = false;
         submit.removeAttribute('aria-busy');
-        // Deliberately require a NEW explicit human action for every retry.
-        acknowledge.checked = false;
-        if (active && adapters.isCurrent()) update();
+        // Success replaces this private panel. On failure restore controls
+        // while requiring a new human attestation before any retry.
+        if (active && adapters.isCurrent()) {
+          choices.disabled = false;
+          statement.disabled = false;
+          acknowledge.disabled = false;
+          acknowledge.checked = false;
+          update();
+        }
       }
     })();
   }, { signal: listeners.signal });
