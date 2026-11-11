@@ -1533,3 +1533,76 @@ test('synthetic confirmation refuses an unseen same-revision storage edit withou
   });
   expect(count).toBe(0);
 });
+
+
+test('synthetic confirmation refuses unsupported strict durability before writing either IndexedDB store', async ({ page }) => {
+  await page.goto('/');
+  const seeded = await syntheticSession('synthetic-strict-durability-gate');
+  seeded.currentQuestionId = 'must-have';
+  await putRawSession(page, seeded);
+  await page.reload();
+  await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.locator('[data-save-indicator]')).toContainText(/^Saved/);
+  const before = (await readStorageSnapshot(page)).rows[0] as SemanticInterviewSession;
+  const packet = {
+    schemaVersion: 'ldw.interview-prep.v1',
+    jobKey: 'SYNTHETIC-STRICT-DURABILITY-01',
+    sessionId: before.sessionId, expectedRevisionId: before.revisionId,
+    expectedPackDigest: before.packIdentity.digest,
+    preparedAt: '2026-11-09T14:30:00.000Z',
+    candidates: [{
+      candidateId: 'candidate-a', questionId: 'primary-goal',
+      proposedValue: 'SYNTHETIC RESEARCH WILL NOT BE ACCEPTED',
+      sourceSystem: 'manual', sourceRecordRef: 'SYNTHETIC-STRICT-REF',
+      observedAt: '2026-11-09T14:00:00.000Z', confidence: 'unverified',
+    }],
+  };
+  await setSyntheticPrepInput(page, JSON.stringify(packet));
+  const candidate = page.getByRole('region', { name: 'Synthetic preparation candidate review' });
+  await expect(candidate.getByRole('radio')).toBeVisible();
+  await candidate.getByRole('radio').check();
+  await candidate.getByRole('checkbox').check();
+  await candidate.getByRole('button', { name: /Prepare selected candidate proposal/ }).click();
+  const panel = page.getByRole('region', { name: 'Synthetic client confirmation trial' });
+  await expect(panel.getByRole('heading', { name: /Record a separate client-confirmed statement/ })).toBeVisible();
+
+  // Emulate an engine rejecting the strict transaction option. The synthetic
+  // confirmation must NOT downgrade to a normal readwrite transaction.
+  await page.evaluate(() => {
+    const original = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function (
+      stores: string | string[], mode?: IDBTransactionMode, options?: IDBTransactionOptions,
+    ): IDBTransaction {
+      if (Array.isArray(stores) && stores.includes('revision-history')
+        && mode === 'readwrite' && options?.durability === 'strict') {
+        throw new DOMException('Strict transaction unsupported', 'NotSupportedError');
+      }
+      return original.call(this, stores, mode, options);
+    };
+  });
+  await panel.getByRole('textbox', { name: 'What the synthetic client actually confirmed' })
+    .fill('SYNTHETIC CLIENT CONFIRMED, BUT STRICT STORAGE IS UNAVAILABLE');
+  await panel.getByRole('checkbox').check();
+  await panel.getByRole('button', { name: 'Save synthetic client-confirmed answer locally' }).click();
+  await expect(panel).toContainText('Could not verify the synthetic confirmation save.');
+  expect((await readStorageSnapshot(page)).rows).toEqual([before]);
+  const historyCount = await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('ldw-interview-facilitator', 4);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const count = await new Promise<number>((resolve, reject) => {
+      const request = db.transaction('revision-history', 'readonly')
+        .objectStore('revision-history').count();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return count;
+  });
+  expect(historyCount).toBe(0);
+  await expect(page.locator('[data-synthetic-confirmation-saved]')).toHaveCount(0);
+});
