@@ -7,7 +7,7 @@ import {
   type KnownFactSession14,
 } from './known-fact-session';
 import { canonicalizeJson, validateSessionRecord } from './pack-identity';
-import { auditRetainedLocalRevisionsForReview, type LocalRevisionContinuityReport } from './local-revision-continuity';
+import { auditRetainedLocalRevisionsForReview, MAX_LOCAL_REVISION_AUDIT_ROWS, type LocalRevisionContinuityReport } from './local-revision-continuity';
 import {
   INDEXED_DB_LAYOUT_VERSION,
   LEGACY_TO_PINNED_MIGRATION_ID,
@@ -1141,8 +1141,11 @@ export async function inspectSyntheticLocalRevisionContinuity(
     const range = IDBKeyRange.bound(prefix, `${prefix}\uffff`);
     const current = tx.objectStore(STORE).get(source.sessionId);
     const history = tx.objectStore(REVISION_HISTORY_STORE);
-    const keysRequest = history.getAllKeys(range);
-    const rowsRequest = history.getAll(range);
+    // Bound what IndexedDB materializes as well as what the pure auditor
+    // accepts. One extra row flags an oversized history without reading all.
+    const limit = MAX_LOCAL_REVISION_AUDIT_ROWS + 1;
+    const keysRequest = history.getAllKeys(range, limit);
+    const rowsRequest = history.getAll(range, limit);
     const [raw, keys, rows] = await Promise.all([
       requestResult(current), requestResult(keysRequest), requestResult(rowsRequest),
     ]);
