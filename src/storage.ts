@@ -350,7 +350,7 @@ export async function compareAndSaveSyntheticConfirmedStatement(
     throw new Error('Synthetic confirmation source is invalid.');
   }
   await validateSemanticSessionRecord(proposed);
-  const synthetic = (label: string) => /^synthetic(?:\\s|[-_])/i.test(label);
+  const synthetic = (label: string) => /^synthetic(?:\s|[-_])/i.test(label);
   if (!synthetic(expected.clientLabel) || !synthetic(proposed.clientLabel)
     || expected.sessionId !== sessionId || proposed.sessionId !== sessionId
     || expected.sessionSchemaVersion !== '1.3.0' || proposed.sessionSchemaVersion !== '1.3.0'
