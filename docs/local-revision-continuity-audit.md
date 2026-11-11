@@ -11,7 +11,9 @@ A private operator working on a local **SYNTHETIC** session can choose **Check r
 - `missing-link`: current parent chain references an absent archived revision.
 - `unlinked-snapshots`: retained records exist outside the current parent chain.
 
-Malformed or conflicting archived entries fail closed with a generic operator message, not a partial PASS. A fully connected local chain is still **not proof** that all edits were archived, that the local database cannot be tampered with, or that an off-device encrypted recoverable artifact exists. This audit does not output raw session data, create any file, write to IndexedDB, transmit a report, or touch CRM/Owner Console. Private audit result and controls disappear in Presentation, on navigation, or after session changes.
+Malformed or conflicting archived entries fail closed with a generic operator message, not a partial PASS. The actual synthetic Chromium confirmation journey is expected to reveal a **missing-link** result even with one successfully archived immediate parent: an earlier ordinary autosave revision was not retained. This is an intentional, evidence-based warning, not a reason to suppress the audit or claim completeness.
+
+A fully connected local chain is still **not proof** that all edits were archived, that the local database cannot be tampered with, or that an off-device encrypted recoverable artifact exists. This audit does not output raw session data, create any file, write to IndexedDB, transmit a report, or touch CRM/Owner Console. Private audit result and controls disappear in Presentation, on navigation, or after session changes.
 
 **Release gates remain open:** authenticated per-engagement owner/client authority, approved private off-device encrypted storage and key management, a portable versioned multi-revision export, origin-independent import/recovery, atomic restore/rollback, physical iOS/Safari, screen-reader testing, and real-client pilot/production authorization. The current `Export full JSON backup` is a current-session content copy, **not** a complete source revision-history archive.
 
