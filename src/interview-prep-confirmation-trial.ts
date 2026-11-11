@@ -15,7 +15,9 @@ import {
  *
  * The #110 overlay is NEVER confirmation. This step requires a separate
  * operator-entered client statement and affirmative in-interview attestation.
- * No UI, provider, Owner Console, live PWA, or IndexedDB is activated here.
+ * The synthetic-only 1.3 UI may invoke this pure contract through a strict
+ * native local compare-and-save adapter. No real client/provider, Owner Console,
+ * automatic research acceptance, external task, or authenticated launch exists.
  */
 export const PREP_CONFIRMATION_TRIAL_VERSION = 'ldw.prep-confirmation-trial.v1' as const;
 export interface ClientConfirmationInputForReview {
