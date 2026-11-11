@@ -1373,7 +1373,7 @@ test('synthetic private selection needs separate human client statement and save
     expectedPackDigest: savedBefore.packIdentity.digest,
     preparedAt: '2026-11-09T14:30:00.000Z',
     candidates: [{
-      candidateId: 'source-01', questionId: 'existing-presence',
+      candidateId: 'source-01', questionId: 'primary-goal',
       proposedValue: 'SYNTHETIC SOURCE SUGGESTION NOT THE CLIENT ANSWER',
       sourceSystem: 'manual',
       sourceRecordRef: 'SYNTHETIC-RESEARCH-PRIVATE-REF',
@@ -1403,7 +1403,7 @@ test('synthetic private selection needs separate human client statement and save
   await expect(page.locator('[data-synthetic-confirmation-saved]'))
     .toContainText('Synthetic client statement saved locally');
   const after = (await readStorageSnapshot(page)).rows[0] as SemanticInterviewSession;
-  expect(after.answers['existing-presence']).toMatchObject({
+  expect(after.answers['primary-goal']).toMatchObject({
     value: 'SYNTHETIC CLIENT INDEPENDENTLY CONFIRMED AN EXISTING WEBSITE',
     resolution: 'captured', source: 'client-statement', confirmation: null,
   });
@@ -1412,7 +1412,7 @@ test('synthetic private selection needs separate human client statement and save
   expect(after.sessionId).toBe(savedBefore.sessionId);
   expect(JSON.stringify(after)).not.toContain(packet.candidates[0]!.sourceRecordRef);
   expect(JSON.stringify(after)).not.toContain(packet.candidates[0]!.proposedValue);
-  expect(after.answers['existing-presence']!.value).not.toEqual(packet.candidates[0]!.proposedValue);
+  expect(after.answers['primary-goal']!.value).not.toEqual(packet.candidates[0]!.proposedValue);
 
   const history = await page.evaluate(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
@@ -1455,7 +1455,7 @@ test('synthetic confirmation refuses an unseen same-revision storage edit withou
     expectedPackDigest: saved.packIdentity.digest,
     preparedAt: '2026-11-09T14:30:00.000Z',
     candidates: [{
-      candidateId: 'a', questionId: 'existing-presence',
+      candidateId: 'a', questionId: 'primary-goal',
       proposedValue: 'SYNTHETIC RESEARCH VALUE NOT ACCEPTED',
       sourceSystem: 'manual', sourceRecordRef: 'SYNTHETIC-REF-STALE',
       observedAt: '2026-11-09T14:00:00.000Z', confidence: 'unverified',
@@ -1502,7 +1502,7 @@ test('synthetic confirmation refuses an unseen same-revision storage edit withou
   const after = (await readStorageSnapshot(page)).rows[0] as SemanticInterviewSession;
   expect(after.runningNotes).toBe('SYNTHETIC CONCURRENT LOCAL EDIT');
   expect(after.revisionId).toBe(saved.revisionId);
-  expect(after.answers['existing-presence']!.value).toBeNull();
+  expect(after.answers['primary-goal']!.value).toBeNull();
   expect(JSON.stringify(after)).not.toContain(packet.candidates[0]!.sourceRecordRef);
   const count = await page.evaluate(async () => {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
