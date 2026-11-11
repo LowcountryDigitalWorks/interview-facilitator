@@ -7,6 +7,7 @@ import {
   type KnownFactSession14,
 } from './known-fact-session';
 import { canonicalizeJson, validateSessionRecord } from './pack-identity';
+import { auditRetainedLocalRevisionsForReview, type LocalRevisionContinuityReport } from './local-revision-continuity';
 import {
   INDEXED_DB_LAYOUT_VERSION,
   LEGACY_TO_PINNED_MIGRATION_ID,
@@ -1112,4 +1113,55 @@ export async function requestPersistentStorage(): Promise<boolean | null> {
   if (!navigator.storage?.persist) return null;
   if (await navigator.storage.persisted()) return true;
   return navigator.storage.persist();
+}
+
+
+/**
+ * #35: read-only, SYNTHETIC-only retained local history inventory.
+ * A single IDB readonly transaction captures current + that session's
+ * retained keyed revisions atomically. This NEVER exports confidential data,
+ * implies no off-device backup, and makes no storage or provider writes.
+ */
+export async function inspectSyntheticLocalRevisionContinuity(
+  source: SemanticInterviewSession,
+): Promise<LocalRevisionContinuityReport> {
+  await validateSemanticSessionRecord(source);
+  if (!/^synthetic(?:\\s|[-_])/i.test(source.clientLabel)) {
+    throw new Error('Local revision continuity trial accepts synthetic interviews only.');
+  }
+  const db = await openDb();
+  try {
+    const tx = db.transaction([STORE, REVISION_HISTORY_STORE], 'readonly');
+    const completed = new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error ?? new Error('Could not read local history.'));
+      tx.onabort = () => reject(tx.error ?? new Error('Local history check was aborted.'));
+    });
+    const prefix = revisionHistorySessionPrefix(source.sessionId);
+    const range = IDBKeyRange.bound(prefix, `${prefix}\\uffff`);
+    const current = tx.objectStore(STORE).get(source.sessionId);
+    const history = tx.objectStore(REVISION_HISTORY_STORE);
+    const keysRequest = history.getAllKeys(range);
+    const rowsRequest = history.getAll(range);
+    const [raw, keys, rows] = await Promise.all([
+      requestResult(current), requestResult(keysRequest), requestResult(rowsRequest),
+    ]);
+    await completed;
+    // UI source may have changed while awaiting the transaction: never
+    // silently audit an unseen session or mislabel another tab's record.
+    if (raw === undefined || canonicalizeJson(raw) !== canonicalizeJson(source)) {
+      throw new RevisionHistoryConflictError('The local interview changed during history inspection.');
+    }
+    if (keys.length !== rows.length) {
+      throw new RevisionHistoryConflictError('Local revision history keys and records differ.');
+    }
+    return auditRetainedLocalRevisionsForReview(raw, keys.map((key, i) => {
+      if (typeof key !== 'string') {
+        throw new RevisionHistoryConflictError('Local revision history key is not a string.');
+      }
+      return { key, record: rows[i] };
+    }));
+  } finally {
+    db.close();
+  }
 }
