@@ -21,6 +21,13 @@ function revision(revisionId: string, parentRevisionId: string | null, updatedAt
       parentRevisionId,
       updatedAt,
       clientLabel: 'SYNTHETIC ARCHIVE FIXTURE',
+      interviewPackId: 'synthetic-general-discovery',
+      interviewPackVersion: '1.0.0',
+      packIdentity: {
+        algorithm: 'SHA-256',
+        canonicalization: 'ldw-json-c14n-v1',
+        digest: 'a'.repeat(64),
+      },
     },
   };
 }
@@ -106,6 +113,41 @@ describe('synthetic portable multi-revision archive contract', () => {
     const unsupported = revision('rev-a', null, '2026-11-12T14:00:00.000Z');
     unsupported.record.sessionSchemaVersion = '1.4.0';
     await expect(archive([unsupported])).rejects.toThrow('identity does not match');
+  });
+
+  it('rejects mixed pinned pack IDs, versions and digests for one session', async () => {
+    const root = revision('rev-a', null, '2026-11-12T14:00:00.000Z');
+    const otherPack = revision('rev-b', 'rev-a', '2026-11-12T14:20:00.000Z');
+    otherPack.record.interviewPackId = 'different-pack';
+    await expect(archive([root, otherPack])).rejects.toThrow('mixed pinned interview packs');
+
+    const otherVersion = revision('rev-b', 'rev-a', '2026-11-12T14:20:00.000Z');
+    otherVersion.record.interviewPackVersion = '2.0.0';
+    await expect(archive([root, otherVersion])).rejects.toThrow('mixed pinned interview packs');
+
+    const otherDigest = revision('rev-b', 'rev-a', '2026-11-12T14:20:00.000Z');
+    otherDigest.record.packIdentity.digest = 'b'.repeat(64);
+    await expect(archive([root, otherDigest])).rejects.toThrow('mixed pinned interview packs');
+  });
+
+  it('rejects detached cycles and reversed timestamps outside head ancestry', async () => {
+    const root = revision('rev-a', null, '2026-11-12T14:00:00.000Z');
+    const current = revision('rev-c', 'rev-a', '2026-11-12T14:40:00.000Z');
+    const detachedX = revision('rev-x', 'rev-y', '2026-11-12T14:10:00.000Z');
+    const detachedY = revision('rev-y', 'rev-x', '2026-11-12T14:10:00.000Z');
+    await expect(archive([root, detachedX, detachedY, current])).rejects.toThrow('cycle');
+
+    const detachedParent = revision('rev-p', null, '2026-11-12T14:25:00.000Z');
+    const detachedChild = revision('rev-q', 'rev-p', '2026-11-12T14:10:00.000Z');
+    await expect(archive([root, detachedParent, detachedChild, current]))
+      .rejects.toThrow('newer than its child');
+  });
+
+  it('rejects unknown checksum metadata fields in otherwise canonical JSON', async () => {
+    const value = await archive();
+    const forged = { ...value, checksum: { ...value.checksum, extra: 'unexpected' } };
+    await expect(validatePortableRevisionArchiveJson(serializePortableRevisionArchive(forged)))
+      .rejects.toThrow('Archive checksum contains missing or unsupported fields');
   });
 
   it('rejects malformed, noncanonical, corrupt, unsupported and oversized input', async () => {
