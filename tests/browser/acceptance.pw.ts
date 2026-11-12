@@ -1757,3 +1757,65 @@ test('Question focus mode: reopening a stored session clears focus chrome', asyn
   await expect(page.getByRole('button', { name: 'Focus on question' })).toHaveAttribute('aria-pressed', 'false');
   expect(await page.evaluate(() => document.querySelector('#app')?.classList.contains('question-focus-mode'))).toBe(false);
 });
+
+async function openSyntheticReviewFromInterviewForLens(page: import('@playwright/test').Page): Promise<void> {
+  for (let step = 0; step < 40; step += 1) {
+    const review = page.getByRole('button', { name: 'Review interview' });
+    if (await review.isVisible()) {
+      await review.click();
+      await expect(page.getByRole('heading', { name: /Read back what matters/ })).toBeVisible();
+      return;
+    }
+    await page.getByRole('button', { name: 'Continue' }).click();
+  }
+  throw new Error('Review interview control did not appear.');
+}
+
+test('Private evidence lens: private review shows provenance at 1440', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill('Synthetic Evidence Lens');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  await page.locator('#answer').fill('Synthetic captured answer');
+  const before = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+  await openSyntheticReviewFromInterviewForLens(page);
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.getByText('not independently verified')).toBeVisible();
+  await expect(page.locator('[data-evidence-lens]').first()).toBeVisible();
+  const after = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+  expect(after).toEqual(before);
+});
+
+test('Private evidence lens: presentation hides evidence badges at 390', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 820 });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill('Synthetic Evidence Privacy');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  await page.locator('#answer').fill('Private only detail');
+  await openSyntheticReviewFromInterviewForLens(page);
+  await expect(page.locator('[data-evidence-lens]')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.locator('[data-evidence-lens]').first()).toBeVisible();
+  await page.getByRole('button', { name: 'Presentation view', exact: true }).click();
+  await expect(page.locator('[data-evidence-lens]')).toHaveCount(0);
+  await expect(page.getByText('not independently verified')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.locator('[data-evidence-lens]').first()).toBeVisible();
+});
+
+test('Private evidence lens: hostile answer text does not appear in badge markup', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill('Synthetic Evidence Hostile');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  const hostile = '<svg onload=HOSTILE_EVIDENCE_LENS>';
+  await page.locator('#answer').fill(hostile);
+  await openSyntheticReviewFromInterviewForLens(page);
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  const lensHtml = await page.locator('[data-evidence-lens]').first().innerHTML();
+  expect(lensHtml).not.toContain('HOSTILE_EVIDENCE_LENS');
+  expect(lensHtml).not.toContain('<svg');
+});

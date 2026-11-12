@@ -1,5 +1,6 @@
 import './styles.css';
 import './focus-mode.css';
+import './evidence-lens.css';
 import type { AnswerStatus, Question } from './domain';
 import { DEFAULT_INTERVIEW_PACK_ID, LIVE_INTERVIEW_PACK_OPTIONS, defaultLiveInterviewPack, findLiveInterviewPack } from './interview-packs';
 import { deleteSession, exportRecoveryBackup, listSessions, loadKnownFactSession14ForReview, loadSession, migrateLegacySession, replaceSessionWithHistory, requestPersistentStorage, RevisionConflictError, saveSession } from './storage';
@@ -17,6 +18,7 @@ import { SessionAutosaveCoordinator } from './autosave';
 import { readSessionList } from './session-list';
 import { beginSessionSwitch, importSessionWithCollisionHandling, openStoredSession, SessionSwitchGate, shouldFlushActiveSession, type ImportCollisionChoice, type OpenStoredSessionResult } from './session-durability';
 import { enterPresentation, exitPresentation, isPresentationMode, projectSemanticReadBack, type PresentationMode } from './presentation';
+import { projectPrivateEvidenceLens, renderPrivateEvidenceLensHtml } from './private-evidence-lens';
 import { paintUpdateSlot, startControlledUpdates } from './pwa';
 import { createSemanticSession, validateSemanticSessionRecord, type SemanticAnswerState, type SemanticInterviewSession } from './semantic-session';
 import {
@@ -1073,7 +1075,10 @@ function renderReview(): void {
                 : state.resolution === 'deferred'
                   ? 'Deferred'
                   : 'Open';
-          return `<div class="summary-row"><div><strong>${escapeHtml(question.prompt)}</strong><p>${escapeHtml(valueLabel)}</p><small>${escapeHtml(statusLabel)}</small></div><button class="text-button" data-change="${escapeHtml(question.id)}" aria-label="Change ${escapeHtml(question.prompt)}">Change</button></div>`;
+          const evidenceLens = presenting
+            ? ''
+            : renderPrivateEvidenceLensHtml(projectPrivateEvidenceLens(state, bucket));
+          return `<div class="summary-row"><div><strong>${escapeHtml(question.prompt)}</strong><p>${escapeHtml(valueLabel)}</p><small>${escapeHtml(statusLabel)}</small>${evidenceLens}</div><button class="text-button" data-change="${escapeHtml(question.id)}" aria-label="Change ${escapeHtml(question.prompt)}">Change</button></div>`;
         }).join('')}</section>`;
       }).join('')}
       <section class="review-section unresolved"><h2>Needs confirmation</h2>${questions.filter((question) => buckets[question.id] === 'needs-confirmation').map((question) => `<p>• ${escapeHtml(question.prompt)}</p>`).join('') || '<p>None.</p>'}</section>
