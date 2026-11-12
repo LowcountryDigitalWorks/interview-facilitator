@@ -170,7 +170,7 @@ function deriveLineage(revisions: readonly PortableRevision[], headRevisionId: s
     while (current && !graphChecked.has(current.revisionId)) {
       if (path.has(current.revisionId)) fail('Archive revision lineage contains a cycle.');
       path.add(current.revisionId);
-      const parent = current.parentRevisionId === null ? undefined : byId.get(current.parentRevisionId);
+      const parent: PortableRevision | undefined = current.parentRevisionId === null ? undefined : byId.get(current.parentRevisionId);
       if (parent && Date.parse(parent.updatedAt) > Date.parse(current.updatedAt)) {
         fail('Archive parent revision is newer than its child.');
       }
