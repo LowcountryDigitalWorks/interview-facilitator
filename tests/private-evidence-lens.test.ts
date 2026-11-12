@@ -24,7 +24,7 @@ describe('private evidence lens projection', () => {
     expect(projectPrivateEvidenceLens(
       state({ resolution: 'captured', value: 'yes', source: 'client-statement' }),
       'current',
-    ).provenanceLabel).toBe('Reported by client (not independently verified)');
+    ).provenanceLabel).toBe('Recorded as client statement (not independently verified)');
     expect(projectPrivateEvidenceLens(
       state({ resolution: 'captured', value: 'yes', source: 'accepted-known-fact' }),
       'current',
@@ -69,7 +69,17 @@ describe('private evidence lens projection', () => {
     expect(lens.provenanceLabel).not.toMatch(/verified$/i);
   });
 
-  it('flags stale confirmation without claiming verified', () => {
+  it('does not imply authenticated client utterance for client-statement', () => {
+    const lens = projectPrivateEvidenceLens(
+      state({ resolution: 'captured', value: 'migrated', source: 'client-statement' }),
+      'current',
+    );
+    expect(lens.provenanceLabel).toBe('Recorded as client statement (not independently verified)');
+    expect(lens.provenanceLabel).not.toMatch(/^Reported by client\b/);
+    expect(lens.provenanceLabel).not.toMatch(/authenticated/i);
+  });
+
+  it('flags stale confirmation on exact value mismatch like effectiveEvidence', () => {
     const lens = projectPrivateEvidenceLens(
       state({
         resolution: 'captured',
@@ -85,6 +95,40 @@ describe('private evidence lens projection', () => {
     );
     expect(lens.uncertaintyLabel).toBe('Recorded confirmation may not match current answer');
     expect(JSON.stringify(lens)).not.toContain('Verified');
+  });
+
+  it('flags stale confirmation when only whitespace differs from confirmation value', () => {
+    const lens = projectPrivateEvidenceLens(
+      state({
+        resolution: 'captured',
+        value: 'same text ',
+        source: 'client-statement',
+        confirmation: {
+          revisionId: 'rev-2',
+          confirmedAt: '2026-01-02T00:00:00.000Z',
+          value: 'same text',
+        },
+      }),
+      'current',
+    );
+    expect(lens.uncertaintyLabel).toBe('Recorded confirmation may not match current answer');
+  });
+
+  it('does not flag confirmation stale when exact values still match', () => {
+    const lens = projectPrivateEvidenceLens(
+      state({
+        resolution: 'captured',
+        value: 'same text',
+        source: 'client-statement',
+        confirmation: {
+          revisionId: 'rev-2',
+          confirmedAt: '2026-01-02T00:00:00.000Z',
+          value: 'same text',
+        },
+      }),
+      'current',
+    );
+    expect(lens.uncertaintyLabel).toBeNull();
   });
 
   it('does not interpolate hostile answer text into html', () => {

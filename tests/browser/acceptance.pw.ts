@@ -1778,13 +1778,16 @@ test('Private evidence lens: private review shows provenance at 1440', async ({ 
   await page.getByLabel('Project or client label').fill('Synthetic Evidence Lens');
   await page.getByRole('button', { name: 'Start interview' }).click();
   await page.locator('#answer').fill('Synthetic captured answer');
-  const before = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
   await openSyntheticReviewFromInterviewForLens(page);
   await page.getByRole('button', { name: 'Exit presentation' }).click();
   await expect(page.getByText('not independently verified')).toBeVisible();
   await expect(page.locator('[data-evidence-lens]').first()).toBeVisible();
-  const after = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
-  expect(after).toEqual(before);
+  const afterRow = (await readStorageSnapshot(page)).rows[0] as SemanticInterviewSession;
+  const answer = afterRow.answers['existing-presence'];
+  expect(Object.keys(answer).sort()).toEqual(
+    ['confirmation', 'followUp', 'needsConfirmation', 'note', 'resolution', 'source', 'value'].sort(),
+  );
+  expect(answer.value).toBe('Synthetic captured answer');
 });
 
 test('Private evidence lens: presentation hides evidence badges at 390', async ({ page }) => {

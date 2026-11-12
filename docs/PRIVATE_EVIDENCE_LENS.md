@@ -11,6 +11,10 @@
 
 Neutral labels only; no legal verification, consent, or completion claims. Confirmation metadata is compared for staleness wording only, never promoted to “verified”.
 
+### Migration caveat (`client-statement`)
+
+Legacy 1.2 **ANSWERED** migration (`projectLegacyQuestionState` in `coverage-semantics.ts`) can set `source: 'client-statement'` without a personally reported client event. The lens label is **“Recorded as client statement (not independently verified)”** — it describes stored classification, not an authenticated client utterance.
+
 ## Files
 
 - `src/private-evidence-lens.ts` — pure projection

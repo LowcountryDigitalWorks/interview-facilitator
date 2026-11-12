@@ -1,5 +1,5 @@
 import type { CoverageBucket } from './coverage-rules';
-import type { EvidenceSource } from './coverage-semantics';
+import type { CaptureValue, EvidenceSource } from './coverage-semantics';
 import type { SemanticAnswerState } from './semantic-session';
 
 export type PrivateEvidenceLensTone = 'neutral' | 'review-required' | 'needs-confirmation';
@@ -11,19 +11,49 @@ export interface PrivateEvidenceLensProjection {
   tone: PrivateEvidenceLensTone;
 }
 
-const PROVENANCE: Record<EvidenceSource, string> = {
-  'client-statement': 'Reported by client (not independently verified)',
-  'accepted-known-fact': 'Prior fact accepted for use (not independently verified)',
-  'interviewer-inference': 'Interviewer inference — review/confirm',
-};
-
 const SOURCE_NOT_RECORDED = 'Source not recorded';
 const NEEDS_CONFIRMATION = 'Needs confirmation before reliance';
 const DEFERRED = 'Deferred — not finalized';
 const STALE_CONFIRMATION = 'Recorded confirmation may not match current answer';
 
+const PROVENANCE: Record<EvidenceSource, string> = {
+  'client-statement': 'Recorded as client statement (not independently verified)',
+  'accepted-known-fact': 'Prior fact accepted for use (not independently verified)',
+  'interviewer-inference': 'Interviewer inference — review/confirm',
+};
+
+const ALLOWED_PROVENANCE_LABELS = new Set<string>([
+  ...Object.values(PROVENANCE),
+  SOURCE_NOT_RECORDED,
+]);
+const ALLOWED_UNCERTAINTY_LABELS = new Set<string>([
+  NEEDS_CONFIRMATION,
+  DEFERRED,
+  STALE_CONFIRMATION,
+]);
+
 function hasCapturedValue(state: SemanticAnswerState): boolean {
   return Boolean(state.value?.trim());
+}
+
+/** Matches coverage-semantics captureValuesEqual (exact, not trimmed). */
+function captureValuesEqual(left: CaptureValue, right: CaptureValue): boolean {
+  if (left === right) return true;
+  return typeof left === 'number' && typeof right === 'number' && Number.isNaN(left) && Number.isNaN(right);
+}
+
+function escapeLabelText(value: string): string {
+  return value.replace(/[&<>'"]/g, (char) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
+  })[char] ?? char);
+}
+
+function assertRegisteredLabel(value: string | null, allowed: Set<string>): string | null {
+  if (value === null) return null;
+  if (!allowed.has(value)) {
+    throw new Error('PRIVATE_EVIDENCE_LENS_LABEL_CONTRACT');
+  }
+  return escapeLabelText(value);
 }
 
 export function shouldShowPrivateEvidenceLens(
@@ -64,12 +94,10 @@ function uncertaintyFor(
     return DEFERRED;
   }
   const confirmation = state.confirmation;
-  if (confirmation) {
-    const confirmed = String(confirmation.value ?? '').trim();
-    const current = state.value?.trim() ?? '';
-    if (confirmed && current && confirmed !== current) {
-      return STALE_CONFIRMATION;
-    }
+  const value = state.value;
+  if (confirmation && value !== null
+    && !captureValuesEqual(confirmation.value, value)) {
+    return STALE_CONFIRMATION;
   }
   return null;
 }
@@ -104,11 +132,13 @@ export function renderPrivateEvidenceLensHtml(lens: PrivateEvidenceLensProjectio
   if (!lens.show) return '';
   const toneClass = `evidence-lens--${lens.tone}`;
   const parts: string[] = [];
-  if (lens.provenanceLabel) {
-    parts.push(`<span class="evidence-lens-provenance">${lens.provenanceLabel}</span>`);
+  const provenance = assertRegisteredLabel(lens.provenanceLabel, ALLOWED_PROVENANCE_LABELS);
+  const uncertainty = assertRegisteredLabel(lens.uncertaintyLabel, ALLOWED_UNCERTAINTY_LABELS);
+  if (provenance) {
+    parts.push(`<span class="evidence-lens-provenance">${provenance}</span>`);
   }
-  if (lens.uncertaintyLabel) {
-    parts.push(`<span class="evidence-lens-uncertainty">${lens.uncertaintyLabel}</span>`);
+  if (uncertainty) {
+    parts.push(`<span class="evidence-lens-uncertainty">${uncertainty}</span>`);
   }
   if (!parts.length) return '';
   return `<p class="evidence-lens ${toneClass}" role="note" data-evidence-lens>${parts.join('')}</p>`;
