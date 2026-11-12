@@ -1631,3 +1631,129 @@ test('synthetic confirmation refuses unsupported strict durability before writin
   expect(historyCount).toBe(0);
   await expect(page.locator('[data-synthetic-confirmation-saved]')).toHaveCount(0);
 });
+
+async function startSyntheticInterview(page: import('@playwright/test').Page, label = 'Synthetic Focus Mode'): Promise<void> {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill(label);
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  await expect(page.locator('.action-dock')).toBeVisible();
+}
+
+test('Question focus mode (1440): toggle hides rails inert without re-rendering the answer control', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await startSyntheticInterview(page);
+  const answer = page.locator('#answer');
+  await answer.fill('Synthetic partial answer for focus toggle');
+  await page.evaluate(() => {
+    document.querySelector('#answer')?.setAttribute('data-focus-ref', 'keep');
+  });
+  await page.getByRole('button', { name: 'Focus on question' }).click();
+  await expect(page.getByRole('button', { name: 'Show full workspace' })).toHaveAttribute('aria-pressed', 'true');
+  const afterToggle = await page.evaluate(() => {
+    const coverage = document.querySelector('.coverage-rail') as HTMLElement | null;
+    const context = document.querySelector('.context-rail') as HTMLElement | null;
+    const el = document.querySelector('#answer') as HTMLTextAreaElement | null;
+    return {
+      sameNode: el?.getAttribute('data-focus-ref') === 'keep',
+      value: el?.value ?? '',
+      coverageInert: coverage?.inert === true,
+      contextInert: context?.inert === true,
+      focusModeClass: document.querySelector('#app')?.classList.contains('question-focus-mode') === true,
+    };
+  });
+  expect(afterToggle.sameNode).toBe(true);
+  expect(afterToggle.value).toBe('Synthetic partial answer for focus toggle');
+  expect(afterToggle.coverageInert).toBe(true);
+  expect(afterToggle.contextInert).toBe(true);
+  expect(afterToggle.focusModeClass).toBe(true);
+  await page.getByRole('button', { name: 'Show full workspace' }).click();
+  const restored = await page.evaluate(() => {
+    const coverage = document.querySelector('.coverage-rail') as HTMLElement | null;
+    const context = document.querySelector('.context-rail') as HTMLElement | null;
+    return {
+      coverageInert: coverage?.inert === true,
+      contextInert: context?.inert === true,
+      focusModeClass: document.querySelector('#app')?.classList.contains('question-focus-mode') === true,
+    };
+  });
+  expect(restored.coverageInert).toBe(false);
+  expect(restored.contextInert).toBe(false);
+  expect(restored.focusModeClass).toBe(false);
+});
+
+test('Question focus mode (1024): autosave continues after toggle and next question', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 800 });
+  await startSyntheticInterview(page);
+  await page.getByRole('button', { name: 'Focus on question' }).click();
+  const answerField = page.locator('#answer, textarea#answer, input#answer').first();
+  await answerField.fill('Synthetic autosave after focus');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).not.toHaveText('What is already in place today?');
+  await expect(page.getByRole('button', { name: 'Show full workspace' })).toBeVisible();
+  await expect(page.locator('[data-save-indicator]').first()).toContainText(/saved|protected/i);
+  const rows = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+  const stored = rows.find((item) => item.clientLabel === 'Synthetic Focus Mode');
+  expect(stored?.answers['existing-presence']?.value).toBe('Synthetic autosave after focus');
+});
+
+test('Question focus mode (320): mobile layout unchanged and toggle absent', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await startSyntheticInterview(page);
+  await expect(page.getByRole('button', { name: 'Focus on question' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Coverage' })).toBeVisible();
+  const layout = await page.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }));
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
+});
+
+test('Question focus mode: Presentation view excludes the toggle and resets focus chrome', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await startSyntheticInterview(page);
+  await page.getByRole('button', { name: 'Focus on question' }).click();
+  await page.getByRole('button', { name: 'Presentation view' }).click();
+  await expect(page.getByRole('button', { name: 'Focus on question' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Show full workspace' })).toHaveCount(0);
+  const state = await page.evaluate(() => document.querySelector('#app')?.classList.contains('question-focus-mode'));
+  expect(state).toBe(false);
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.getByRole('button', { name: 'Focus on question' })).toBeVisible();
+});
+
+async function openSyntheticReviewFromInterview(page: import('@playwright/test').Page): Promise<void> {
+  for (let step = 0; step < 40; step += 1) {
+    const review = page.getByRole('button', { name: 'Review interview' });
+    if (await review.isVisible()) {
+      await review.click();
+      await expect(page.getByRole('heading', { name: /Read back what matters/ })).toBeVisible();
+      return;
+    }
+    await page.getByRole('button', { name: 'Continue' }).click();
+  }
+  throw new Error('Review interview control did not appear.');
+}
+
+test('Question focus mode: review return resets focus chrome', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await startSyntheticInterview(page, 'Synthetic Focus Session A');
+  await page.getByRole('button', { name: 'Focus on question' }).click();
+  await openSyntheticReviewFromInterview(page);
+  await page.getByRole('button', { name: '← Return to interview' }).click();
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.getByRole('button', { name: 'Focus on question' })).toHaveAttribute('aria-pressed', 'false');
+  expect(await page.evaluate(() => document.querySelector('#app')?.classList.contains('question-focus-mode'))).toBe(false);
+});
+
+test('Question focus mode: reopening a stored session clears focus chrome', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await startSyntheticInterview(page, 'Synthetic Focus Reopen');
+  await page.getByRole('button', { name: 'Focus on question' }).click();
+  await openSyntheticReviewFromInterview(page);
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await page.getByRole('button', { name: 'Home' }).click();
+  await page.getByRole('button', { name: 'Synthetic Focus Reopen' }).click();
+  await expect(page.getByRole('button', { name: 'Focus on question' })).toHaveAttribute('aria-pressed', 'false');
+  expect(await page.evaluate(() => document.querySelector('#app')?.classList.contains('question-focus-mode'))).toBe(false);
+});
