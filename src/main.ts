@@ -1,4 +1,5 @@
 import './styles.css';
+import './focus-mode.css';
 import type { AnswerStatus, Question } from './domain';
 import { DEFAULT_INTERVIEW_PACK_ID, LIVE_INTERVIEW_PACK_OPTIONS, defaultLiveInterviewPack, findLiveInterviewPack } from './interview-packs';
 import { deleteSession, exportRecoveryBackup, listSessions, loadKnownFactSession14ForReview, loadSession, migrateLegacySession, replaceSessionWithHistory, requestPersistentStorage, RevisionConflictError, saveSession } from './storage';
@@ -68,6 +69,10 @@ type HomeNotice =
   | { kind: 'save'; message: string; sessionId: string };
 
 let homeNotice: HomeNotice = null;
+/** Ephemeral UI-only; never written to session JSON or IndexedDB. */
+let questionFocusMode = false;
+const QUESTION_FOCUS_DESKTOP_QUERY = '(min-width: 981px)';
+let questionFocusMediaBound = false;
 const sessionSwitchGate = new SessionSwitchGate();
 
 const autosave = new SessionAutosaveCoordinator(saveSession);
@@ -202,6 +207,47 @@ function setInert(element: Element | null | undefined, inert: boolean): void {
   element.inert = inert;
 }
 
+function isQuestionFocusDesktop(): boolean {
+  return window.matchMedia(QUESTION_FOCUS_DESKTOP_QUERY).matches;
+}
+
+function resetQuestionFocusMode(): void {
+  questionFocusMode = false;
+  app.classList.remove('question-focus-mode');
+}
+
+function ensureQuestionFocusMediaListener(): void {
+  if (questionFocusMediaBound) return;
+  questionFocusMediaBound = true;
+  window.matchMedia(QUESTION_FOCUS_DESKTOP_QUERY).addEventListener('change', () => {
+    if (!isQuestionFocusDesktop()) resetQuestionFocusMode();
+    else if (questionFocusMode && view === 'interview' && !isPresentationMode(presentationMode)) applyQuestionFocusDom();
+  });
+}
+
+function applyQuestionFocusDom(): void {
+  const presenting = isPresentationMode(presentationMode);
+  const active = questionFocusMode && isQuestionFocusDesktop() && view === 'interview' && !presenting;
+  app.classList.toggle('question-focus-mode', active);
+  const toggle = app.querySelector<HTMLButtonElement>('[data-action="toggle-question-focus"]');
+  if (toggle) {
+    toggle.setAttribute('aria-pressed', String(active));
+    toggle.textContent = active ? 'Show full workspace' : 'Focus on question';
+  }
+  const coveragePanel = app.querySelector<HTMLElement>('#coverage-mobile-panel');
+  const contextPanel = app.querySelector<HTMLElement>('#context-mobile-panel');
+  const mobileDrawerOpen = app.querySelector('.cockpit')?.classList.contains('mobile-panel-open');
+  if (active) {
+    setInert(coveragePanel, true);
+    setInert(contextPanel, true);
+    return;
+  }
+  if (!mobileDrawerOpen) {
+    setInert(coveragePanel, false);
+    setInert(contextPanel, false);
+  }
+}
+
 function focusReviewHeading(): void {
   queueMicrotask(() => app.querySelector<HTMLElement>('#review-title')?.focus());
 }
@@ -266,6 +312,7 @@ function chooseImportCollision(existing: SemanticInterviewSession): Promise<Impo
 async function renderHome(): Promise<void> {
   syntheticConfirmationNotice = null;
   clearPrivatePrepTrial();
+  resetQuestionFocusMode();
   readBackReturnTarget = null;
   const listState = await readSessionList(listSessions);
   const storageError = listState.kind === 'error';
@@ -316,7 +363,7 @@ async function renderHome(): Promise<void> {
 
   app.querySelector('[data-action="retry-storage"]')?.addEventListener('click', () => { homeNotice = null; void renderHome(); });
   app.querySelector('[data-action="dismiss-home-notice"]')?.addEventListener('click', () => { homeNotice = null; void renderHome(); });
-  app.querySelector('[data-action="return-active"]')?.addEventListener('click', () => { if (!session) return; homeNotice = null; view = 'interview'; render(); });
+  app.querySelector('[data-action="return-active"]')?.addEventListener('click', () => { if (!session) return; homeNotice = null; resetQuestionFocusMode(); view = 'interview'; render(); });
   app.querySelector('[data-action="export-active"]')?.addEventListener('click', () => {
     if (!session) return;
     download(`${session.clientLabel.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-interview.json`, serializeSession(session), 'application/json');
@@ -427,6 +474,7 @@ async function renderHome(): Promise<void> {
         saveError = null;
         saveState = 'saved';
         presentationMode = exitPresentation();
+        resetQuestionFocusMode();
         view = 'interview';
         render();
         return;
@@ -476,6 +524,7 @@ async function renderHome(): Promise<void> {
         saveState = 'saved';
         await refreshPersistenceState();
         presentationMode = exitPresentation();
+        resetQuestionFocusMode();
         view = 'interview';
         render();
         return;
@@ -532,6 +581,7 @@ function renderHomeNotice(notice: Exclude<HomeNotice, null>): string {
 function renderNew(): void {
   syntheticConfirmationNotice = null;
   clearPrivatePrepTrial();
+  resetQuestionFocusMode();
   readBackReturnTarget = null;
   const pack = defaultLiveInterviewPack();
   app.innerHTML = `
@@ -628,6 +678,7 @@ function renderNew(): void {
         homeNotice = null;
         saveState = 'saved';
         presentationMode = exitPresentation();
+        resetQuestionFocusMode();
         view = 'interview';
         render();
       } catch (error) {
@@ -660,11 +711,12 @@ function renderInterview(): void {
   const section = sessionPack(session).sections.find((item) => item.id === question.sectionId);
   const facts = session.knownFacts.filter((fact) => !fact.questionId || fact.questionId === question.id);
   const presenting = isPresentationMode(presentationMode);
+  if (presenting) resetQuestionFocusMode();
 
   app.innerHTML = `
     <header class="app-header cockpit-header">
       <div><strong>${escapeHtml(session.clientLabel)}</strong><span>${escapeHtml(sessionPack(session).title)}</span></div>
-      <div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator aria-live="off">${escapeHtml(saveLabel())}</span>${presenting ? '<span class="state-pill">Presentation view</span><button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : `<span class="state-pill header-connectivity" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span><button class="secondary small header-presentation" data-action="enter-presentation">Presentation view</button><button class="icon-button header-export" data-action="export" aria-label="Export JSON backup">⇩</button>`}${updateSlotMarkup()}</div>
+      <div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator aria-live="off">${escapeHtml(saveLabel())}</span>${presenting ? '<span class="state-pill">Presentation view</span><button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : `<span class="state-pill header-connectivity" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span><button class="secondary small header-question-focus" type="button" data-action="toggle-question-focus" aria-pressed="false">Focus on question</button><button class="secondary small header-presentation" data-action="enter-presentation">Presentation view</button><button class="icon-button header-export" data-action="export" aria-label="Export JSON backup">⇩</button>`}${updateSlotMarkup()}</div>
       <span class="sr-only" role="alert" data-save-alert>${escapeHtml(saveAlertMessage())}</span>
       <span class="sr-only" role="status" aria-live="polite" data-connectivity-status></span>
     </header>
@@ -850,7 +902,7 @@ function renderInterview(): void {
 
   app.querySelectorAll<HTMLElement>('[data-question-id]').forEach((button) => button.addEventListener('click', () => { applyAnswer(); if (session) session.currentQuestionId = button.dataset.questionId ?? session.currentQuestionId; renderInterview(); focusPrimaryAnswer(); }));
   app.querySelector('[data-action="back"]')?.addEventListener('click', () => { applyAnswer(); const previous = session && nextVisibleQuestion(session, question.id, -1); if (previous && session) session.currentQuestionId = previous.id; renderInterview(); focusPrimaryAnswer(); });
-  app.querySelector('[data-action="next"]')?.addEventListener('click', () => { applyAnswer(); const next = session && nextVisibleQuestion(session, question.id, 1); if (next && session) { session.currentQuestionId = next.id; renderInterview(); focusPrimaryAnswer(); } else { readBackReturnTarget = null; presentationMode = enterPresentation(); view = 'review'; renderReview(); focusReviewHeading(); } });
+  app.querySelector('[data-action="next"]')?.addEventListener('click', () => { applyAnswer(); const next = session && nextVisibleQuestion(session, question.id, 1); if (next && session) { session.currentQuestionId = next.id; renderInterview(); focusPrimaryAnswer(); } else { resetQuestionFocusMode(); readBackReturnTarget = null; presentationMode = enterPresentation(); view = 'review'; renderReview(); focusReviewHeading(); } });
   app.querySelector('[data-action="return-to-readback"]')?.addEventListener('click', () => {
     if (!session || readBackReturnTarget?.sessionId !== session.sessionId) return;
     const target = readBackReturnTarget;
@@ -860,8 +912,13 @@ function renderInterview(): void {
     renderReview();
     focusReadBackChange(target.questionId, target.sessionId);
   });
-  app.querySelector('[data-action="enter-presentation"]')?.addEventListener('click', () => { applyAnswer(); presentationMode = enterPresentation(); renderInterview(); focusPrimaryAnswer(); });
+  app.querySelector('[data-action="enter-presentation"]')?.addEventListener('click', () => { applyAnswer(); resetQuestionFocusMode(); presentationMode = enterPresentation(); renderInterview(); focusPrimaryAnswer(); });
   app.querySelector('[data-action="exit-presentation"]')?.addEventListener('click', () => { applyAnswer(); presentationMode = exitPresentation(); renderInterview(); focusPrimaryAnswer(); });
+  app.querySelector('[data-action="toggle-question-focus"]')?.addEventListener('click', () => {
+    if (!isQuestionFocusDesktop() || isPresentationMode(presentationMode)) return;
+    questionFocusMode = !questionFocusMode;
+    applyQuestionFocusDom();
+  });
   app.querySelector('[data-action="export"]')?.addEventListener('click', () => { if (session) download(`${session.clientLabel.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-interview.json`, serializeSession(session), 'application/json'); });
   let mobileTrigger: HTMLElement | null = null;
   let mobilePanel: HTMLElement | null = null;
@@ -891,8 +948,7 @@ function renderInterview(): void {
     coverageTrigger?.setAttribute('aria-expanded', 'false');
     contextTrigger?.setAttribute('aria-expanded', 'false');
     setInert(questionStage, false);
-    setInert(coveragePanel, false);
-    setInert(contextPanel, false);
+    applyQuestionFocusDom();
     headerPrivateControls.forEach((control) => setInert(control, false));
     if (mobileEscapeHandler) {
       document.removeEventListener('keydown', mobileEscapeHandler);
@@ -966,11 +1022,14 @@ function renderInterview(): void {
     openMobilePanel(contextPanel, event.currentTarget as HTMLElement);
   });
   app.querySelectorAll<HTMLElement>('[data-action="close-mobile-panel"]').forEach((button) => button.addEventListener('click', closeMobilePanel));
+  ensureQuestionFocusMediaListener();
+  applyQuestionFocusDom();
   paintUpdateSlot();
 }
 
 function renderReview(): void {
   clearPrivatePrepTrial();
+  resetQuestionFocusMode();
   if (!session) { view = 'home'; void render(); return; }
   const stats = coverage(session);
   const questions = visibleQuestions(session);

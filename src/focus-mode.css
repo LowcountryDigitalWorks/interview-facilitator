@@ -1,0 +1,55 @@
+/* Question focus mode — desktop-only adjunct to src/styles.css (complements PR #124 Tidal layer). */
+
+.header-question-focus {
+  display: none;
+}
+
+@media (min-width: 981px) {
+  .header-question-focus {
+    display: inline-flex;
+    min-height: 44px;
+    align-items: center;
+  }
+
+  #app.question-focus-mode .cockpit {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #app.question-focus-mode .coverage-rail,
+  #app.question-focus-mode .context-rail {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+    pointer-events: none;
+  }
+
+  #app.question-focus-mode .question-stage {
+    width: min(960px, 100%);
+    max-width: 72rem;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  #app.question-focus-mode .question-stage {
+    background: #fff;
+  }
+}
+
+@media (forced-colors: active) {
+  #app.question-focus-mode .header-question-focus[aria-pressed="true"] {
+    outline: 3px solid var(--focus-ring, #e8a51c);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #app.question-focus-mode .question-stage {
+    transition: none;
+  }
+}
