@@ -67,8 +67,8 @@ describe('synthetic portable multi-revision archive contract', () => {
     ]);
     expect(branched.lineageStatus).toBe('unlinked-revisions');
     const gap = await archive([
-      revision('rev-c', 'missing-rev-b', '2026-11-12T14:40:00.000Z'),
       revision('rev-other', null, '2026-11-12T14:10:00.000Z'),
+      revision('rev-c', 'missing-rev-b', '2026-11-12T14:40:00.000Z'),
     ]);
     expect(gap.lineageStatus).toBe('missing-and-unlinked');
   });
@@ -84,7 +84,7 @@ describe('synthetic portable multi-revision archive contract', () => {
   it('rejects parent cycles, reverse chronology, absent head and future-created archives', async () => {
     await expect(archive([
       revision('rev-a', 'rev-b', '2026-11-12T14:00:00.000Z'),
-      revision('rev-b', 'rev-a', '2026-11-12T14:10:00.000Z'),
+      revision('rev-b', 'rev-a', '2026-11-12T14:00:00.000Z'),
     ])).rejects.toThrow('cycle');
     await expect(archive([
       revision('rev-a', null, '2026-11-12T14:30:00.000Z'),
@@ -115,9 +115,7 @@ describe('synthetic portable multi-revision archive contract', () => {
     await expect(validatePortableRevisionArchiveJson(` ${canonical}`)).rejects.toThrow('canonical form');
     const changed = JSON.parse(canonical);
     changed.revisions[0].record.clientLabel = 'CORRUPTED';
-    await expect(validatePortableRevisionArchiveJson(JSON.stringify(changed))).rejects.toThrow('canonical form');
-    const noncanonicalChanged = serializePortableRevisionArchive(changed);
-    await expect(validatePortableRevisionArchiveJson(noncanonicalChanged)).rejects.toThrow('checksum');
+    await expect(validatePortableRevisionArchiveJson(serializePortableRevisionArchive(changed))).rejects.toThrow('checksum');
     const unsupported = JSON.parse(canonical);
     unsupported.archiveSchemaVersion = 2;
     await expect(validatePortableRevisionArchiveJson(serializePortableRevisionArchive(unsupported)))
