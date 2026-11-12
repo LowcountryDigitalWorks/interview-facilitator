@@ -131,8 +131,53 @@ function readRevision(value: unknown, sessionId: string): PortableRevision {
   };
 }
 
+function pinnedPackKey(record: unknown): string {
+  if (!isRecord(record)) fail('Archive pinned pack record is invalid.');
+  boundedId(record.interviewPackId, 'Interview pack ID');
+  boundedId(record.interviewPackVersion, 'Interview pack version');
+  if (!isRecord(record.packIdentity)) fail('Archive pinned pack identity is invalid.');
+  exactKeys(record.packIdentity, ['algorithm', 'canonicalization', 'digest'], 'Archive pinned pack identity');
+  if (record.packIdentity.algorithm !== 'SHA-256'
+    || record.packIdentity.canonicalization !== 'ldw-json-c14n-v1'
+    || typeof record.packIdentity.digest !== 'string'
+    || !/^[0-9a-f]{64}$/.test(record.packIdentity.digest)) {
+    fail('Archive pinned pack identity is invalid.');
+  }
+  return canonicalize({
+    interviewPackId: record.interviewPackId,
+    interviewPackVersion: record.interviewPackVersion,
+    packIdentity: record.packIdentity,
+  });
+}
+
+function assertOnePinnedPack(revisions: readonly PortableRevision[]): void {
+  const key = pinnedPackKey(revisions[0]?.record);
+  for (const revision of revisions.slice(1)) {
+    if (pinnedPackKey(revision.record) !== key) {
+      fail('Archive contains mixed pinned interview packs.');
+    }
+  }
+}
+
 function deriveLineage(revisions: readonly PortableRevision[], headRevisionId: string): LineageStatus {
   const byId = new Map(revisions.map((revision) => [revision.revisionId, revision]));
+  // Validate the ENTIRE retained graph. Detached components may not hide cycles
+  // or reverse-time edges merely because they are outside head ancestry.
+  const graphChecked = new Set<string>();
+  for (const start of revisions) {
+    const path = new Set<string>();
+    let current: PortableRevision | undefined = start;
+    while (current && !graphChecked.has(current.revisionId)) {
+      if (path.has(current.revisionId)) fail('Archive revision lineage contains a cycle.');
+      path.add(current.revisionId);
+      const parent = current.parentRevisionId === null ? undefined : byId.get(current.parentRevisionId);
+      if (parent && Date.parse(parent.updatedAt) > Date.parse(current.updatedAt)) {
+        fail('Archive parent revision is newer than its child.');
+      }
+      current = parent;
+    }
+    for (const id of path) graphChecked.add(id);
+  }
   const visited = new Set<string>();
   let nextId: string | null = headRevisionId;
   let missing = false;
@@ -186,6 +231,7 @@ export async function createPortableRevisionArchive(input: {
     fail('Archive revision count is outside the allowed range.');
   }
   const revisions = input.revisions.map((row) => readRevision(row, input.sessionId));
+  assertOnePinnedPack(revisions);
   const byId = new Map<string, PortableRevision>();
   for (const revision of revisions) {
     if (byId.has(revision.revisionId)) fail('Archive contains duplicate or conflicting revision IDs.');
@@ -245,6 +291,7 @@ export async function validatePortableRevisionArchiveJson(json: string): Promise
     fail('Archive revision count is outside the allowed range.');
   }
   const revisions = parsed.revisions.map((row) => readRevision(row, parsed.sessionId as string));
+  assertOnePinnedPack(revisions);
   const byId = new Map<string, PortableRevision>();
   for (const revision of revisions) {
     if (byId.has(revision.revisionId)) fail('Archive contains duplicate or conflicting revision IDs.');
@@ -261,7 +308,9 @@ export async function validatePortableRevisionArchiveJson(json: string): Promise
   }
   const lineageStatus = deriveLineage(revisions, parsed.headRevisionId as string);
   if (parsed.lineageStatus !== lineageStatus) fail('Archive lineage declaration is inconsistent.');
-  if (!isRecord(parsed.checksum) || parsed.checksum.algorithm !== 'SHA-256'
+  if (!isRecord(parsed.checksum)) fail('Archive checksum metadata is invalid.');
+  exactKeys(parsed.checksum, ['algorithm', 'canonicalization', 'digest'], 'Archive checksum');
+  if (parsed.checksum.algorithm !== 'SHA-256'
     || parsed.checksum.canonicalization !== 'ldw-json-c14n-v1'
     || typeof parsed.checksum.digest !== 'string' || !/^[0-9a-f]{64}$/.test(parsed.checksum.digest)) {
     fail('Archive checksum metadata is invalid.');
