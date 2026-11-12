@@ -1,0 +1,51 @@
+/* Private evidence lens — PRIVATE Review only (complements focus-mode; not PR #124). */
+
+.evidence-lens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.6rem;
+  margin: 0.45rem 0 0;
+  padding: 0;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.evidence-lens-provenance,
+.evidence-lens-uncertainty {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid #d7dedb;
+  background: #fff;
+  color: #60737a;
+  font-weight: 600;
+}
+
+.evidence-lens--review-required .evidence-lens-provenance {
+  border-color: #2f766f;
+  color: #102a3a;
+  background: #f3efe6;
+}
+
+.evidence-lens--needs-confirmation .evidence-lens-uncertainty {
+  border-color: #e8a51c;
+  color: #102a3a;
+  background: #fff8eb;
+}
+
+@media (forced-colors: active) {
+  .evidence-lens-provenance,
+  .evidence-lens-uncertainty {
+    border-color: CanvasText;
+    background: Canvas;
+    color: CanvasText;
+  }
+}
+
+@media (max-width: 390px) {
+  .evidence-lens {
+    font-size: 0.76rem;
+  }
+}
