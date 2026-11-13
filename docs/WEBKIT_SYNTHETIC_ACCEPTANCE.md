@@ -8,7 +8,7 @@ Main CI exercises Chromium and the dormant recovery contracts. It does **not** e
 
 ## Test scope (synthetic only)
 
-- **390 × 820:** Home defaults dark; appearance toggle to light, creation of a fictional interview, preservation of answer text and its actual persisted IndexedDB value, note keyboard focus is not covered by the sticky action dock, then reload preserves local answer and visual preference.
+- **390 × 820:** Home defaults dark; appearance toggle to light, creation of a fictional interview, preservation of answer text and its actual persisted IndexedDB value. Starting at the answer control, a real `Tab` must focus the private question note. The focused note and sticky action dock must remain within the viewport with no overlap; then reload must preserve local answer and visual preference.
 - **1440 × 900:** Navigate a fictional interview to Review; PRIVATE outcome glance is **absent** from Presentation DOM, present/collapsible in Private Review, and absent again on returning to Presentation.
 
 The runner uses an isolated Vite local preview and bundled Playwright WebKit on an Ubuntu-hosted GitHub Actions runner, with service workers blocked to avoid conflating PWA shell state with core application behavior. No hosted URL, backend, account, analytics, storage connector, real client details, PHI or CUI.
@@ -22,7 +22,9 @@ The existing default Chromium test suite and dormant 1.4/E1 read-back runner are
 | These two synthetic tests passed under the Linux Playwright WebKit engine | Physical iPhone/iPad Safari, Home Screen PWA storage lifetime, iCloud/download behavior or VoiceOver |
 | Local IndexedDB could persist this sample answer across a reload | Complete backup, no eviction, cross-device portability or real-session retention |
 | Current specific private glance DOM exclusion worked | Full client-facing confidentiality, consent/compliance, hostile-file restore or security certification |
-| Focus was geometrically reachable in this fixture | Exhaustive keyboard/AT contrast/focus acceptance across all devices |
+| The 390px answer-to-private-note Tab path works and both focused note and sticky dock fit the viewport without overlap | Exhaustive keyboard navigation, visual keyboard accessibility, VoiceOver, or focus behavior on actual Apple devices |
+
+**Review L1 follow-up:** This bounded test revision closes the missing real `Tab` navigation and viewport-edge assertion for the synthetic 390px case. It does not certify every keyboard sequence or viewport, physical Safari, VoiceOver, or an installed PWA. No runtime code was changed.
 
 **Acceptance gates:** successful exact-head standard and dedicated WebKit CI; independent author-/influence-excluded source review H0/M0; guarded source-only merge; exact merged-main CI; separate real-device manual usability and accessibility checks before any pilot. If the WebKit dependency installation is unsupported or flaky, **report failure**, do not silently skip or replace the job with Chromium.
 
