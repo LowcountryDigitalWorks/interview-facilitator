@@ -97,7 +97,11 @@ describe('synthetic portable restore — pre-transaction guards', () => {
   it('rejects tampered checksum envelope', async () => {
     const json = await completeChainJson();
     const parsed = JSON.parse(json) as { checksum: { digest: string } };
-    parsed.checksum.digest = `${parsed.checksum.digest.slice(0, 63)}0`;
+    // Always change a nibble: replacing it with '0' is a 1-in-16 no-op when
+    // the random revision IDs already produce a digest ending in zero.
+    const originalDigest = parsed.checksum.digest;
+    parsed.checksum.digest = `${originalDigest.slice(0, -1)}${originalDigest.endsWith('0') ? '1' : '0'}`;
+    expect(parsed.checksum.digest).not.toBe(originalDigest);
     const outcome = await importSyntheticPortableArchiveFreshOrigin({
       testOnlyCapability: SYNTHETIC_PORTABLE_RESTORE_TEST_CAPABILITY,
       untrustedArchiveJson: JSON.stringify(parsed),
