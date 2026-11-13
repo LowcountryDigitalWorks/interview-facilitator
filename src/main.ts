@@ -91,6 +91,92 @@ function updateSlotMarkup(): string {
   return `<span class="update-slot" data-update-slot data-client-release="${escapeHtml(__APP_RELEASE__)}"></span>`;
 }
 
+const APPEARANCE_STORAGE_KEY = 'ldw.interview-facilitator.appearance.v1';
+type AppearanceMode = 'dark' | 'light';
+
+let appearanceMode: AppearanceMode = 'dark';
+
+const APPEARANCE_THEME_COLORS: Record<AppearanceMode, string> = {
+  dark: '#111820',
+  light: '#914B20',
+};
+
+function readAppearancePreference(): AppearanceMode | null {
+  try {
+    const raw = localStorage.getItem(APPEARANCE_STORAGE_KEY);
+    if (raw === 'dark' || raw === 'light') return raw;
+  } catch {
+    // Storage unavailable (privacy mode, security policy, etc.)
+  }
+  return null;
+}
+
+function persistAppearancePreference(mode: AppearanceMode): void {
+  try {
+    localStorage.setItem(APPEARANCE_STORAGE_KEY, mode);
+  } catch {
+    // Quota or security — keep in-memory choice only
+  }
+}
+
+function syncAppearanceToggleUi(): void {
+  document.querySelectorAll<HTMLButtonElement>('[data-action="set-appearance"]').forEach((button) => {
+    const active = button.dataset.appearance === appearanceMode;
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+}
+
+function applyAppearanceToDocument(mode: AppearanceMode): void {
+  appearanceMode = mode;
+  document.documentElement.dataset.appearance = mode;
+  document.documentElement.style.colorScheme = mode;
+  const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+  if (meta) meta.content = APPEARANCE_THEME_COLORS[mode];
+  syncAppearanceToggleUi();
+}
+
+function appearanceControlMarkup(): string {
+  const darkPressed = appearanceMode === 'dark';
+  const lightPressed = appearanceMode === 'light';
+  return `<div class="appearance-switch" role="group" aria-label="Appearance"><button type="button" class="appearance-option secondary small" data-action="set-appearance" data-appearance="dark" aria-pressed="${darkPressed ? 'true' : 'false'}">Dark</button><button type="button" class="appearance-option secondary small" data-action="set-appearance" data-appearance="light" aria-pressed="${lightPressed ? 'true' : 'false'}">Light</button></div>`;
+}
+
+function productAttributionMarkup(): string {
+  return '<span class="product-attribution">Lowcountry Digital Works</span>';
+}
+
+function ensureFocusedFieldClearsActionDock(field: HTMLElement): void {
+  field.addEventListener('focus', () => {
+    const dock = app.querySelector<HTMLElement>('.action-dock');
+    if (!dock) return;
+    const fieldRect = field.getBoundingClientRect();
+    const dockRect = dock.getBoundingClientRect();
+    if (fieldRect.bottom > dockRect.top - 4) {
+      field.scrollIntoView({ block: 'center', behavior: 'auto' });
+    }
+  });
+}
+
+let appearanceDelegationBound = false;
+
+function ensureAppearanceDelegation(): void {
+  if (appearanceDelegationBound) return;
+  appearanceDelegationBound = true;
+  document.addEventListener('click', (event) => {
+    const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[data-action="set-appearance"]');
+    if (!button) return;
+    const next = button.dataset.appearance;
+    if (next !== 'dark' && next !== 'light') return;
+    applyAppearanceToDocument(next);
+    persistAppearancePreference(next);
+  });
+}
+
+function bootstrapAppearance(): void {
+  ensureAppearanceDelegation();
+  applyAppearanceToDocument(readAppearancePreference() ?? 'dark');
+}
+
 function escapeHtml(value: string): string {
   return value.replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char] ?? char);
 }
@@ -325,7 +411,7 @@ async function renderHome(): Promise<void> {
   if (storageError) console.error('Unable to read local interviews.', listState.error);
 
   app.innerHTML = `
-    <header class="app-header"><div><strong>Interview Facilitator</strong><span>Local-first discovery cockpit</span></div><span class="state-pill" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span>${updateSlotMarkup()}</header>
+    <header class="app-header"><div><strong>Interview Facilitator</strong><span>Local-first discovery cockpit</span>${productAttributionMarkup()}</div><div class="header-states">${appearanceControlMarkup()}<span class="state-pill" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span>${updateSlotMarkup()}</div></header>
     <main id="main" class="home-shell">
       <section class="hero-card">
         <p class="eyebrow">Human-led discovery</p>
@@ -587,7 +673,7 @@ function renderNew(): void {
   readBackReturnTarget = null;
   const pack = defaultLiveInterviewPack();
   app.innerHTML = `
-    <header class="app-header"><div><strong>Interview Facilitator</strong><span>New interview</span></div>${updateSlotMarkup()}</header>
+    <header class="app-header"><div><strong>Interview Facilitator</strong><span>New interview</span>${productAttributionMarkup()}</div><div class="header-states">${appearanceControlMarkup()}${updateSlotMarkup()}</div></header>
     <main id="main" class="form-shell">
       <button class="text-button" data-action="home">← Back</button>
       <p class="eyebrow">Prepare · <span data-prepare-pack-title>${escapeHtml(pack.title)}</span> · pack v<span data-prepare-pack-version>${escapeHtml(pack.packVersion)}</span></p><h1>Prepare this interview</h1><p data-prepare-pack-description>${escapeHtml(pack.description)}</p>
@@ -717,8 +803,8 @@ function renderInterview(): void {
 
   app.innerHTML = `
     <header class="app-header cockpit-header">
-      <div><strong>${escapeHtml(session.clientLabel)}</strong><span>${escapeHtml(sessionPack(session).title)}</span></div>
-      <div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator aria-live="off">${escapeHtml(saveLabel())}</span>${presenting ? '<span class="state-pill">Presentation view</span><button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : `<span class="state-pill header-connectivity" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span><button class="secondary small header-question-focus" type="button" data-action="toggle-question-focus" aria-pressed="false">Focus on question</button><button class="secondary small header-presentation" data-action="enter-presentation">Presentation view</button><button class="icon-button header-export" data-action="export" aria-label="Export JSON backup">⇩</button>`}${updateSlotMarkup()}</div>
+      <div><strong>${escapeHtml(session.clientLabel)}</strong><span>${escapeHtml(sessionPack(session).title)}</span>${productAttributionMarkup()}</div>
+      <div class="header-states">${appearanceControlMarkup()}<span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator aria-live="off">${escapeHtml(saveLabel())}</span>${presenting ? '<span class="state-pill">Presentation view</span><button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : `<span class="state-pill header-connectivity" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span><button class="secondary small header-question-focus" type="button" data-action="toggle-question-focus" aria-pressed="false">Focus on question</button><button class="secondary small header-presentation" data-action="enter-presentation">Presentation view</button><button class="icon-button header-export" data-action="export" aria-label="Export JSON backup">⇩</button>`}${updateSlotMarkup()}</div>
       <span class="sr-only" role="alert" data-save-alert>${escapeHtml(saveAlertMessage())}</span>
       <span class="sr-only" role="status" aria-live="polite" data-connectivity-status></span>
     </header>
@@ -894,6 +980,8 @@ function renderInterview(): void {
     }
   });
   app.querySelector<HTMLTextAreaElement>('#question-note')?.addEventListener('input', () => { syncPrivateNotes(); scheduleSave(); });
+  const questionNote = app.querySelector<HTMLTextAreaElement>('#question-note');
+  if (questionNote) ensureFocusedFieldClearsActionDock(questionNote);
   for (const id of ['#follow-up-action', '#follow-up-owner', '#follow-up-due-date']) {
     app.querySelector<HTMLElement>(id)?.addEventListener('input', () => { syncPrivateNotes(); scheduleSave(); });
     if (id === '#follow-up-due-date') {
@@ -1053,7 +1141,7 @@ function renderReview(): void {
       && Boolean(session?.answers[question.id]?.followUp?.action.trim()),
   ).length;
   app.innerHTML = `
-    <header class="app-header"><div><strong>${escapeHtml(session.clientLabel)}</strong><span>${presenting ? 'Presentation read-back' : 'Private review'}</span></div><div class="header-states"><span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator>${escapeHtml(saveLabel())}</span>${presenting ? '<button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : '<button class="secondary small" data-action="enter-presentation">Presentation view</button>'}${updateSlotMarkup()}</div><span class="sr-only" role="alert" data-save-alert>${escapeHtml(saveAlertMessage())}</span></header>
+    <header class="app-header"><div><strong>${escapeHtml(session.clientLabel)}</strong><span>${presenting ? 'Presentation read-back' : 'Private review'}</span>${productAttributionMarkup()}</div><div class="header-states">${appearanceControlMarkup()}<span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator>${escapeHtml(saveLabel())}</span>${presenting ? '<button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : '<button class="secondary small" data-action="enter-presentation">Presentation view</button>'}${updateSlotMarkup()}</div><span class="sr-only" role="alert" data-save-alert>${escapeHtml(saveAlertMessage())}</span></header>
     <main id="main" class="review-shell">
       <button class="text-button" data-action="return">← Return to interview</button>
       <p class="eyebrow">Read-back</p><h1 id="review-title" tabindex="-1">Read back what matters before ending the conversation.</h1>
@@ -1376,4 +1464,5 @@ startControlledUpdates({
   },
 });
 
+bootstrapAppearance();
 void render();

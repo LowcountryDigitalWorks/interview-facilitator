@@ -1,4 +1,4 @@
-/* Private evidence lens — PRIVATE Review only (complements focus-mode; not PR #124). */
+/* Private evidence lens — PRIVATE Review only; theme tokens from styles.css */
 
 .evidence-lens {
   display: flex;
@@ -17,22 +17,26 @@
   min-height: 28px;
   padding: 0.2rem 0.55rem;
   border-radius: 999px;
-  border: 1px solid #d7dedb;
-  background: #fff;
-  color: #60737a;
+  border: 1px solid var(--line);
+  background: var(--surface-panel);
+  color: var(--text-muted);
   font-weight: 600;
 }
 
 .evidence-lens--review-required .evidence-lens-provenance {
-  border-color: #2f766f;
-  color: #102a3a;
-  background: #f3efe6;
+  border-color: var(--accent);
+  color: var(--text-primary);
+  background: var(--known-preview-bg);
 }
 
 .evidence-lens--needs-confirmation .evidence-lens-uncertainty {
-  border-color: #e8a51c;
-  color: #102a3a;
-  background: #fff8eb;
+  border-color: var(--ember-attention);
+  color: var(--text-primary);
+  background: var(--surface-elevated);
+}
+
+html[data-appearance="light"] .evidence-lens--needs-confirmation .evidence-lens-uncertainty {
+  border-color: var(--accent-ember);
 }
 
 @media (forced-colors: active) {

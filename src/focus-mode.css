@@ -1,4 +1,4 @@
-/* Question focus mode — desktop-only adjunct to src/styles.css (complements PR #124 Tidal layer). */
+/* Question focus mode — desktop-only adjunct to src/styles.css (Fieldnotes Ember/Glacier). */
 
 .header-question-focus {
   display: none;
@@ -37,7 +37,7 @@
 
 @media (prefers-reduced-transparency: reduce) {
   #app.question-focus-mode .question-stage {
-    background: #fff;
+    background: var(--canvas);
   }
 }
 
