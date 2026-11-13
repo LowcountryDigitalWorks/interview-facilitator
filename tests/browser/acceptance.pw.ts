@@ -1819,3 +1819,87 @@ test('Private evidence lens: hostile answer text does not appear in badge markup
   expect(lensHtml).not.toContain('HOSTILE_EVIDENCE_LENS');
   expect(lensHtml).not.toContain('<svg');
 });
+
+test('Private outcome glance: presentation DOM has zero glance nodes at 390', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 820 });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill('Synthetic Outcome Glance Privacy');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  await page.locator('#answer').fill('Captured synthetic outcome');
+  await openSyntheticReviewFromInterviewForLens(page);
+  await expect(page.locator('[data-private-outcome-glance]')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.locator('[data-private-outcome-glance]')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Presentation view', exact: true }).click();
+  await expect(page.locator('[data-private-outcome-glance]')).toHaveCount(0);
+  await expect(page.getByText('Private interviewer glance only')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.locator('[data-private-outcome-glance]')).toHaveCount(1);
+});
+
+test('Private outcome glance: hostile captured value is escaped in private review at 320', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill('Synthetic Outcome Glance Hostile');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  // The first general question is not included in the outcome layout. Move to
+  // the mapped primary-goal item so this test cannot pass by redacting the value.
+  await page.locator('#answer').fill('Synthetic prior context');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByRole('heading', { name: 'What outcome matters most from this work?' })).toBeVisible();
+  const hostile = '<img src=x onerror=HOSTILE_OUTCOME_GLANCE>';
+  await page.locator('#answer').fill(hostile);
+  await openSyntheticReviewFromInterviewForLens(page);
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  const glance = page.locator('[data-private-outcome-glance]');
+  await glance.locator('summary').click();
+  const glanceHtml = await glance.innerHTML();
+  // A safely escaped *visible* answer keeps its text marker but cannot create
+  // an HTML element or fire its event handler.
+  await expect(glance.getByText(hostile, { exact: true })).toBeVisible();
+  expect(glanceHtml).toContain('&lt;img');
+  expect(glanceHtml).toContain('HOSTILE_OUTCOME_GLANCE');
+  expect(glanceHtml).not.toContain('<img');
+  await expect(page.locator('img[src="x"]')).toHaveCount(0);
+});
+
+test('Private outcome glance: disclosure toggle does not mutate stored session row', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill('Synthetic Outcome Glance Storage');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  await page.locator('#answer').fill('Stable revision snapshot');
+  await openSyntheticReviewFromInterviewForLens(page);
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  // Wait for a persisted saved revision, not an arbitrary timeout or the
+  // transitional in-flight review autosave. Then compare both stores.
+  await expect(page.locator('[data-save-indicator]')).toContainText('Saved');
+  await expect.poll(async () => {
+    const rows = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+    return rows.some((row) => row.answers['existing-presence']?.value === 'Stable revision snapshot');
+  }).toBe(true);
+  const before = await readStorageSnapshot(page);
+  const glance = page.locator('[data-private-outcome-glance]');
+  await glance.locator('summary').click();
+  await glance.locator('summary').click();
+  const after = await readStorageSnapshot(page);
+  expect(after).toEqual(before);
+});
+
+test('Private outcome glance: early session shows notice and unresolved items at 1440', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill('Synthetic Outcome Glance Provenance');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  await page.locator('#answer').fill('Synthetic priority statement');
+  await openSyntheticReviewFromInterviewForLens(page);
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  const glance = page.locator('[data-private-outcome-glance]');
+  await glance.locator('summary').click();
+  await expect(glance.getByText('Private interviewer glance only')).toBeVisible();
+  await expect(glance.locator('.private-outcome-glance-value', { hasText: 'Not established' }).first()).toBeVisible();
+  await expect(glance.getByText('human judgment only')).toBeVisible();
+});

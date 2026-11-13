@@ -1,0 +1,95 @@
+/* Private outcome glance — PRIVATE Review only; opaque panels (Fieldnotes Ember/Glacier) */
+
+.private-outcome-glance {
+  margin: 0.75rem 0 1.25rem;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 10px);
+  background: var(--surface-panel);
+  color: var(--text-primary);
+}
+
+.private-outcome-glance > summary {
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 1rem;
+  line-height: 1.4;
+  list-style-position: outside;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+
+.private-outcome-glance > summary::-webkit-details-marker {
+  color: var(--accent);
+}
+
+.private-outcome-glance-notice {
+  margin: 0.65rem 0 0.85rem;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.private-outcome-glance-columns {
+  display: grid;
+  gap: 0.75rem;
+}
+
+@media (min-width: 768px) {
+  .private-outcome-glance-columns {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.private-outcome-glance-panel {
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--known-preview-bg);
+}
+
+.private-outcome-glance-panel h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.private-outcome-glance-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.private-outcome-glance-list li {
+  margin: 0 0 0.55rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.private-outcome-glance-prompt {
+  font-size: 0.82rem;
+}
+
+.private-outcome-glance-value,
+.private-outcome-glance-follow-up {
+  font-size: 0.82rem;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.private-outcome-glance-provenance {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.private-outcome-glance-empty {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+html[data-appearance="light"] .private-outcome-glance-panel {
+  background: var(--surface-elevated);
+}
