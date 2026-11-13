@@ -2,7 +2,8 @@ import { defineConfig, devices } from '@playwright/test';
 
 export default defineConfig({
   testDir: './tests/browser',
-  testMatch: ['**/acceptance.pw.ts', '**/local-faults.pw.ts', '**/fresh-profile-recovery.pw.ts'],
+  testMatch: ['**/acceptance.pw.ts', '**/local-faults.pw.ts', '**/fresh-profile-recovery.pw.ts', '**/synthetic-portable-restore.pw.ts'],
+  grepInvert: /@idb-dev-harness/,
   fullyParallel: false,
   workers: 1,
   timeout: 30_000,
