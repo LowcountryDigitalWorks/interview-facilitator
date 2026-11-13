@@ -1,0 +1,36 @@
+name: Synthetic Fieldnotes visual review packet
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/synthetic-visual-review.yml'
+      - 'tests/browser/visual-review.pw.ts'
+      - 'playwright.visual-review.config.ts'
+
+permissions:
+  contents: read
+
+jobs:
+  screenshot-packet:
+    if: startsWith(github.head_ref, 'feat/if-synthetic-visual-review')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - name: Capture twelve synthetic-only screenshots
+        run: npx playwright test -c playwright.visual-review.config.ts
+      - name: Upload seven-day synthetic screenshot packet
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fieldnotes-synthetic-visual-review
+          path: artifacts/visual-review/
+          if-no-files-found: error
+          retention-days: 7
