@@ -46,15 +46,49 @@ test('WebKit synthetic: Fieldnotes appearance, keyboard note, and local persiste
   await input.fill(answer);
   await expect(input).toHaveValue(answer);
 
+  // Follow the actual keyboard path; programmatic .focus() alone cannot
+  // establish a usable Tab order or browser-driven scroll into view.
   const privateNote = page.locator('#question-note');
-  await privateNote.focus();
+  await input.focus();
+  await expect(input).toBeFocused();
+  await page.keyboard.press('Tab');
   await expect(privateNote).toBeFocused();
-  // Check the previously corrected sticky dock issue using *real* geometry.
-  await expect.poll(async () => page.evaluate(() => {
+  // The focused note and sticky dock must both fit within the visual viewport
+  // and the note must not sit behind the dock. A missing dock is a failure.
+  let lastKeyboardGeometry: unknown;
+  try {
+    await expect.poll(async () => page.evaluate(() => {
     const field = document.querySelector('#question-note')?.getBoundingClientRect();
     const dock = document.querySelector('.action-dock')?.getBoundingClientRect();
-    return Boolean(field && (!dock || field.bottom <= dock.top + 2));
-  })).toBe(true);
+    const width = document.documentElement.clientWidth;
+    const height = document.documentElement.clientHeight;
+    const tolerance = 2;
+    return {
+      fieldWithinViewport: Boolean(field
+        && field.left >= -tolerance && field.right <= width + tolerance
+        && field.top >= -tolerance && field.bottom <= height + tolerance),
+      dockWithinViewport: Boolean(dock
+        && dock.left >= -tolerance && dock.right <= width + tolerance
+        && dock.top >= -tolerance && dock.bottom <= height + tolerance),
+      noOverlap: Boolean(field && dock && field.bottom <= dock.top + tolerance),
+      geometry: {
+        viewport: [width, height],
+        field: field && [field.left, field.top, field.right, field.bottom].map(Math.round),
+        dock: dock && [dock.left, dock.top, dock.right, dock.bottom].map(Math.round),
+      },
+    };
+    }).then((measurement) => {
+      lastKeyboardGeometry = measurement;
+      return measurement;
+    })).toMatchObject({
+      fieldWithinViewport: true,
+      dockWithinViewport: true,
+      noOverlap: true,
+    });
+  } catch (error) {
+    console.error('WebKit keyboard focus viewport geometry: ' + JSON.stringify(lastKeyboardGeometry));
+    throw error;
+  }
 
   // A visible "Saved" label alone is not an autosave-idle proof: read the
   // actual existing IndexedDB session row and require the captured value.

@@ -149,13 +149,26 @@ function productAttributionMarkup(): string {
 
 function ensureFocusedFieldClearsActionDock(field: HTMLElement): void {
   field.addEventListener('focus', () => {
-    const dock = app.querySelector<HTMLElement>('.action-dock');
-    if (!dock) return;
-    const fieldRect = field.getBoundingClientRect();
-    const dockRect = dock.getBoundingClientRect();
-    if (fieldRect.bottom > dockRect.top - 4) {
-      field.scrollIntoView({ block: 'center', behavior: 'auto' });
-    }
+    const keepFocusedNoteVisible = (): void => {
+      // WebKit's keyboard Tab navigation may leave the newly focused note
+      // partly ABOVE the viewport, even when it clears the sticky dock.
+      if (!field.isConnected || document.activeElement !== field) return;
+      const dock = app.querySelector<HTMLElement>('.action-dock');
+      if (!dock) return;
+      const fieldRect = field.getBoundingClientRect();
+      const dockRect = dock.getBoundingClientRect();
+      const viewportWidth = document.documentElement.clientWidth;
+      const viewportHeight = document.documentElement.clientHeight;
+      if (fieldRect.top < 8
+        || fieldRect.left < 0
+        || fieldRect.right > viewportWidth
+        || fieldRect.bottom > Math.min(dockRect.top - 4, viewportHeight - 8)) {
+        field.scrollIntoView({ block: 'center', behavior: 'auto' });
+      }
+    };
+    keepFocusedNoteVisible();
+    // Check once after browser-native keyboard focus scrolling settles.
+    window.requestAnimationFrame(keepFocusedNoteVisible);
   });
 }
 
