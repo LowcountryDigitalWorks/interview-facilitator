@@ -26,7 +26,15 @@ jobs:
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - name: Capture twelve synthetic-only screenshots
-        run: npx playwright test -c playwright.visual-review.config.ts
+        run: |
+          mkdir -p artifacts/visual-review
+          npx playwright test -c playwright.visual-review.config.ts
+      - name: Verify complete synthetic screenshot inventory
+        run: |
+          count=$(find artifacts/visual-review -maxdepth 1 -type f -name '*.png' | wc -l)
+          test "$count" -eq 12
+          printf '%s\n' '# Fieldnotes — synthetic screenshot review' 'No real client data. Static screenshots, not deployment or approval.' '' > artifacts/visual-review/README.md
+          find artifacts/visual-review -maxdepth 1 -type f -name '*.png' -printf '%f\n' | sort >> artifacts/visual-review/README.md
       - name: Upload seven-day synthetic screenshot packet
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
