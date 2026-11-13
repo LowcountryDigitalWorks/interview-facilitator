@@ -1844,6 +1844,11 @@ test('Private outcome glance: hostile captured value is escaped in private revie
   await page.getByRole('button', { name: 'New interview' }).click();
   await page.getByLabel('Project or client label').fill('Synthetic Outcome Glance Hostile');
   await page.getByRole('button', { name: 'Start interview' }).click();
+  // The first general question is not included in the outcome layout. Move to
+  // the mapped primary-goal item so this test cannot pass by redacting the value.
+  await page.locator('#answer').fill('Synthetic prior context');
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await expect(page.getByText('What outcome matters most from this work?', { exact: true })).toBeVisible();
   const hostile = '<img src=x onerror=HOSTILE_OUTCOME_GLANCE>';
   await page.locator('#answer').fill(hostile);
   await openSyntheticReviewFromInterviewForLens(page);
@@ -1851,7 +1856,11 @@ test('Private outcome glance: hostile captured value is escaped in private revie
   const glance = page.locator('[data-private-outcome-glance]');
   await glance.locator('summary').click();
   const glanceHtml = await glance.innerHTML();
-  expect(glanceHtml).not.toContain('HOSTILE_OUTCOME_GLANCE');
+  // A safely escaped *visible* answer keeps its text marker but cannot create
+  // an HTML element or fire its event handler.
+  await expect(glance.getByText(hostile, { exact: true })).toBeVisible();
+  expect(glanceHtml).toContain('&lt;img');
+  expect(glanceHtml).toContain('HOSTILE_OUTCOME_GLANCE');
   expect(glanceHtml).not.toContain('<img');
   await expect(page.locator('img[src="x"]')).toHaveCount(0);
 });
@@ -1864,11 +1873,18 @@ test('Private outcome glance: disclosure toggle does not mutate stored session r
   await page.locator('#answer').fill('Stable revision snapshot');
   await openSyntheticReviewFromInterviewForLens(page);
   await page.getByRole('button', { name: 'Exit presentation' }).click();
-  const before = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+  // Wait for a persisted saved revision, not an arbitrary timeout or the
+  // transitional in-flight review autosave. Then compare both stores.
+  await expect(page.locator('[data-save-indicator]')).toContainText('Saved');
+  await expect.poll(async () => {
+    const rows = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+    return rows.some((row) => row.answers['existing-presence']?.value === 'Stable revision snapshot');
+  }).toBe(true);
+  const before = await readStorageSnapshot(page);
   const glance = page.locator('[data-private-outcome-glance]');
   await glance.locator('summary').click();
   await glance.locator('summary').click();
-  const after = (await readStorageSnapshot(page)).rows as SemanticInterviewSession[];
+  const after = await readStorageSnapshot(page);
   expect(after).toEqual(before);
 });
 
