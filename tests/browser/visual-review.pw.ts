@@ -53,7 +53,7 @@ for (const viewport of viewports) {
       await capture(page, prefix + '-interview');
 
       await openPrivateReview(page);
-      await expect(page.getByText('Private review', { exact: true })).toBeVisible();
+      await expect(page.locator('.app-header').getByText('Private review', { exact: true })).toBeVisible();
       const glance = page.locator('[data-private-outcome-glance]');
       if (await glance.count()) {
         await glance.locator('summary').click();
