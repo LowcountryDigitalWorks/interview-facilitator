@@ -24,6 +24,8 @@ Product-specific **proposed** theme for Interview Facilitator (not corporate LDW
 
 Implementation uses CSS custom properties on `html[data-appearance]` in `src/styles.css`. PWA `theme-color` and `color-scheme` update with the toggle.
 
+Static install chrome (`public/manifest.webmanifest`, `public/icon.svg`) uses the **dark default** canvas `#111820` (Fieldnotes Ember/Glacier accents on the icon only; shape unchanged).
+
 ## Persistence
 
 - Key: `ldw.interview-facilitator.appearance.v1` in `localStorage` (visual preference only).

@@ -142,30 +142,40 @@ test('appearance node-epoch marker detects deliberate answer DOM replacement', a
 });
 
 for (const width of [320, 390] as const) {
-  test(`interview ${width}px: appearance header controls visible without horizontal clip`, async ({ page }) => {
-    await page.setViewportSize({ width, height: 820 });
-    await startSyntheticInterview(page, `Synthetic Mobile Interview ${width}`);
-    const appearance = page.getByRole('group', { name: 'Appearance' });
-    await expect(appearance).toBeVisible();
-    const headerBox = await appearance.boundingBox();
-    expect(headerBox).not.toBeNull();
-    expect((headerBox?.x ?? 0) + (headerBox?.width ?? 0)).toBeLessThanOrEqual(width + 2);
-    expect(page.getByRole('button', { name: 'Continue' })).toBeVisible();
-    const metrics = await page.evaluate(() => ({
-      scrollWidth: document.documentElement.scrollWidth,
-      clientWidth: document.documentElement.clientWidth,
-    }));
-    expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth + 1);
-  });
+  for (const mode of ['dark', 'light'] as const) {
+    test(`interview ${width}px (${mode}): appearance header visible and keyboard reachable`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 820 });
+      await startSyntheticInterview(page, `Synthetic Mobile Interview ${width} ${mode}`);
+      if (mode === 'light') await page.getByRole('button', { name: 'Light' }).click();
+      const appearance = page.getByRole('group', { name: 'Appearance' });
+      await expect(appearance).toBeVisible();
+      await page.getByRole('button', { name: mode === 'dark' ? 'Dark' : 'Light' }).focus();
+      const headerBox = await appearance.boundingBox();
+      expect(headerBox).not.toBeNull();
+      expect((headerBox?.x ?? 0) + (headerBox?.width ?? 0)).toBeLessThanOrEqual(width + 2);
+      await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible();
+      const metrics = await page.evaluate(() => ({
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      }));
+      expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth + 1);
+    });
 
-  test(`review ${width}px: appearance toggle visible on read-back header`, async ({ page }) => {
-    await page.setViewportSize({ width, height: 820 });
-    await startSyntheticInterview(page, `Synthetic Mobile Review ${width}`);
-    await page.locator('#answer').fill('Mobile review detail');
-    await openSyntheticReview(page);
-    await expect(page.getByRole('group', { name: 'Appearance' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Exit presentation' })).toBeVisible();
-  });
+    test(`review ${width}px (${mode}): appearance toggle on read-back header`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 820 });
+      await startSyntheticInterview(page, `Synthetic Mobile Review ${width} ${mode}`);
+      if (mode === 'light') await page.getByRole('button', { name: 'Light' }).click();
+      await page.locator('#answer').fill('Mobile review detail');
+      await openSyntheticReview(page);
+      await expect(page.getByRole('group', { name: 'Appearance' })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Exit presentation' })).toBeVisible();
+      const metrics = await page.evaluate(() => ({
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      }));
+      expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth + 1);
+    });
+  }
 }
 
 test('sticky action dock Continue stays in viewport when keyboard focused', async ({ page }) => {
@@ -224,6 +234,66 @@ test('localStorage write failure keeps in-memory light until reload', async ({ p
   await page.getByRole('button', { name: 'Light' }).click();
   await expect(page.getByRole('button', { name: 'Light', pressed: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.dataset.appearance)).toBe('light');
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Dark', pressed: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.dataset.appearance)).toBe('dark');
+});
+
+async function contrastRatio(page: import('@playwright/test').Page, selector: string): Promise<number | null> {
+  return page.evaluate((target) => {
+    const parseRgb = (color: string): [number, number, number] | null => {
+      const m = color.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+      if (!m) return null;
+      return [Number(m[1]), Number(m[2]), Number(m[3])];
+    };
+    const lum = (r: number, g: number, b: number) => {
+      const lin = (c: number) => {
+        const v = c / 255;
+        return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+      };
+      return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    };
+    const el = document.querySelector(target) as HTMLElement | null;
+    if (!el) return null;
+    const fg = getComputedStyle(el).color;
+    const bg = getComputedStyle(el).backgroundColor;
+    const f = parseRgb(fg);
+    const b = parseRgb(bg);
+    if (!f || !b) return null;
+    const l1 = lum(...f);
+    const l2 = lum(...b);
+    return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+  }, selector);
+}
+
+for (const mode of ['dark', 'light'] as const) {
+  test(`home primary control meets AA contrast (${mode})`, async ({ page }) => {
+    await page.goto('/');
+    if (mode === 'light') await page.getByRole('button', { name: 'Light' }).click();
+    const ratio = await contrastRatio(page, '.primary');
+    expect(ratio).not.toBeNull();
+    expect(ratio ?? 0).toBeGreaterThanOrEqual(4.5);
+  });
+}
+
+test('private review evidence pill meets AA contrast in dark default', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await startSyntheticInterview(page, 'Synthetic Evidence Contrast');
+  await page.locator('#answer').fill('Synthetic captured answer for lens');
+  await openSyntheticReview(page);
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.locator('[data-evidence-lens]').first()).toBeVisible();
+  const ratio = await contrastRatio(page, '.evidence-lens-provenance');
+  expect(ratio).not.toBeNull();
+  expect(ratio ?? 0).toBeGreaterThanOrEqual(4.5);
+});
+
+test('web manifest uses Fieldnotes dark default chrome colors', async ({ page }) => {
+  await page.goto('/');
+  const manifest = await page.evaluate(async () => JSON.parse(await (await fetch('/manifest.webmanifest')).text()));
+  expect(manifest.theme_color).toBe('#111820');
+  expect(manifest.background_color).toBe('#111820');
+  expect(manifest.scope).toBe('/');
 });
 
 for (const viewport of VIEWPORTS) {
@@ -244,14 +314,21 @@ for (const viewport of VIEWPORTS) {
 
 test('forced-colors and reduced-transparency media queries are defined', async ({ page }) => {
   await page.goto('/');
-  const hasForcedColorsRule = await page.evaluate(() => {
-    return [...document.styleSheets].some((sheet) => {
+  const flags = await page.evaluate(() => {
+    let forcedColors = false;
+    let reducedTransparency = false;
+    for (const sheet of document.styleSheets) {
       try {
-        return [...sheet.cssRules].some((rule) => rule.cssText.includes('forced-colors'));
+        for (const rule of sheet.cssRules) {
+          if (rule.cssText.includes('forced-colors')) forcedColors = true;
+          if (rule.cssText.includes('prefers-reduced-transparency')) reducedTransparency = true;
+        }
       } catch {
-        return false;
+        // cross-origin stylesheet
       }
-    });
+    }
+    return { forcedColors, reducedTransparency };
   });
-  expect(hasForcedColorsRule).toBe(true);
+  expect(flags.forcedColors).toBe(true);
+  expect(flags.reducedTransparency).toBe(true);
 });
