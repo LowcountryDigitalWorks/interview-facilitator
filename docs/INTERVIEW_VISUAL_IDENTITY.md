@@ -34,6 +34,8 @@ Implementation uses CSS custom properties on `html[data-appearance]` in `src/sty
 
 Browser contract: `tests/browser/appearance-contract.pw.ts` (included in default `playwright.config.ts` `testMatch`).
 
+Appearance toggles must not replace the live `#answer` control: the contract stamps a `data-appearance-contract-node-epoch` marker on the answer element and asserts value plus `selectionStart`/`selectionEnd` survive Light/Dark clicks without a full interview re-render.
+
 ## Acceptance
 
 Owner visual approval and real Safari/VoiceOver passes are **separate gates** from source CI. No production customer deploy by this workstream.
