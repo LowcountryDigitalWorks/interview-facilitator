@@ -1848,7 +1848,7 @@ test('Private outcome glance: hostile captured value is escaped in private revie
   // the mapped primary-goal item so this test cannot pass by redacting the value.
   await page.locator('#answer').fill('Synthetic prior context');
   await page.getByRole('button', { name: 'Continue' }).click();
-  await expect(page.getByText('What outcome matters most from this work?', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'What outcome matters most from this work?' })).toBeVisible();
   const hostile = '<img src=x onerror=HOSTILE_OUTCOME_GLANCE>';
   await page.locator('#answer').fill(hostile);
   await openSyntheticReviewFromInterviewForLens(page);
