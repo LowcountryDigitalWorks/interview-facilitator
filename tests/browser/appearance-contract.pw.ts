@@ -178,6 +178,66 @@ for (const width of [320, 390] as const) {
   }
 }
 
+for (const mode of ['dark', 'light'] as const) {
+  for (const viewport of [{ width: 390, height: 820 }, { width: 320, height: 720 }] as const) {
+    test(`question-note keyboard focus clears sticky dock (${viewport.width}px ${mode})`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await startSyntheticInterview(page, `Synthetic Dock Focus ${viewport.width} ${mode}`);
+      if (mode === 'light') await page.getByRole('button', { name: 'Light' }).click();
+      const note = page.locator('#question-note');
+      await note.focus();
+      const geometry = await page.evaluate(() => {
+        const field = document.querySelector('#question-note') as HTMLTextAreaElement | null;
+        const dock = document.querySelector('.action-dock') as HTMLElement | null;
+        if (!field || !dock) return null;
+        const fieldRect = field.getBoundingClientRect();
+        const dockRect = dock.getBoundingClientRect();
+        return {
+          focused: document.activeElement === field,
+          fieldBottom: fieldRect.bottom,
+          dockTop: dockRect.top,
+          fieldTop: fieldRect.top,
+        };
+      });
+      expect(geometry?.focused).toBe(true);
+      expect(geometry?.fieldTop ?? 0).toBeGreaterThanOrEqual(0);
+      expect(geometry?.fieldBottom ?? Number.MAX_SAFE_INTEGER).toBeLessThanOrEqual((geometry?.dockTop ?? 0) + 1);
+    });
+  }
+}
+
+test('LDW product attribution is visible on home, prepare, interview, and private review', async ({ page }) => {
+  const byline = 'Lowcountry Digital Works';
+  await page.goto('/');
+  await expect(page.getByText(byline, { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await expect(page.getByText(byline, { exact: true })).toBeVisible();
+  await page.getByLabel('Project or client label').fill('Synthetic Byline');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  await expect(page.getByText(byline, { exact: true })).toBeVisible();
+  await openSyntheticReview(page);
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+  await expect(page.getByText(byline, { exact: true })).toBeVisible();
+});
+
+test('LDW byline does not overlap appearance controls at 320px', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await startSyntheticInterview(page, 'Synthetic Byline Layout');
+  const byline = page.getByText('Lowcountry Digital Works', { exact: true });
+  const appearance = page.getByRole('group', { name: 'Appearance' });
+  await expect(byline).toBeVisible();
+  await expect(appearance).toBeVisible();
+  const layout = await page.evaluate(() => {
+    const by = document.querySelector('.product-attribution')?.getBoundingClientRect();
+    const ap = document.querySelector('.appearance-switch')?.getBoundingClientRect();
+    if (!by || !ap) return null;
+    const overlaps = !(by.right < ap.left || ap.right < by.left || by.bottom < ap.top || ap.bottom < by.top);
+    return { overlaps, scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth };
+  });
+  expect(layout?.overlaps).toBe(false);
+  expect(layout?.scrollWidth).toBeLessThanOrEqual((layout?.clientWidth ?? 0) + 1);
+});
+
 test('sticky action dock Continue stays in viewport when keyboard focused', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 820 });
   await startSyntheticInterview(page, 'Synthetic Sticky Dock Focus');

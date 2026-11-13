@@ -26,6 +26,8 @@ Implementation uses CSS custom properties on `html[data-appearance]` in `src/sty
 
 Static install chrome (`public/manifest.webmanifest`, `public/icon.svg`) uses the **dark default** canvas `#111820` (Fieldnotes Ember/Glacier accents on the icon only; shape unchanged).
 
+Headers include a subtle text attribution **“Lowcountry Digital Works”** (product identity, not a substitute corporate logo mark). The speech-bubble PWA icon remains product art only.
+
 ## Persistence
 
 - Key: `ldw.interview-facilitator.appearance.v1` in `localStorage` (visual preference only).
