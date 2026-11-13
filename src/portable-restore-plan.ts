@@ -113,11 +113,7 @@ export async function planFreshOriginPortableRestoreDryRun(
   if (typeof untrustedArchiveJson !== 'string' || untrustedArchiveJson.length === 0) {
     throw new Error('Portable restore input must be a nonempty archive JSON string.');
   }
-  const before = untrustedArchiveJson;
   const archive = await validatePortableRevisionArchiveJson(untrustedArchiveJson);
-  if (untrustedArchiveJson !== before) {
-    throw new Error('Portable restore input was mutated during validation.');
-  }
   assertScope(archive, scope);
   const validatedRevisions = await validateRetainedRecords(archive);
   const blocked = lineageBlocksImport(archive.lineageStatus);

@@ -3,7 +3,6 @@ import { generalDiscoveryPack } from '../src/pack';
 import {
   createPortableRevisionArchive,
   serializePortableRevisionArchive,
-  validatePortableRevisionArchiveJson,
 } from '../src/portable-revision-archive';
 import {
   PORTABLE_RESTORE_PLAN_VERSION,
@@ -50,15 +49,15 @@ async function fixtureChain() {
 }
 
 describe('portable fresh-origin restore preflight dry-run — no storage writes', () => {
-  it('reports a complete lineage with validated 1.3 records and preserves inputs', async () => {
+  it('reports a complete lineage with validated 1.3 records without mutating fixture sessions', async () => {
     const { head, archive } = await fixtureChain();
+    const headBefore = structuredClone(head);
     const json = serializePortableRevisionArchive(archive);
-    const before = json;
     const plan = await planFreshOriginPortableRestoreDryRun(json, {
       expectedSessionId: head.sessionId,
       expectedHeadRevisionId: head.revisionId,
     });
-    expect(json).toBe(before);
+    expect(head).toEqual(headBefore);
     expect(plan.schemaVersion).toBe(PORTABLE_RESTORE_PLAN_VERSION);
     expect(plan.kind).toBe('fresh-origin-restore-preflight-dry-run');
     expect(plan.verdict).toBe('preflight-complete-head-validated');
@@ -96,7 +95,7 @@ describe('portable fresh-origin restore preflight dry-run — no storage writes'
     })).rejects.toThrow(/head revision/i);
   });
 
-  it('rejects forged checksums recomputed by an adversary envelope', async () => {
+  it('rejects mutated archive with unchanged checksum', async () => {
     const { archive } = await fixtureChain();
     const forged = structuredClone(archive);
     forged.revisions[0]!.record = {
@@ -108,7 +107,34 @@ describe('portable fresh-origin restore preflight dry-run — no storage writes'
     )).rejects.toThrow(/checksum/i);
   });
 
-  it('rejects semantic records that diverge from archive revision wrappers', async () => {
+  it('may pass preflight after adversary recomputes unkeyed checksum — not trusted or tamper-authenticated', async () => {
+    const { root, middle, head, archive } = await fixtureChain();
+    const tamperedHead = structuredClone(head);
+    tamperedHead.clientLabel = 'ADVERSARY SYNTHETIC RELABEL ONLY';
+    const adversaryArchive = await buildArchive(tamperedHead, [root, middle, tamperedHead]);
+    expect(serializePortableRevisionArchive(archive)).not.toBe(
+      serializePortableRevisionArchive(adversaryArchive),
+    );
+    const plan = await planFreshOriginPortableRestoreDryRun(
+      serializePortableRevisionArchive(adversaryArchive),
+    );
+    expect(plan.headImportFeasible).toBe(true);
+    expect(plan.integrityNotice).toMatch(/not authentication/i);
+    expect(plan.integrityNotice).toMatch(/tamper-evidence/i);
+  });
+
+  it('rejects semantic pack identity mismatch through preflight', async () => {
+    const { root, middle, head } = await fixtureChain();
+    const badMiddle = structuredClone(middle);
+    badMiddle.packSnapshot = structuredClone(root.packSnapshot);
+    badMiddle.packSnapshot.title = 'SYNTHETIC PACK TITLE MISMATCH FOR PREFLIGHT';
+    const archive = await buildArchive(head, [root, badMiddle, head]);
+    await expect(planFreshOriginPortableRestoreDryRun(
+      serializePortableRevisionArchive(archive),
+    )).rejects.toThrow(/identity digest/i);
+  });
+
+  it('archive factory rejects revision wrapper identity mismatch (dependency, not preflight API)', async () => {
     const { head, root } = await fixtureChain();
     const wrapped = archiveRevision(root);
     wrapped.revisionId = 'wrapper-does-not-match-record';
@@ -120,7 +146,7 @@ describe('portable fresh-origin restore preflight dry-run — no storage writes'
     })).rejects.toThrow(/identity does not match/i);
   });
 
-  it('rejects mixed pinned packs across retained revisions', async () => {
+  it('archive factory rejects mixed pinned packs (dependency, not preflight API)', async () => {
     const { root, head } = await fixtureChain();
     const other = structuredClone(root);
     other.sessionId = root.sessionId;
@@ -141,12 +167,13 @@ describe('portable fresh-origin restore preflight dry-run — no storage writes'
     await expect(planFreshOriginPortableRestoreDryRun('')).rejects.toThrow(/nonempty/i);
   });
 
-  it('rejects unsupported archive schema versions surfaced by the archive validator', async () => {
+  it('rejects unsupported archive schema versions through preflight', async () => {
     const { archive } = await fixtureChain();
-    const unsupported = structuredClone(archive);
-    (unsupported as { archiveSchemaVersion: number }).archiveSchemaVersion = 99;
-    await expect(validatePortableRevisionArchiveJson(
-      serializePortableRevisionArchive(unsupported as typeof archive),
+    const canonical = serializePortableRevisionArchive(archive);
+    const unsupported = JSON.parse(canonical);
+    unsupported.archiveSchemaVersion = 2;
+    await expect(planFreshOriginPortableRestoreDryRun(
+      serializePortableRevisionArchive(unsupported),
     )).rejects.toThrow(/unsupported/i);
   });
 });

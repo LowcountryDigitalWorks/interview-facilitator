@@ -16,7 +16,9 @@
 | 1.3 semantic validation | Record shape, pack pin, bounded session graph | Complete autosave history, off-device protection, confidentiality |
 | Lineage status | Declared parent graph inside the archive | Local IndexedDB state or destination collision outcome |
 
-An adversary can construct JSON that passes checksum validation after recomputing the digest.
+An adversary can edit semantically valid retained records and call `createPortableRevisionArchive` to recompute the unkeyed digest. Preflight may still return `preflight-complete-head-validated` for that recomputed envelope. That outcome is **not** trusted-source attestation and **not** tamper-authentication.
+
+Checksum mismatch (mutated bytes with an **unchanged** digest field) is rejected as accidental corruption only.
 
 ## Verdicts
 
