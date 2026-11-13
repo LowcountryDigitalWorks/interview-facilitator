@@ -217,6 +217,14 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
+/**
+ * Opens the production IndexedDB layout. Exported only for synthetic test harnesses
+ * (#35 E1); the live UI must not acquire storage through this entry point.
+ */
+export function openInterviewFacilitatorIndexedDb(): Promise<IDBDatabase> {
+  return openDb();
+}
+
 function writeTransaction(db: IDBDatabase): IDBTransaction {
   try {
     return db.transaction(STORE, 'readwrite', { durability: 'strict' });

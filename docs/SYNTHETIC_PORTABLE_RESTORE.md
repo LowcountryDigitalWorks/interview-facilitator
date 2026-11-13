@@ -28,6 +28,17 @@ Unkeyed archive SHA-256 detects accidental envelope corruption only. An adversar
 
 Callers must pass `testOnlyCapability: 'ldw.synthetic-portable-restore-test-only.v1'`. The live application shell does not export or wire this path.
 
+## Outcomes
+
+Destination collisions detected **before any write** return structured rejection (never success):
+
+- `code: 'session-exists'` — current row already present for `sessionId`
+- `code: 'orphan-history'` — revision-history keys exist without a current session row
+
+Unexpected IndexedDB failures and mid-transaction aborts **propagate** as exceptions (not mislabeled `rejected`). Post-commit readback failure returns `committed-unverified`.
+
+IndexedDB is opened through `openInterviewFacilitatorIndexedDb()` in `storage.ts` (single upgrade path; no duplicated opener in E1).
+
 ## Related modules
 
 - `src/portable-revision-archive.ts` — archive envelope (#123)

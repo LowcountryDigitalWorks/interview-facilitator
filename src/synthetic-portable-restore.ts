@@ -8,15 +8,14 @@ import {
   planFreshOriginPortableRestoreDryRun,
   type PortableRestorePreflightScope,
 } from './portable-restore-plan';
-import { INDEXED_DB_LAYOUT_VERSION } from './session-migration';
 import {
   validateSemanticSessionRecord,
   type SemanticInterviewSession,
 } from './semantic-session';
 import {
-  LEGACY_ARCHIVE_STORE,
   REVISION_HISTORY_STORE,
   SESSIONS_STORE,
+  openInterviewFacilitatorIndexedDb,
   revisionHistoryKey,
 } from './storage';
 
@@ -27,8 +26,6 @@ import {
  */
 export const SYNTHETIC_PORTABLE_RESTORE_TEST_CAPABILITY =
   'ldw.synthetic-portable-restore-test-only.v1' as const;
-
-const DB_NAME = 'ldw-interview-facilitator';
 
 export type SyntheticPortableRestoreRequest = {
   testOnlyCapability: typeof SYNTHETIC_PORTABLE_RESTORE_TEST_CAPABILITY;
@@ -50,13 +47,17 @@ export type SyntheticPortableRestoreCommittedUnverified = {
   reason: string;
 };
 
+export type SyntheticPortableRestoreRejectedCode =
+  | 'invalid-request'
+  | 'preflight-reject'
+  | 'synthetic-guard'
+  | 'durability-unavailable'
+  | 'session-exists'
+  | 'orphan-history';
+
 export type SyntheticPortableRestoreRejected = {
   kind: 'rejected';
-  code:
-    | 'invalid-request'
-    | 'preflight-reject'
-    | 'synthetic-guard'
-    | 'durability-unavailable';
+  code: SyntheticPortableRestoreRejectedCode;
   reason: string;
 };
 
@@ -65,21 +66,22 @@ export type SyntheticPortableRestoreOutcome =
   | SyntheticPortableRestoreCommittedUnverified
   | SyntheticPortableRestoreRejected;
 
-export class SyntheticPortableRestoreCollisionError extends Error {
-  readonly name = 'SyntheticPortableRestoreCollisionError';
-  constructor(
-    readonly code: 'session-exists' | 'orphan-history',
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
 export class SyntheticPortableRestoreTransactionError extends Error {
   readonly name = 'SyntheticPortableRestoreTransactionError';
   constructor(message: string) {
     super(message);
   }
+}
+
+/** One-shot test harness hook: forces the next post-commit readback to fail after a successful commit. */
+let testOnlyPostCommitReadbackFailure: string | null = null;
+
+export function armSyntheticPortableRestorePostCommitReadbackFailureForTests(reason: string): void {
+  testOnlyPostCommitReadbackFailure = reason;
+}
+
+export function clearSyntheticPortableRestoreTestArmsForTests(): void {
+  testOnlyPostCommitReadbackFailure = null;
 }
 
 function revisionHistorySessionPrefix(sessionId: string): string {
@@ -93,48 +95,15 @@ function assertSyntheticClientLabel(session: SemanticInterviewSession): void {
   }
 }
 
-function openDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, INDEXED_DB_LAYOUT_VERSION);
-    request.onupgradeneeded = (event) => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(SESSIONS_STORE)) {
-        db.createObjectStore(SESSIONS_STORE, { keyPath: 'sessionId' });
-      }
-      if (!db.objectStoreNames.contains(LEGACY_ARCHIVE_STORE)) {
-        db.createObjectStore(LEGACY_ARCHIVE_STORE);
-      }
-      if (!db.objectStoreNames.contains(REVISION_HISTORY_STORE)) {
-        db.createObjectStore(REVISION_HISTORY_STORE);
-      }
-      if (((event as IDBVersionChangeEvent | undefined)?.oldVersion ?? 0) < 3
-        && db.objectStoreNames.contains(SESSIONS_STORE)) {
-        const cursorRequest = request.transaction?.objectStore(SESSIONS_STORE).openCursor();
-        if (cursorRequest) {
-          cursorRequest.onsuccess = () => {
-            const cursor = cursorRequest.result;
-            if (!cursor) return;
-            const row = cursor.value as Record<string, unknown>;
-            if (row.sessionSchemaVersion === '1.2.0' && typeof row.sessionId === 'string') {
-              if (typeof row.revisionId !== 'string' || !row.revisionId.trim()) row.revisionId = crypto.randomUUID();
-              if (row.parentRevisionId === undefined) row.parentRevisionId = null;
-              cursor.update(row);
-            }
-            cursor.continue();
-          };
-        }
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error('Unable to open local storage.'));
-  });
-}
-
 type PreparedImport = {
   archive: PortableRevisionArchive;
   head: SemanticInterviewSession;
   historyRows: ReadonlyArray<{ key: string; record: SemanticInterviewSession }>;
 };
+
+type CommitPreparedImportResult =
+  | { status: 'committed' }
+  | { status: 'collision'; code: 'session-exists' | 'orphan-history'; reason: string };
 
 async function prepareSyntheticImport(
   untrustedArchiveJson: string,
@@ -177,6 +146,11 @@ async function verifyPostCommit(
   db: IDBDatabase,
   prepared: PreparedImport,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (testOnlyPostCommitReadbackFailure !== null) {
+    const reason = testOnlyPostCommitReadbackFailure;
+    testOnlyPostCommitReadbackFailure = null;
+    return { ok: false, reason };
+  }
   return new Promise((resolve) => {
     const tx = db.transaction([SESSIONS_STORE, REVISION_HISTORY_STORE], 'readonly');
     let failure: string | null = null;
@@ -225,7 +199,7 @@ async function verifyPostCommit(
 function commitPreparedImport(
   db: IDBDatabase,
   prepared: PreparedImport,
-): Promise<void> {
+): Promise<CommitPreparedImportResult> {
   return new Promise((resolve, reject) => {
     let tx: IDBTransaction;
     try {
@@ -241,45 +215,69 @@ function commitPreparedImport(
     }
 
     let failure: unknown = null;
-    const abort = (error: unknown): void => {
-      if (failure !== null) return;
+    let collision: { code: 'session-exists' | 'orphan-history'; reason: string } | null = null;
+
+    const abortFailure = (error: unknown): void => {
+      if (failure !== null || collision !== null) return;
       failure = error;
       try { tx.abort(); } catch { /* already finished */ }
     };
 
-    tx.oncomplete = () => (failure === null ? resolve() : reject(failure));
+    const abortCollision = (code: 'session-exists' | 'orphan-history', reason: string): void => {
+      if (failure !== null || collision !== null) return;
+      collision = { code, reason };
+      try { tx.abort(); } catch { /* already finished */ }
+    };
+
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      if (collision !== null) {
+        resolve({ status: 'collision', code: collision.code, reason: collision.reason });
+        return;
+      }
+      if (failure !== null) reject(failure);
+      else resolve({ status: 'committed' });
+    };
+
+    tx.oncomplete = finish;
     tx.onerror = () => {
+      if (collision !== null) return;
       if (failure === null) failure = tx.error ?? new SyntheticPortableRestoreTransactionError('Import transaction failed.');
     };
-    tx.onabort = () => reject(failure ?? tx.error ?? new SyntheticPortableRestoreTransactionError('Import transaction aborted.'));
+    tx.onabort = () => {
+      if (collision !== null) finish();
+      else reject(failure ?? tx.error ?? new SyntheticPortableRestoreTransactionError('Import transaction aborted.'));
+    };
 
     const sessions = tx.objectStore(SESSIONS_STORE);
     const history = tx.objectStore(REVISION_HISTORY_STORE);
     const sessionId = prepared.archive.sessionId;
     const queueWrites = (): void => {
       const headPut = sessions.put(structuredClone(prepared.head));
-      headPut.onerror = () => abort(headPut.error ?? new SyntheticPortableRestoreTransactionError('Unable to write imported head.'));
+      headPut.onerror = () => abortFailure(headPut.error ?? new SyntheticPortableRestoreTransactionError('Unable to write imported head.'));
       for (const row of prepared.historyRows) {
         const put = history.put(structuredClone(row.record), row.key);
-        put.onerror = () => abort(put.error ?? new SyntheticPortableRestoreTransactionError('Unable to write imported history row.'));
+        put.onerror = () => abortFailure(put.error ?? new SyntheticPortableRestoreTransactionError('Unable to write imported history row.'));
       }
     };
 
     const current = sessions.get(sessionId);
-    current.onerror = () => abort(current.error ?? new SyntheticPortableRestoreTransactionError('Could not inspect destination session row.'));
+    current.onerror = () => abortFailure(current.error ?? new SyntheticPortableRestoreTransactionError('Could not inspect destination session row.'));
     current.onsuccess = () => {
       if (current.result !== undefined) {
-        abort(new SyntheticPortableRestoreCollisionError('session-exists', 'Destination session already exists; import aborted.'));
+        abortCollision('session-exists', 'Destination session already exists; import aborted.');
         return;
       }
       const prefix = revisionHistorySessionPrefix(sessionId);
       const range = IDBKeyRange.bound(prefix, `${prefix}\uffff`);
       const cursor = history.openCursor(range);
-      cursor.onerror = () => abort(cursor.error ?? new SyntheticPortableRestoreTransactionError('Could not inspect revision history.'));
+      cursor.onerror = () => abortFailure(cursor.error ?? new SyntheticPortableRestoreTransactionError('Could not inspect revision history.'));
       cursor.onsuccess = () => {
         const row = cursor.result;
         if (row) {
-          abort(new SyntheticPortableRestoreCollisionError('orphan-history', 'Destination has orphan revision history; import aborted.'));
+          abortCollision('orphan-history', 'Destination has orphan revision history; import aborted.');
           return;
         }
         queueWrites();
@@ -322,18 +320,26 @@ export async function importSyntheticPortableArchiveFreshOrigin(
     return { kind: 'rejected', code: 'preflight-reject', reason: message };
   }
 
-  const db = await openDb();
+  const db = await openInterviewFacilitatorIndexedDb();
   try {
+    let commit: CommitPreparedImportResult;
     try {
-      await commitPreparedImport(db, prepared);
+      commit = await commitPreparedImport(db, prepared);
     } catch (error) {
-      if (error instanceof SyntheticPortableRestoreCollisionError) throw error;
       if (error instanceof SyntheticPortableRestoreTransactionError) {
         if (error.message.includes('durability')) {
           return { kind: 'rejected', code: 'durability-unavailable', reason: error.message };
         }
       }
       throw error;
+    }
+
+    if (commit.status === 'collision') {
+      return {
+        kind: 'rejected',
+        code: commit.code,
+        reason: commit.reason,
+      };
     }
 
     const verified = await verifyPostCommit(db, prepared);

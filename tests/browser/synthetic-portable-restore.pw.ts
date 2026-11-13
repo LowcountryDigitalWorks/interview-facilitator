@@ -118,19 +118,35 @@ test.describe('synthetic portable restore', () => {
             record: structuredClone(saved),
           }],
         });
-        let threw = '';
-        try {
-          await restore.importSyntheticPortableArchiveFreshOrigin({
-            testOnlyCapability: capability,
-            untrustedArchiveJson: portable.serializePortableRevisionArchive(archive),
-          });
-        } catch (error) {
-          threw = (error as Error).name;
-        }
-        return { threw, rowCount: (await storage.listSessions()).sessions.length };
+        const outcome = await restore.importSyntheticPortableArchiveFreshOrigin({
+          testOnlyCapability: capability,
+          untrustedArchiveJson: portable.serializePortableRevisionArchive(archive),
+        });
+        const db = await new Promise<IDBDatabase>((resolve, reject) => {
+          const request = indexedDB.open('ldw-interview-facilitator', 4);
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        const historyCount = await new Promise<number>((resolve, reject) => {
+          const tx = db.transaction('revision-history', 'readonly');
+          const request = tx.objectStore('revision-history').count();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        db.close();
+        return {
+          outcome,
+          rowCount: (await storage.listSessions()).sessions.length,
+          historyCount,
+        };
       }, { capability: CAP, createdAt: CREATED_AT });
-      expect(result.threw).toBe('SyntheticPortableRestoreCollisionError');
+      expect(result.outcome).toEqual({
+        kind: 'rejected',
+        code: 'session-exists',
+        reason: 'Destination session already exists; import aborted.',
+      });
       expect(result.rowCount).toBe(1);
+      expect(result.historyCount).toBe(0);
     });
 
     test('rejects orphan revision history prefix', async ({ page }) => {
@@ -168,18 +184,31 @@ test.describe('synthetic portable restore', () => {
           tx.onerror = () => reject(tx.error);
         });
         db.close();
-        try {
-          await restore.importSyntheticPortableArchiveFreshOrigin({
-            testOnlyCapability: capability,
-            untrustedArchiveJson: portable.serializePortableRevisionArchive(archive),
-          });
-          return '';
-        } catch (error) {
-          return (error as Error).name;
-        }
+        const outcome = await restore.importSyntheticPortableArchiveFreshOrigin({
+          testOnlyCapability: capability,
+          untrustedArchiveJson: portable.serializePortableRevisionArchive(archive),
+        });
+        const verifyDb = await new Promise<IDBDatabase>((resolve, reject) => {
+          const request = indexedDB.open('ldw-interview-facilitator', 4);
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        const sessionsCount = await new Promise<number>((resolve, reject) => {
+          const tx = verifyDb.transaction('sessions', 'readonly');
+          const request = tx.objectStore('sessions').count();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        verifyDb.close();
+        return { outcome, sessionsCount };
       }, { capability: CAP, createdAt: CREATED_AT });
 
-      expect(seed).toBe('SyntheticPortableRestoreCollisionError');
+      expect(seed.outcome).toEqual({
+        kind: 'rejected',
+        code: 'orphan-history',
+        reason: 'Destination has orphan revision history; import aborted.',
+      });
+      expect(seed.sessionsCount).toBe(0);
     });
 
     test('fresh browser profile round-trip lists imported synthetic head', async ({ browser }) => {
@@ -303,6 +332,154 @@ test.describe('synthetic portable restore', () => {
       }, { capability: CAP, createdAt: CREATED_AT });
       expect(faulted.threw.length).toBeGreaterThan(0);
       expect(faulted.counts).toEqual({ sessions: 0, history: 0 });
+    });
+
+    test('rejects strict durability unavailability without mutating stores', async ({ page }) => {
+      const outcome = await page.evaluate(async ({ capability, createdAt }) => {
+        const load = (path: string) => import(/* @vite-ignore */ path);
+        const [pack, semantic, portable, restore, storage] = await Promise.all([
+          '/src/pack.ts', '/src/semantic-session.ts', '/src/portable-revision-archive.ts',
+          '/src/synthetic-portable-restore.ts', '/src/storage.ts',
+        ].map(load));
+        const root = await semantic.createSemanticSession(pack.generalDiscoveryPack, {
+          clientLabel: 'SYNTHETIC STRICT DURABILITY GUARD',
+        }, new Date('2026-11-13T17:30:00.000Z'));
+        const archive = await portable.createPortableRevisionArchive({
+          sessionId: root.sessionId,
+          headRevisionId: root.revisionId,
+          createdAt,
+          revisions: [{
+            revisionId: root.revisionId,
+            parentRevisionId: root.parentRevisionId,
+            updatedAt: root.updatedAt,
+            record: structuredClone(root),
+          }],
+        });
+        const original = IDBDatabase.prototype.transaction;
+        IDBDatabase.prototype.transaction = function (
+          this: IDBDatabase,
+          storeNames: string | string[],
+          mode: IDBTransactionMode,
+          options?: IDBTransactionOptions,
+        ) {
+          if (mode === 'readwrite' && options?.durability === 'strict') {
+            throw new DOMException('Strict durability unsupported in harness fault.', 'NotSupportedError');
+          }
+          return original.call(this, storeNames, mode, options);
+        };
+        let result: { kind: string; code?: string } = { kind: 'none' };
+        try {
+          result = await restore.importSyntheticPortableArchiveFreshOrigin({
+            testOnlyCapability: capability,
+            untrustedArchiveJson: portable.serializePortableRevisionArchive(archive),
+          });
+        } finally {
+          IDBDatabase.prototype.transaction = original;
+        }
+        return {
+          outcome: result,
+          sessionCount: (await storage.listSessions()).sessions.length,
+        };
+      }, { capability: CAP, createdAt: CREATED_AT });
+      expect(outcome.outcome).toEqual({
+        kind: 'rejected',
+        code: 'durability-unavailable',
+        reason: 'Strict local transaction durability unavailable.',
+      });
+      expect(outcome.sessionCount).toBe(0);
+    });
+
+    test('returns committed-unverified when post-commit readback is armed to fail', async ({ page }) => {
+      const result = await page.evaluate(async ({ capability, createdAt }) => {
+        const load = (path: string) => import(/* @vite-ignore */ path);
+        const [pack, semantic, portable, restore, storage] = await Promise.all([
+          '/src/pack.ts', '/src/semantic-session.ts', '/src/portable-revision-archive.ts',
+          '/src/synthetic-portable-restore.ts', '/src/storage.ts',
+        ].map(load));
+        const root = await semantic.createSemanticSession(pack.generalDiscoveryPack, {
+          clientLabel: 'SYNTHETIC COMMITTED UNVERIFIED',
+        }, new Date('2026-11-13T17:35:00.000Z'));
+        const archive = await portable.createPortableRevisionArchive({
+          sessionId: root.sessionId,
+          headRevisionId: root.revisionId,
+          createdAt,
+          revisions: [{
+            revisionId: root.revisionId,
+            parentRevisionId: root.parentRevisionId,
+            updatedAt: root.updatedAt,
+            record: structuredClone(root),
+          }],
+        });
+        restore.armSyntheticPortableRestorePostCommitReadbackFailureForTests(
+          'Harness injected post-commit readback failure.',
+        );
+        const outcome = await restore.importSyntheticPortableArchiveFreshOrigin({
+          testOnlyCapability: capability,
+          untrustedArchiveJson: portable.serializePortableRevisionArchive(archive),
+        });
+        const loaded = await storage.loadSession(root.sessionId);
+        restore.clearSyntheticPortableRestoreTestArmsForTests();
+        return { outcome, clientLabel: loaded?.clientLabel ?? null };
+      }, { capability: CAP, createdAt: CREATED_AT });
+      expect(result.outcome).toMatchObject({
+        kind: 'committed-unverified',
+        reason: 'Harness injected post-commit readback failure.',
+      });
+      expect(result.clientLabel).toBe('SYNTHETIC COMMITTED UNVERIFIED');
+    });
+
+    test('parallel imports to different sessions both commit', async ({ page }) => {
+      const summary = await page.evaluate(async ({ capability, createdAt }) => {
+        const load = (path: string) => import(/* @vite-ignore */ path);
+        const [pack, semantic, portable, restore, storage] = await Promise.all([
+          '/src/pack.ts', '/src/semantic-session.ts', '/src/portable-revision-archive.ts',
+          '/src/synthetic-portable-restore.ts', '/src/storage.ts',
+        ].map(load));
+        const build = async (label: string) => {
+          const root = await semantic.createSemanticSession(pack.generalDiscoveryPack, {
+            clientLabel: label,
+          }, new Date('2026-11-13T18:00:00.000Z'));
+          const archive = await portable.createPortableRevisionArchive({
+            sessionId: root.sessionId,
+            headRevisionId: root.revisionId,
+            createdAt,
+            revisions: [{
+              revisionId: root.revisionId,
+              parentRevisionId: root.parentRevisionId,
+              updatedAt: root.updatedAt,
+              record: structuredClone(root),
+            }],
+          });
+          return {
+            json: portable.serializePortableRevisionArchive(archive),
+            sessionId: root.sessionId,
+          };
+        };
+        const [a, b] = await Promise.all([
+          build('SYNTHETIC PARALLEL A'),
+          build('SYNTHETIC PARALLEL B'),
+        ]);
+        const [oa, ob] = await Promise.all([
+          restore.importSyntheticPortableArchiveFreshOrigin({
+            testOnlyCapability: capability,
+            untrustedArchiveJson: a.json,
+          }),
+          restore.importSyntheticPortableArchiveFreshOrigin({
+            testOnlyCapability: capability,
+            untrustedArchiveJson: b.json,
+          }),
+        ]);
+        const listed = await storage.listSessions();
+        return {
+          outcomes: [oa.kind, ob.kind],
+          count: listed.sessions.length,
+          ids: listed.sessions.map((row: { sessionId: string }) => row.sessionId).sort(),
+          expected: [a.sessionId, b.sessionId].sort(),
+        };
+      }, { capability: CAP, createdAt: CREATED_AT });
+      expect(summary.outcomes).toEqual(['imported', 'imported']);
+      expect(summary.count).toBe(2);
+      expect(summary.ids).toEqual(summary.expected);
     });
   });
 });
