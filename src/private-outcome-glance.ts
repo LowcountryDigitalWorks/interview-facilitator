@@ -128,7 +128,19 @@ function shouldTreatAsUnknown(
   return false;
 }
 
-function displayValueFor(state: SemanticAnswerState | undefined, spec: CaptureSpec): string {
+const PENDING_APPLICABILITY_DISPLAY = 'Not established — pending applicability';
+
+function displayValueFor(
+  state: SemanticAnswerState | undefined,
+  spec: CaptureSpec,
+  relevance: Relevance,
+): string {
+  if (relevance === 'pending') {
+    if (state && isMeaningfulCaptureValue(spec, state.value)) {
+      return PENDING_APPLICABILITY_DISPLAY;
+    }
+    return 'Not established';
+  }
   if (!state) return 'Not established';
   if (!isMeaningfulCaptureValue(spec, state.value)) return 'Not established';
   return excerptValue(String(state.value));
@@ -146,7 +158,7 @@ function buildItem(
   return {
     questionId: question.id,
     prompt: question.prompt,
-    displayValue: displayValueFor(state, spec),
+    displayValue: displayValueFor(state, spec, relevance),
     relevance,
     bucket,
     visible: true,
@@ -168,7 +180,11 @@ function sortItems(questions: readonly Question[], items: PrivateOutcomeGlanceIt
 
 function suggestConversationStep(unknowns: PrivateOutcomeGlanceItem[]): string {
   const prompts = unknowns
-    .filter((item) => item.displayValue === 'Not established' || item.needsConfirmation)
+    .filter((item) => (
+      item.displayValue === 'Not established'
+      || item.displayValue === PENDING_APPLICABILITY_DISPLAY
+      || item.needsConfirmation
+    ))
     .slice(0, 3)
     .map((item) => item.prompt);
   if (!prompts.length) {
@@ -179,7 +195,10 @@ function suggestConversationStep(unknowns: PrivateOutcomeGlanceItem[]): string {
 }
 
 function layoutForPack(packId: string): { outcome: readonly string[]; dependencies: readonly string[] } {
-  return LIVE_PINNED_PACK_GLANCE_LAYOUT[packId] ?? { outcome: [], dependencies: [] };
+  if (typeof packId !== 'string' || !Object.hasOwn(LIVE_PINNED_PACK_GLANCE_LAYOUT, packId)) {
+    return { outcome: [], dependencies: [] };
+  }
+  return LIVE_PINNED_PACK_GLANCE_LAYOUT[packId]!;
 }
 
 export function projectPrivateOutcomeGlanceFromSession(

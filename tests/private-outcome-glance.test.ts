@@ -164,6 +164,37 @@ describe('private outcome glance projection', () => {
     expect(glance.unknowns.items.length).toBeGreaterThan(0);
   });
 
+  it('resists inherited object keys on pack layout lookup', async () => {
+    for (const packId of ['__proto__', 'constructor', 'toString', 'arbitrary-unknown-pack'] as const) {
+      const session = await sessionForPack('general-discovery-blank');
+      session.packSnapshot.packId = packId;
+      expect(() => projectPrivateOutcomeGlanceFromSession(session)).not.toThrow();
+      const glance = projectPrivateOutcomeGlanceFromSession(session);
+      expect(glance.outcome.items).toEqual([]);
+      expect(glance.dependencies.items).toEqual([]);
+      expect(glance.packId).toBe(packId);
+      expect(glance.unknowns.items.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('redacts pending applicability display while retaining classification', async () => {
+    let session = await sessionForPack('website-greenfield');
+    session.answers['booking-details'] = {
+      ...blankState(),
+      value: 'Retained draft before parent answered',
+      resolution: 'captured',
+      source: 'client-statement',
+    };
+    const glance = projectPrivateOutcomeGlanceFromSession(session);
+    const booking = glance.unknowns.items.find((item) => item.questionId === 'booking-details');
+    expect(booking?.relevance).toBe('pending');
+    expect(booking?.displayValue).toBe('Not established — pending applicability');
+    expect(booking?.displayValue).not.toContain('Retained draft');
+    expect(booking?.provenanceClassification).toContain('classification');
+    expect(glance.suggestedConversationStep).toContain('revisit');
+    expect(session.answers['booking-details']?.value).toBe('Retained draft before parent answered');
+  });
+
   it('keeps malicious markup as literal text in displayValue', async () => {
     const hostile = '<img src=x onerror=HOSTILE_GLANCE>';
     let session = await sessionForPack('general-discovery-blank');
