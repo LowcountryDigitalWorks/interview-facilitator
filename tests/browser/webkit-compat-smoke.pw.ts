@@ -46,14 +46,31 @@ test('WebKit synthetic: Fieldnotes appearance, keyboard note, and local persiste
   await input.fill(answer);
   await expect(input).toHaveValue(answer);
 
+  // Follow the actual keyboard path; programmatic .focus() alone cannot
+  // establish a usable Tab order or browser-driven scroll into view.
   const privateNote = page.locator('#question-note');
-  await privateNote.focus();
+  await input.focus();
+  await expect(input).toBeFocused();
+  await page.keyboard.press('Tab');
   await expect(privateNote).toBeFocused();
-  // Check the previously corrected sticky dock issue using *real* geometry.
+  // The focused note and sticky dock must both fit within the visual viewport
+  // and the note must not sit behind the dock. A missing dock is a failure.
   await expect.poll(async () => page.evaluate(() => {
     const field = document.querySelector('#question-note')?.getBoundingClientRect();
     const dock = document.querySelector('.action-dock')?.getBoundingClientRect();
-    return Boolean(field && (!dock || field.bottom <= dock.top + 2));
+    if (!field || !dock) return false;
+    const width = document.documentElement.clientWidth;
+    const height = document.documentElement.clientHeight;
+    const tolerance = 2;
+    return field.left >= -tolerance
+      && field.right <= width + tolerance
+      && field.top >= -tolerance
+      && field.bottom <= height + tolerance
+      && dock.left >= -tolerance
+      && dock.right <= width + tolerance
+      && dock.top >= -tolerance
+      && dock.bottom <= height + tolerance
+      && field.bottom <= dock.top + tolerance;
   })).toBe(true);
 
   // A visible "Saved" label alone is not an autosave-idle proof: read the
