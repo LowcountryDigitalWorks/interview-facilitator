@@ -55,7 +55,9 @@ test('WebKit synthetic: Fieldnotes appearance, keyboard note, and local persiste
   await expect(privateNote).toBeFocused();
   // The focused note and sticky dock must both fit within the visual viewport
   // and the note must not sit behind the dock. A missing dock is a failure.
-  await expect.poll(async () => page.evaluate(() => {
+  let lastKeyboardGeometry: unknown;
+  try {
+    await expect.poll(async () => page.evaluate(() => {
     const field = document.querySelector('#question-note')?.getBoundingClientRect();
     const dock = document.querySelector('.action-dock')?.getBoundingClientRect();
     const width = document.documentElement.clientWidth;
@@ -75,11 +77,18 @@ test('WebKit synthetic: Fieldnotes appearance, keyboard note, and local persiste
         dock: dock && [dock.left, dock.top, dock.right, dock.bottom].map(Math.round),
       },
     };
-  })).toMatchObject({
-    fieldWithinViewport: true,
-    dockWithinViewport: true,
-    noOverlap: true,
-  });
+    }).then((measurement) => {
+      lastKeyboardGeometry = measurement;
+      return measurement;
+    })).toMatchObject({
+      fieldWithinViewport: true,
+      dockWithinViewport: true,
+      noOverlap: true,
+    });
+  } catch (error) {
+    console.error('WebKit keyboard focus viewport geometry: ' + JSON.stringify(lastKeyboardGeometry));
+    throw error;
+  }
 
   // A visible "Saved" label alone is not an autosave-idle proof: read the
   // actual existing IndexedDB session row and require the captured value.
