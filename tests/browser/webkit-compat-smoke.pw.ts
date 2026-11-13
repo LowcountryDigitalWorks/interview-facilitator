@@ -58,20 +58,28 @@ test('WebKit synthetic: Fieldnotes appearance, keyboard note, and local persiste
   await expect.poll(async () => page.evaluate(() => {
     const field = document.querySelector('#question-note')?.getBoundingClientRect();
     const dock = document.querySelector('.action-dock')?.getBoundingClientRect();
-    if (!field || !dock) return false;
     const width = document.documentElement.clientWidth;
     const height = document.documentElement.clientHeight;
     const tolerance = 2;
-    return field.left >= -tolerance
-      && field.right <= width + tolerance
-      && field.top >= -tolerance
-      && field.bottom <= height + tolerance
-      && dock.left >= -tolerance
-      && dock.right <= width + tolerance
-      && dock.top >= -tolerance
-      && dock.bottom <= height + tolerance
-      && field.bottom <= dock.top + tolerance;
-  })).toBe(true);
+    return {
+      fieldWithinViewport: Boolean(field
+        && field.left >= -tolerance && field.right <= width + tolerance
+        && field.top >= -tolerance && field.bottom <= height + tolerance),
+      dockWithinViewport: Boolean(dock
+        && dock.left >= -tolerance && dock.right <= width + tolerance
+        && dock.top >= -tolerance && dock.bottom <= height + tolerance),
+      noOverlap: Boolean(field && dock && field.bottom <= dock.top + tolerance),
+      geometry: {
+        viewport: [width, height],
+        field: field && [field.left, field.top, field.right, field.bottom].map(Math.round),
+        dock: dock && [dock.left, dock.top, dock.right, dock.bottom].map(Math.round),
+      },
+    };
+  })).toMatchObject({
+    fieldWithinViewport: true,
+    dockWithinViewport: true,
+    noOverlap: true,
+  });
 
   // A visible "Saved" label alone is not an autosave-idle proof: read the
   // actual existing IndexedDB session row and require the captured value.
