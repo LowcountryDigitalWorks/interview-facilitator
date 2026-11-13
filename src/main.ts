@@ -1,6 +1,7 @@
 import './styles.css';
 import './focus-mode.css';
 import './evidence-lens.css';
+import './private-outcome-glance.css';
 import type { AnswerStatus, Question } from './domain';
 import { DEFAULT_INTERVIEW_PACK_ID, LIVE_INTERVIEW_PACK_OPTIONS, defaultLiveInterviewPack, findLiveInterviewPack } from './interview-packs';
 import { deleteSession, exportRecoveryBackup, listSessions, loadKnownFactSession14ForReview, loadSession, migrateLegacySession, replaceSessionWithHistory, requestPersistentStorage, RevisionConflictError, saveSession } from './storage';
@@ -19,6 +20,7 @@ import { readSessionList } from './session-list';
 import { beginSessionSwitch, importSessionWithCollisionHandling, openStoredSession, SessionSwitchGate, shouldFlushActiveSession, type ImportCollisionChoice, type OpenStoredSessionResult } from './session-durability';
 import { enterPresentation, exitPresentation, isPresentationMode, projectSemanticReadBack, type PresentationMode } from './presentation';
 import { projectPrivateEvidenceLens, renderPrivateEvidenceLensHtml } from './private-evidence-lens';
+import { projectPrivateOutcomeGlanceFromSession, renderPrivateOutcomeGlanceHtml } from './private-outcome-glance';
 import { paintUpdateSlot, startControlledUpdates } from './pwa';
 import { createSemanticSession, validateSemanticSessionRecord, type SemanticAnswerState, type SemanticInterviewSession } from './semantic-session';
 import {
@@ -1140,12 +1142,16 @@ function renderReview(): void {
     (question) => relevance[question.id] !== 'relevant'
       && Boolean(session?.answers[question.id]?.followUp?.action.trim()),
   ).length;
+  const privateOutcomeGlance = presenting
+    ? ''
+    : renderPrivateOutcomeGlanceHtml(projectPrivateOutcomeGlanceFromSession(session));
   app.innerHTML = `
     <header class="app-header"><div><strong>${escapeHtml(session.clientLabel)}</strong><span>${presenting ? 'Presentation read-back' : 'Private review'}</span>${productAttributionMarkup()}</div><div class="header-states">${appearanceControlMarkup()}<span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator>${escapeHtml(saveLabel())}</span>${presenting ? '<button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : '<button class="secondary small" data-action="enter-presentation">Presentation view</button>'}${updateSlotMarkup()}</div><span class="sr-only" role="alert" data-save-alert>${escapeHtml(saveAlertMessage())}</span></header>
     <main id="main" class="review-shell">
       <button class="text-button" data-action="return">← Return to interview</button>
       <p class="eyebrow">Read-back</p><h1 id="review-title" tabindex="-1">Read back what matters before ending the conversation.</h1>
       ${presenting ? '' : `<div class="review-stats"><span>${stats.resolved} current</span><span>${stats.notApplicable} N/A</span><span>${stats.remaining} currently remaining</span><span>${stats.mustConfirm} must confirm</span></div>`}
+      ${privateOutcomeGlance}
       ${sessionPack(session).sections.map((section) => {
         const sectionQuestions = questions.filter((question) => question.sectionId === section.id);
         if (!sectionQuestions.length) return '';

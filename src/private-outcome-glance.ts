@@ -275,3 +275,50 @@ export async function projectPrivateOutcomeGlance(
   const session = await validateSemanticSessionRecord(raw);
   return projectPrivateOutcomeGlanceFromSession(session);
 }
+
+function escapeGlanceHtml(value: string): string {
+  return value.replace(/[&<>'"]/g, (char) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
+  })[char] ?? char);
+}
+
+function renderGlanceItems(items: readonly PrivateOutcomeGlanceItem[]): string {
+  const visible = items.filter((item) => item.visible);
+  if (!visible.length) {
+    return '<p class="private-outcome-glance-empty">None flagged in this glance.</p>';
+  }
+  return `<ul class="private-outcome-glance-list">${visible.map((item) => {
+    const provenance = item.provenanceClassification
+      ? `<small class="private-outcome-glance-provenance">${escapeGlanceHtml(item.provenanceClassification)}</small>`
+      : '';
+    return `<li><strong class="private-outcome-glance-prompt">${escapeGlanceHtml(item.prompt)}</strong>`
+      + `<span class="private-outcome-glance-value">${escapeGlanceHtml(item.displayValue)}</span>${provenance}</li>`;
+  }).join('')}</ul>`;
+}
+
+/** PRIVATE Review markup only; never interpolate into Presentation or export surfaces. */
+export function renderPrivateOutcomeGlanceHtml(
+  projection: PrivateOutcomeGlanceProjection,
+): string {
+  return `<details class="private-outcome-glance review-section" data-private-outcome-glance>`
+    + `<summary>Interview outcome — private glance</summary>`
+    + `<p class="private-outcome-glance-notice">${escapeGlanceHtml(projection.notice)}</p>`
+    + `<div class="private-outcome-glance-columns">`
+    + `<section class="private-outcome-glance-panel" aria-labelledby="private-glance-outcome">`
+    + `<h3 id="private-glance-outcome">Known outcome / captured priorities</h3>`
+    + `${renderGlanceItems(projection.outcome.items)}`
+    + `</section>`
+    + `<section class="private-outcome-glance-panel" aria-labelledby="private-glance-dependencies">`
+    + `<h3 id="private-glance-dependencies">Dependencies</h3>`
+    + `${renderGlanceItems(projection.dependencies.items)}`
+    + `</section>`
+    + `<section class="private-outcome-glance-panel" aria-labelledby="private-glance-unknowns">`
+    + `<h3 id="private-glance-unknowns">Not established / needs confirmation</h3>`
+    + `${renderGlanceItems(projection.unknowns.items)}`
+    + `</section>`
+    + `<section class="private-outcome-glance-panel" aria-labelledby="private-glance-follow-up">`
+    + `<h3 id="private-glance-follow-up">Suggested conversation follow-up</h3>`
+    + `<p class="private-outcome-glance-follow-up">${escapeGlanceHtml(projection.suggestedConversationStep)}</p>`
+    + `</section>`
+    + `</div></details>`;
+}
