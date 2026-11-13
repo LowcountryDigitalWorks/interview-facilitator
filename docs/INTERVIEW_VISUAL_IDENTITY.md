@@ -1,6 +1,6 @@
-# Interview Visual Identity — Iris / Ember · Clarity Glass
+# Interview Visual Identity — Fieldnotes · Ember / Glacier
 
-Product-specific **proposed** theme for Interview Facilitator (not corporate LDW brand). Supersedes the historical light-only Tidal draft in PR #124 for **new** implementation; #124 remains untouched reference only.
+Product-specific **proposed** theme for Interview Facilitator (not corporate LDW brand, **not** G.A.S. spectral-lilac). Distinct from website Tidal and from G.A.S. midnight/lilac. Historical light-only Tidal draft PR #124 remains superseded reference only (untouched).
 
 ## Principles
 
@@ -14,13 +14,13 @@ Product-specific **proposed** theme for Interview Facilitator (not corporate LDW
 
 | Role | Dark | Light |
 |------|------|-------|
-| Canvas | `#11121D` | `#F6F4FB` |
-| Panel | `#1D2030` | `#FFFFFF` |
-| Elevated | `#29293B` | `#FFFFFF` |
-| Text | `#F5F1FB` | `#282438` |
-| Muted | `#B9BDD1` | `#56546A` |
-| Accent (iris) | `#B8A0FF` | `#60439C` |
-| Ember / attention | `#F7BE97` | `#9A4D18` |
+| Canvas | `#111820` | `#F8F5F0` |
+| Panel | `#1E2730` | `#FFFFFF` |
+| Elevated | `#2B3741` | `#FFFFFF` |
+| Text | `#F3F6F6` | `#27313B` |
+| Muted | `#BBC7CE` | `#5D6570` |
+| Primary (ember / copper) | `#F4C27C` on `#111820` | `#914B20` on `#FFFFFF` |
+| Secondary glacier / coral | `#8CBDF5` · `#FF9C85` | `#275C86` |
 
 Implementation uses CSS custom properties on `html[data-appearance]` in `src/styles.css`. PWA `theme-color` and `color-scheme` update with the toggle.
 

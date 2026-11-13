@@ -42,7 +42,7 @@ test('clean install defaults to dark regardless of stored preference absence', a
   const scheme = await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme);
   expect(scheme).toBe('dark');
   const bodyBg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
-  expect(bodyBg).toMatch(/rgb\(17,\s*18,\s*29\)|#11121d/i);
+  expect(bodyBg).toMatch(/rgb\(17,\s*24,\s*32\)|#111820/i);
 });
 
 test('light toggle persists for next visit', async ({ page }) => {

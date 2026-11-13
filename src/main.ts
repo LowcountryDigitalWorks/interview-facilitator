@@ -97,8 +97,8 @@ type AppearanceMode = 'dark' | 'light';
 let appearanceMode: AppearanceMode = 'dark';
 
 const APPEARANCE_THEME_COLORS: Record<AppearanceMode, string> = {
-  dark: '#11121D',
-  light: '#60439C',
+  dark: '#111820',
+  light: '#914B20',
 };
 
 function readAppearancePreference(): AppearanceMode | null {
