@@ -9,6 +9,7 @@ Main CI exercises Chromium and the dormant recovery contracts. It does **not** e
 ## Test scope (synthetic only)
 
 - **390 × 820:** Home defaults dark; appearance toggle to light, creation of a fictional interview, preservation of answer text and its actual persisted IndexedDB value. Starting at the answer control, a real `Tab` must focus the private question note. The focused note and sticky action dock must remain within the viewport with no overlap; then reload must preserve local answer and visual preference.
+- **320 × 720:** Independent fictional dark-mode compact-screen session. Real forward `Tab` from answer to private note, backward `Shift+Tab` to answer, and forward `Tab` again must preserve focus order; note and sticky dock must fit the viewport, avoid overlap, and avoid horizontal page overflow. This is minimum-supported-width browser-engine QA, not a physical iPhone/iPad assertion.
 - **1440 × 900:** Navigate a fictional interview to Review; PRIVATE outcome glance is **absent** from Presentation DOM, present/collapsible in Private Review, and absent again on returning to Presentation.
 
 The runner uses an isolated Vite local preview and bundled Playwright WebKit on an Ubuntu-hosted GitHub Actions runner, with service workers blocked to avoid conflating PWA shell state with core application behavior. No hosted URL, backend, account, analytics, storage connector, real client details, PHI or CUI.
@@ -19,10 +20,10 @@ The existing default Chromium test suite and dormant 1.4/E1 read-back runner are
 
 | A green run supports | It does **not** support |
 | --- | --- |
-| These two synthetic tests passed under the Linux Playwright WebKit engine | Physical iPhone/iPad Safari, Home Screen PWA storage lifetime, iCloud/download behavior or VoiceOver |
+| The three synthetic tests passed under the Linux Playwright WebKit engine | Physical iPhone/iPad Safari, Home Screen PWA storage lifetime, iCloud/download behavior or VoiceOver |
 | Local IndexedDB could persist this sample answer across a reload | Complete backup, no eviction, cross-device portability or real-session retention |
 | Current specific private glance DOM exclusion worked | Full client-facing confidentiality, consent/compliance, hostile-file restore or security certification |
-| The 390px answer-to-private-note Tab path works and both focused note and sticky dock fit the viewport without overlap | Exhaustive keyboard navigation, visual keyboard accessibility, VoiceOver, or focus behavior on actual Apple devices |
+| The 390px and 320px answer-to-private-note Tab paths work with viewport-safe note/dock geometry; the 320px case also checks reverse Tab and horizontal overflow | Exhaustive keyboard navigation, visual keyboard accessibility, VoiceOver, or focus behavior on actual Apple devices |
 
 **Review L1 follow-up and source correction:** A 390px WebKit keyboard-Tab test initially exposed a real upper-viewport focus clip: the question note was at `top = -14px` while the dock remained visible at `top = 746px` ([red diagnostic run](https://github.com/LowcountryDigitalWorks/interview-facilitator/actions/runs/43522981581)). The bounded `src/main.ts` focus helper now checks upper, horizontal, lower-viewport, and sticky-dock clipping on focus and once on the next animation frame, then scrolls the active connected note to center if needed. The regression continues to require actual `Tab` navigation and both rectangles within the 390px viewport. A green synthetic result does not certify every keyboard sequence or viewport, physical Safari, VoiceOver, or an installed PWA.
 
