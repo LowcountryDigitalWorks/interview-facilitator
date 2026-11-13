@@ -98,6 +98,55 @@ test('WebKit synthetic: Fieldnotes appearance, keyboard note, and local persiste
   await expect.poll(async () => hasSyntheticPersistedAnswer(page, label, answer)).toBe(true);
 });
 
+test('WebKit synthetic: compact 320px dark mode supports forward and reverse keyboard navigation', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto('/');
+  await expect(page.locator('html')).toHaveAttribute('data-appearance', 'dark');
+
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill('Synthetic Compact Keyboard');
+  await page.getByRole('button', { name: 'Start interview' }).click();
+
+  const answer = page.locator('#answer');
+  const note = page.locator('#question-note');
+  await answer.fill('Fictional small-screen interview answer');
+  await answer.focus();
+  await expect(answer).toBeFocused();
+
+  await page.keyboard.press('Tab');
+  await expect(note).toBeFocused();
+  // Fail if WebKit scrolls the active control above the viewport, behind the
+  // dock, or off the narrow screen. A missing note or dock cannot pass.
+  await expect.poll(async () => page.evaluate(() => {
+    const field = document.querySelector('#question-note')?.getBoundingClientRect();
+    const dock = document.querySelector('.action-dock')?.getBoundingClientRect();
+    const root = document.documentElement;
+    const width = root.clientWidth;
+    const height = root.clientHeight;
+    const tolerance = 2;
+    return {
+      fieldVisible: Boolean(field && field.top >= -tolerance
+        && field.bottom <= height + tolerance
+        && field.left >= -tolerance && field.right <= width + tolerance),
+      dockVisible: Boolean(dock && dock.top >= -tolerance
+        && dock.bottom <= height + tolerance
+        && dock.left >= -tolerance && dock.right <= width + tolerance),
+      notCovered: Boolean(field && dock && field.bottom <= dock.top + tolerance),
+      noHorizontalOverflow: root.scrollWidth <= width + tolerance,
+    };
+  })).toEqual({
+    fieldVisible: true,
+    dockVisible: true,
+    notCovered: true,
+    noHorizontalOverflow: true,
+  });
+
+  await page.keyboard.press('Shift+Tab');
+  await expect(answer).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(note).toBeFocused();
+});
+
 test('WebKit synthetic: private outcome glance absent in Presentation, present in private Review', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/');
