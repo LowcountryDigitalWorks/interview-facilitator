@@ -70,6 +70,7 @@ describe('synthetic S1 metadata-only offline sync planner (never wired to live P
     const base = (await prepareSyntheticRevisionOffer(input)).head;
     const next = (await relatedOffer(input, 'synthetic-remote-01', 'SYNTHETIC REMOTE')).head;
     expect(planSyntheticRevisionReconciliation(base, next, true)).toMatchObject({ kind: 'hold-unsaved-local' });
+    expect(planSyntheticRevisionReconciliation(base, base, true)).toMatchObject({ kind: 'hold-unsaved-local' });
     expect(planSyntheticRevisionReconciliation(base, null, true)).toMatchObject({ kind: 'invalid-or-incompatible' });
   });
 
@@ -81,6 +82,9 @@ describe('synthetic S1 metadata-only offline sync planner (never wired to live P
     expect(result).toMatchObject({ kind: 'preserve-conflict', local: left, remote: right });
     const tampered = { ...left, snapshotDigest: right.snapshotDigest };
     expect(planSyntheticRevisionReconciliation(left, tampered, false).kind).toBe('preserve-conflict');
+    const alteredParent = { ...left, parentRevisionId: 'synthetic-conflicting-parent' };
+    expect(planSyntheticRevisionReconciliation(left, alteredParent, false).kind)
+      .toBe('preserve-conflict');
     expect(planSyntheticRevisionReconciliation(right, left, true).kind).toBe('hold-unsaved-local');
   });
 
@@ -113,11 +117,15 @@ describe('synthetic S1 metadata-only offline sync planner (never wired to live P
       snapshotDigest: offer.head.snapshotDigest,
       committed: true,
     };
-    expect(evaluateSyntheticDurableAck(offer, ack)).toBe('candidate-ack-matched');
+    expect(await evaluateSyntheticDurableAck(offer, ack)).toBe('candidate-ack-matched');
     for (const bad of [
       null, undefined, { ...ack, committed: false }, { ...ack, operationId: '0'.repeat(64) },
       { ...ack, snapshotDigest: '0'.repeat(64) }, { ...ack, extra: true },
       { ...ack, revisionId: 'wrong' }, { ...ack, sessionId: 'different' },
-    ]) expect(evaluateSyntheticDurableAck(offer, bad)).toBe('retain-queued');
+    ]) expect(await evaluateSyntheticDurableAck(offer, bad)).toBe('retain-queued');
+    const forgedOffer = { ...offer, operationId: 'a'.repeat(64) };
+    expect(await evaluateSyntheticDurableAck(forgedOffer, {
+      ...ack, operationId: forgedOffer.operationId,
+    })).toBe('retain-queued');
   });
 });
