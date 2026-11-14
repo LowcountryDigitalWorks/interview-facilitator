@@ -147,6 +147,97 @@ test('WebKit synthetic: compact 320px dark mode supports forward and reverse key
   await expect(note).toBeFocused();
 });
 
+test('WebKit synthetic: manual JSON transfer restores a local interview in a separate browser profile', async ({ page, browser }) => {
+  // Separate Playwright browser contexts have distinct IndexedDB stores. This
+  // exercises the real shipped 1.3 export and import controls, not a secret
+  // test-only restore hook, provider, remote sync, or revision-history archive.
+  await page.setViewportSize({ width: 390, height: 820 });
+  await page.goto('/');
+  const label = 'Synthetic WebKit Manual Transfer';
+  const answer = 'Fictional cross-profile transfer answer.';
+  const privateNote = 'SYNTHETIC PRIVATE NOTE FOR OFFLINE OPERATOR ONLY';
+  await page.getByRole('button', { name: 'New interview' }).click();
+  await page.getByLabel('Project or client label').fill(label);
+  await page.getByRole('button', { name: 'Start interview' }).click();
+  await page.locator('#answer').fill(answer);
+  await page.locator('#question-note').fill(privateNote);
+  await expect.poll(async () => hasSyntheticPersistedAnswer(page, label, answer)).toBe(true);
+
+  let reachedReview = false;
+  for (let step = 0; step < 40; step += 1) {
+    const review = page.getByRole('button', { name: 'Review interview' });
+    if (await review.isVisible()) {
+      await review.click();
+      reachedReview = true;
+      break;
+    }
+    await page.getByRole('button', { name: 'Continue' }).click();
+  }
+  expect(reachedReview).toBe(true);
+  await expect(page.getByRole('button', { name: 'Exit presentation' })).toBeVisible();
+  // The default Presentation intentionally hides private backup/export controls.
+  await expect(page.getByRole('button', { name: 'Export full JSON backup' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Exit presentation' }).click();
+
+  const pendingDownload = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export full JSON backup' }).click();
+  const download = await pendingDownload;
+  expect(download.suggestedFilename()).toBe('interview.json');
+  expect(await download.failure()).toBeNull();
+  const downloadedPath = await download.path();
+  if (!downloadedPath) throw new Error('WebKit synthetic manual export did not produce a file.');
+  const stream = await download.createReadStream();
+  if (!stream) throw new Error('WebKit synthetic export download stream unavailable.');
+  const decoder = new TextDecoder();
+  let exportedText = '';
+  for await (const chunk of stream) exportedText += decoder.decode(chunk as Uint8Array, { stream: true });
+  exportedText += decoder.decode();
+  const exported = JSON.parse(exportedText) as {
+    sessionSchemaVersion: string; clientLabel: string;
+    sessionId: string; answers: Record<string, { value: string | null; note: string }>;
+  };
+  expect(exported.sessionSchemaVersion).toBe('1.3.0');
+  expect(exported.clientLabel).toBe(label);
+  expect(exported.answers['existing-presence']).toMatchObject({ value: answer, note: privateNote });
+
+  const destination = await browser.newContext({ viewport: { width: 390, height: 820 } });
+  try {
+    const restored = await destination.newPage();
+    await restored.goto('/');
+    await expect(restored.getByText('No saved interviews yet.')).toBeVisible();
+    expect(await hasSyntheticPersistedAnswer(restored, label, answer)).toBe(false);
+    // Real hidden file chooser: setInputFiles dispatches a native File change;
+    // the normal application import validator and IndexedDB writer own commit.
+    await restored.locator('#import-file').setInputFiles(downloadedPath);
+    await expect.poll(async () => hasSyntheticPersistedAnswer(restored, label, answer)).toBe(true);
+    await restored.reload();
+    await expect.poll(async () => hasSyntheticPersistedAnswer(restored, label, answer)).toBe(true);
+    const restoredNote = await restored.evaluate(async (sessionId) => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open('ldw-interview-facilitator');
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      try {
+        const record = await new Promise<{ sessionId: string; answers: Record<string, { note: string }> } | undefined>(
+          (resolve, reject) => {
+            const tx = db.transaction('sessions', 'readonly');
+            const request = tx.objectStore('sessions').get(sessionId);
+            request.onsuccess = () => resolve(request.result as { sessionId: string; answers: Record<string, { note: string }> } | undefined);
+            request.onerror = () => reject(request.error);
+          },
+        );
+        return record?.answers['existing-presence']?.note ?? null;
+      } finally {
+        db.close();
+      }
+    }, exported.sessionId);
+    expect(restoredNote).toBe(privateNote);
+  } finally {
+    await destination.close();
+  }
+});
+
 test('WebKit synthetic: private outcome glance absent in Presentation, present in private Review', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto('/');
