@@ -114,9 +114,16 @@ test('Home read-only session JSON check verifies exact saved copy, drift and inv
   source.answers['existing-presence']!.source = 'client-statement';
   const original = JSON.stringify(source);
   const checkFile = async (data: string, name = 'synthetic-session.json'): Promise<void> => {
-    await page.locator('#check-session-file').setInputFiles({
-      name, mimeType: 'application/json', buffer: Buffer.from(data),
-    });
+    await page.evaluate(({ data, name }) => {
+      // The app's real hidden File input receives a native browser File
+      // change without Node Buffer types or a Playwright-only storage hook.
+      const input = document.querySelector<HTMLInputElement>('#check-session-file');
+      if (!input) throw new Error('Read-only file-check input missing.');
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([data], name, { type: 'application/json' }));
+      input.files = transfer.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    }, { data, name });
   };
   const status = page.locator('[data-session-file-check-result]');
   await expect(page.getByRole('button', { name: 'Check session JSON (read-only)' })).toBeEnabled();
