@@ -9,6 +9,7 @@ import { exportCanonicalSessionJsonForReview } from './versioned-session-io';
 import { semanticSessionToMarkdown, serializeSession } from './markdown';
 import { proposeInterviewNextStepsForReview } from './interview-workflow-bridge';
 import { canonicalizeJson } from './pack-identity';
+import { checkLocalSessionJsonForReview } from './local-session-file-check';
 import { buildPrivateInterviewHandoffForReview } from './private-interview-handoff';
 import { compareAndSaveSyntheticConfirmedStatement, inspectSyntheticLocalRevisionContinuity } from './storage';
 import { mountSyntheticConfirmationPanel } from './synthetic-private-confirmation-panel';
@@ -433,8 +434,11 @@ async function renderHome(): Promise<void> {
         <h1>Keep the conversation natural. Keep the coverage visible.</h1>
         <p>Run a guided interview without turning the call into form filling. Sessions save locally and remain usable without a network after the app is cached.</p>
         <div class="known-preview"><strong>Local data stays local to this browser/app context.</strong><p>Installing later or switching browsers may not carry an in-progress interview with you. Use Export backup before changing devices, browsers, or install context.</p></div>
-        <div class="button-row"><button class="primary" data-action="new" ${storageError ? 'disabled aria-describedby="storage-read-error"' : ''}>New interview</button><button class="secondary" data-action="import" ${storageError ? 'disabled aria-describedby="storage-read-error"' : ''}>Import session JSON</button></div>
+        <div class="button-row"><button class="primary" data-action="new" ${storageError ? 'disabled aria-describedby="storage-read-error"' : ''}>New interview</button><button class="secondary" data-action="import" ${storageError ? 'disabled aria-describedby="storage-read-error"' : ''}>Import session JSON</button><button class="secondary" type="button" data-action="check-session-json">Check session JSON (read-only)</button></div>
         <input id="import-file" type="file" accept="application/json,.json" hidden />
+        <input id="check-session-file" type="file" accept="application/json,.json" hidden />
+        <p class="muted">Check a downloaded 1.3 single-session JSON file without importing it. This cannot verify full revision history, confidential backup, or future storage durability.</p>
+        <p data-session-file-check-result role="status" aria-live="polite" aria-atomic="true"></p>
       </section>
       <section class="section-block">
         <div class="section-heading"><div><p class="eyebrow">On this device</p><h2>Recent interviews</h2></div><span>${storageError ? 'Storage unavailable' : `${recent.length + readOnly14.length} local`}</span></div>
@@ -529,6 +533,37 @@ async function renderHome(): Promise<void> {
     app.querySelector('[data-action="new"]')?.addEventListener('click', () => { homeNotice = null; view = 'new'; render(); });
     app.querySelector('[data-action="import"]')?.addEventListener('click', () => (app.querySelector<HTMLInputElement>('#import-file')?.click()));
   }
+
+  // Read-only file preflight deliberately runs even if the local session list
+  // could not be read: such a case is reported as unverified comparison.
+  const fileCheckButton = app.querySelector<HTMLButtonElement>('[data-action="check-session-json"]');
+  const fileCheckInput = app.querySelector<HTMLInputElement>('#check-session-file');
+  const fileCheckResult = app.querySelector<HTMLElement>('[data-session-file-check-result]');
+  let fileCheckBusy = false;
+  fileCheckButton?.addEventListener('click', () => {
+    if (!fileCheckBusy) fileCheckInput?.click();
+  });
+  fileCheckInput?.addEventListener('change', async () => {
+    const file = fileCheckInput.files?.[0];
+    fileCheckInput.value = '';
+    if (!file || !fileCheckResult || fileCheckBusy) return;
+    fileCheckBusy = true;
+    if (fileCheckButton) {
+      fileCheckButton.disabled = true;
+      fileCheckButton.setAttribute('aria-busy', 'true');
+    }
+    fileCheckResult.textContent = 'Checking the selected file locally; no data is being imported.';
+    try {
+      const result = await checkLocalSessionJsonForReview(file, loadSession);
+      if (fileCheckResult.isConnected) fileCheckResult.textContent = result.message;
+    } finally {
+      fileCheckBusy = false;
+      if (fileCheckButton?.isConnected) {
+        fileCheckButton.disabled = false;
+        fileCheckButton.removeAttribute('aria-busy');
+      }
+    }
+  });
 
   app.querySelector<HTMLInputElement>('#import-file')?.addEventListener('change', async (event) => {
     const fileInput = event.currentTarget as HTMLInputElement;
