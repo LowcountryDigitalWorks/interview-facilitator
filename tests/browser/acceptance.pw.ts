@@ -104,6 +104,27 @@ test('Home distinguishes a legitimate empty database and meets the initial axe f
   expect(consequential).toEqual([]);
 });
 
+test('Home makes iPhone Safari-to-Home-Screen transfer an explicit private file workflow', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto('/');
+
+  const notice = page.locator('.hero-card .known-preview');
+  await expect(notice).toContainText('On iPhone, adding this site to your Home Screen does not copy interviews saved in Safari.');
+  await expect(notice).toContainText('In Safari, export a session JSON file; then open the Home Screen app and use Import session JSON.');
+  await expect(notice).toContainText('JSON files are not encrypted and do not contain complete revision history');
+  await expect(notice).toContainText('do not clear the original browser data');
+  await expect(page.getByRole('button', { name: 'New interview' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Import session JSON' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Check session JSON (read-only)' })).toBeEnabled();
+
+  const size = await page.evaluate(() => ({
+    width: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(size.scrollWidth).toBeLessThanOrEqual(size.width + 2);
+  expect((await readStorageSnapshot(page)).rows).toEqual([]);
+});
+
 test('Home read-only session JSON check verifies exact saved copy, drift and invalid files without writing', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 720 });
   await page.goto('/');
