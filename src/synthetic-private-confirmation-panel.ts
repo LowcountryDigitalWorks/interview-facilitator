@@ -61,6 +61,30 @@ export async function mountSyntheticConfirmationPanel(
     choices.appendChild(option);
   }
   choicesLabel.appendChild(choices);
+
+  // Private, read-only evidence context. It is deliberately NOT an input,
+  // selected answer, source authority, or value sent to the save adapter.
+  // Render only as text nodes, never innerHTML, and dispose with the panel.
+  const evidence = node(doc, 'section');
+  evidence.setAttribute('aria-label', 'Unconfirmed research context — private only');
+  evidence.setAttribute('data-private-prep-evidence', '');
+  const refreshEvidence = (): void => {
+    const selected = overlay.candidates.find(candidate => candidate.questionId === choices.value);
+    evidence.replaceChildren();
+    if (!selected) return;
+    const heading = node(doc, 'h4', 'Unconfirmed research — private context only');
+    const proposal = node(doc, 'p', 'Research proposed: ' + selected.proposedValue);
+    const origin = node(doc, 'p',
+      'Claimed source: ' + selected.sourceSystem
+      + '; observed: ' + selected.observedAt
+      + '; confidence: ' + selected.confidence);
+    const caution = node(doc, 'p', selected.conflict
+      ? 'Conflicting research was present. Verify with the client; no source value is accepted.'
+      : 'This source suggestion is not the client statement or accepted evidence.');
+    evidence.replaceChildren(heading, proposal, origin, caution);
+  };
+  refreshEvidence();
+
   const statementLabel = node(doc, 'label', 'What the synthetic client actually confirmed');
   const statement = node(doc, 'textarea');
   statement.rows = 3;
@@ -93,6 +117,7 @@ export async function mountSyntheticConfirmationPanel(
   choices.addEventListener('change', () => {
     statement.value = '';
     acknowledge.checked = false;
+    refreshEvidence();
     status.textContent = 'A separate statement is required for the selected question.';
     update();
   }, { signal: listeners.signal });
@@ -158,7 +183,7 @@ export async function mountSyntheticConfirmationPanel(
     })();
   }, { signal: listeners.signal });
 
-  host.replaceChildren(title, notice, choicesLabel, statementLabel, acknowledgeLabel, submit, status);
+  host.replaceChildren(title, notice, choicesLabel, evidence, statementLabel, acknowledgeLabel, submit, status);
   return {
     dispose() {
       if (!active) return;
