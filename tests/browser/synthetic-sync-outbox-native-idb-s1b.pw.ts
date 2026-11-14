@@ -112,7 +112,8 @@ test('two real Chromium tabs racing on same revision preserve loser and never si
     } finally { db.close(); }
   });
   const write = async (target: typeof page, writer: 'left' | 'right') => target.evaluate(async ({ source, writer }) => {
-    const trial = await import('/src/synthetic-sync-outbox-idb-trial.ts');
+    const load = (path: string) => import(/* @vite-ignore */ path);
+    const trial = await load('/src/synthetic-sync-outbox-idb-trial.ts');
     const update = {
       ...source, revisionId: 'synthetic-' + writer + '-revision',
       parentRevisionId: source.revisionId, runningNotes: 'SYNTHETIC ' + writer.toUpperCase(),
@@ -125,7 +126,8 @@ test('two real Chromium tabs racing on same revision preserve loser and never si
   try {
     const [left, right] = await Promise.all([write(page, 'left'), write(second, 'right')]);
     const state = await page.evaluate(async (sessionId) => {
-      const trial = await import('/src/synthetic-sync-outbox-idb-trial.ts');
+      const load = (path: string) => import(/* @vite-ignore */ path);
+    const trial = await load('/src/synthetic-sync-outbox-idb-trial.ts');
       const db = await trial.openSyntheticOutboxTrialForReview();
       try {
         const snap = await trial.inspectSyntheticOutboxTrial(db, sessionId);
@@ -146,7 +148,8 @@ test('two real Chromium tabs racing on same revision preserve loser and never si
   } finally {
     await second.close();
     await page.evaluate(async () => {
-      const trial = await import('/src/synthetic-sync-outbox-idb-trial.ts');
+      const load = (path: string) => import(/* @vite-ignore */ path);
+    const trial = await load('/src/synthetic-sync-outbox-idb-trial.ts');
       await trial.deleteSyntheticOutboxTrialForReview();
     });
   }
