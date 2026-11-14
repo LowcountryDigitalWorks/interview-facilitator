@@ -14,8 +14,12 @@ async function fixture() {
   return session;
 }
 
-function localFile(text: string, size = new TextEncoder().encode(text).byteLength) {
-  return { size, text: async () => text };
+function localFile(data: string | Uint8Array, claimedSize?: number) {
+  const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+  return {
+    size: claimedSize ?? bytes.byteLength,
+    arrayBuffer: async () => Uint8Array.from(bytes).buffer,
+  };
 }
 
 describe('read-only 1.3 JSON file preflight', () => {
@@ -50,9 +54,9 @@ describe('read-only 1.3 JSON file preflight', () => {
       localFile(JSON.stringify({ ...valid, sessionSchemaVersion: '1.4.0' })),
       localFile(JSON.stringify({ ...valid, unsupportedField: '<script>secret</script>' })),
       localFile(JSON.stringify(valid), SESSION_FILE_CHECK_MAX_BYTES + 1),
-      // File.size is an untrusted hint: also reject oversized decoded contents.
+      // File.size is an untrusted hint: enforce the actual byte length too.
       localFile(' '.repeat(SESSION_FILE_CHECK_MAX_BYTES + 1), 1),
-      { size: Number.NaN, text: async () => JSON.stringify(valid) },
+      localFile(JSON.stringify(valid), Number.NaN),
     ];
     for (const candidate of variants) {
       const check = await checkLocalSessionJsonForReview(candidate, loader);
@@ -60,6 +64,33 @@ describe('read-only 1.3 JSON file preflight', () => {
       expect(check.message).not.toContain('script');
     }
     expect(reads).toBe(0);
+  });
+
+  it('rejects malformed UTF-8 inside otherwise valid session JSON rather than silently replacing it', async () => {
+    const valid = await fixture();
+    const source = JSON.stringify(valid);
+    const needle = 'SYNTHETIC SECRET NEVER DISPLAYED';
+    const parts = source.split(needle);
+    expect(parts).toHaveLength(2);
+    const encoder = new TextEncoder();
+    const malformedBytes = Uint8Array.from([
+      ...encoder.encode(parts[0]!),
+      0xff, // Not valid UTF-8; Blob.text() would substitute U+FFFD.
+      ...encoder.encode(parts[1]!),
+    ]);
+    let reads = 0;
+    const check = await checkLocalSessionJsonForReview(
+      localFile(malformedBytes),
+      async () => { reads++; return valid; },
+    );
+    expect(check.kind).toBe('invalid');
+    expect(check.message).not.toContain(needle);
+    expect(reads).toBe(0);
+    // A naive nonfatal decoder would have transformed this into parseable JSON.
+    const lossy = new TextDecoder('utf-8').decode(malformedBytes);
+    expect(JSON.parse(lossy)).toMatchObject({
+      runningNotes: String.fromCharCode(0xfffd),
+    });
   });
 
   it('distinguishes unreadable local storage from a nonexistent matching session', async () => {
