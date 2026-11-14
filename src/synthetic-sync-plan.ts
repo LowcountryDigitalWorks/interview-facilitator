@@ -115,12 +115,15 @@ export function planSyntheticRevisionReconciliation(
   if (!isHead(rawRemote) || rawRemote.sessionId !== local.sessionId
     || rawRemote.packDigest !== local.packDigest) return { kind: 'invalid-or-incompatible' };
   const remote = { ...rawRemote };
+  // An uncommitted local edit is never SYNCED even if the last persisted
+  // revision exactly matches the remote head.
+  if (hasUnsavedLocalEdits) return { kind: 'hold-unsaved-local', local, remote };
   if (remote.revisionId === local.revisionId) {
     return remote.snapshotDigest === local.snapshotDigest
+      && remote.parentRevisionId === local.parentRevisionId
       ? { kind: 'already-aligned', local }
       : { kind: 'preserve-conflict', local, remote };
   }
-  if (hasUnsavedLocalEdits) return { kind: 'hold-unsaved-local', local, remote };
   if (local.parentRevisionId === remote.revisionId) {
     return { kind: 'offer-local', local };
   }
@@ -137,13 +140,22 @@ export function planSyntheticRevisionReconciliation(
  * into any real SYNCED status. This pure comparison cannot authenticate ACKs.
  * A mismatch or negative ACK retains the outbox item for review/retry.
  */
-export function evaluateSyntheticDurableAck(
+export async function evaluateSyntheticDurableAck(
   offer: SyntheticSyncOffer,
   ack: unknown,
-): 'candidate-ack-matched' | 'retain-queued' {
+): Promise<'candidate-ack-matched' | 'retain-queued'> {
   if (!isHead(offer?.head) || typeof offer.operationId !== 'string'
     || !DIGEST_PATTERN.test(offer.operationId)
     || !ack || typeof ack !== 'object' || Array.isArray(ack)) return 'retain-queued';
+  // Confirm that a well-formed offer ID is *derived from this exact head*;
+  // matching two forged arbitrary IDs is never an acknowledgment candidate.
+  const expectedId = await sha256Hex(canonicalizeJson({
+    protocol: SYNTHETIC_SYNC_PLAN_VERSION,
+    sessionId: offer.head.sessionId,
+    revisionId: offer.head.revisionId,
+    snapshotDigest: offer.head.snapshotDigest,
+  }));
+  if (offer.operationId !== expectedId) return 'retain-queued';
   const record = ack as Record<string, unknown>;
   if (Object.keys(record).length !== 5
     || Object.keys(record).some(key => ![
