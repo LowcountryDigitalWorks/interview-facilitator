@@ -131,7 +131,8 @@ test('two disconnected profiles preserve concurrent interview edits on manual mo
     // Lost reply: no mock ACK delivered, so the accepted desktop revision
     // remains pending until an explicit receipt simulation.
     const pendingWithoutReply = await desktop.evaluate(async sessionId => {
-      const trial = await import(/* @vite-ignore */ '/src/synthetic-sync-outbox-idb-trial.ts');
+      const load = (path: string) => import(/* @vite-ignore */ path);
+      const trial = await load('/src/synthetic-sync-outbox-idb-trial.ts');
       const db = await trial.openSyntheticOutboxTrialForReview();
       try {
         return (await trial.inspectSyntheticOutboxTrial(db, sessionId)).pending.length;
@@ -152,7 +153,8 @@ test('two disconnected profiles preserve concurrent interview edits on manual mo
     });
 
     const receipt = await desktop.evaluate(async offer => {
-      const trial = await import(/* @vite-ignore */ '/src/synthetic-sync-outbox-idb-trial.ts');
+      const load = (path: string) => import(/* @vite-ignore */ path);
+      const trial = await load('/src/synthetic-sync-outbox-idb-trial.ts');
       const db = await trial.openSyntheticOutboxTrialForReview();
       try {
         const ack = {
@@ -195,7 +197,8 @@ test('two disconnected profiles preserve concurrent interview edits on manual mo
     for (const page of [desktop, mobile]) {
       try {
         await page.evaluate(async () => {
-          const trial = await import(/* @vite-ignore */ '/src/synthetic-sync-outbox-idb-trial.ts');
+          const load = (path: string) => import(/* @vite-ignore */ path);
+      const trial = await load('/src/synthetic-sync-outbox-idb-trial.ts');
           await trial.deleteSyntheticOutboxTrialForReview();
         });
       } catch {
