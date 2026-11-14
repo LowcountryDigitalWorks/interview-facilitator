@@ -242,6 +242,32 @@ describe('S2A synthetic-only per-engagement authorization and remote CAS planner
     }
   });
 
+  it('rejects hostile getter properties without executing an accessor or leaking protected heads', async () => {
+    const f = await fixture();
+    let touched = 0;
+    const hostile = { ...f.request };
+    Object.defineProperty(hostile, 'offer', {
+      configurable: true, enumerable: true,
+      get() {
+        touched += 1;
+        throw new Error('SYNTHETIC PRIVATE GETTER MUST NOT RUN');
+      },
+    });
+    expect(await planSyntheticProtectedRelayAppend(hostile, f.grant, f.remote))
+      .toEqual({ kind: 'deny' });
+    const hostileGate = { ...f.grant };
+    Object.defineProperty(hostileGate, 'scope', {
+      configurable: true, enumerable: true,
+      get() {
+        touched += 1;
+        return f.resource;
+      },
+    });
+    expect(await planSyntheticProtectedRelayAppend(f.request, hostileGate, f.remote))
+      .toEqual({ kind: 'deny' });
+    expect(touched).toBe(0);
+  });
+
   it('requires new-session initialization to have no existing remote and no claimed parent', async () => {
     const f = await fixture();
     const next = await child(f.source, 'synthetic-child-revision', 'synthetic child');
