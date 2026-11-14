@@ -1384,17 +1384,27 @@ test('synthetic private selection needs separate human client statement and save
     preparedAt: '2026-11-09T14:30:00.000Z',
     candidates: [{
       candidateId: 'source-01', questionId: 'primary-goal',
-      proposedValue: 'SYNTHETIC SOURCE SUGGESTION NOT THE CLIENT ANSWER',
+      proposedValue: 'SYNTHETIC <img src=x onerror=alert(1)> RESEARCH NOT CLIENT ANSWER',
       sourceSystem: 'manual',
       sourceRecordRef: 'SYNTHETIC-RESEARCH-PRIVATE-REF',
       observedAt: '2026-11-09T14:00:00.000Z',
       confidence: 'unverified',
+    }, {
+      candidateId: 'source-02', questionId: 'must-have',
+      proposedValue: 'SYNTHETIC SECOND UNCONFIRMED SOURCE SUGGESTION',
+      sourceSystem: 'authorized-notes',
+      sourceRecordRef: 'SYNTHETIC-SECOND-PRIVATE-REF',
+      observedAt: '2026-11-09T14:05:00.000Z',
+      confidence: 'source-stated',
     }],
   };
   await setSyntheticPrepInput(page, JSON.stringify(packet));
   const candidate = page.getByRole('region', { name: 'Synthetic preparation candidate review' });
   await expect(candidate).toContainText(packet.candidates[0]!.proposedValue);
-  await candidate.getByRole('radio').check();
+  // A human may select multiple questions, but each still requires a
+  // separately typed statement; the chooser never auto-accepts source text.
+  await candidate.getByRole('radio').nth(0).check();
+  await candidate.getByRole('radio').nth(1).check();
   await candidate.getByRole('checkbox').check();
   await candidate.getByRole('button', { name: /Prepare selected candidate proposal/ }).click();
   const confirmedPanel = page.getByRole('region', { name: 'Synthetic client confirmation trial' });
@@ -1405,6 +1415,22 @@ test('synthetic private selection needs separate human client statement and save
   await expect(evidence).toContainText('Claimed source: manual');
   await expect(evidence).toContainText('confidence: unverified');
   await expect(evidence).toContainText('not the client statement or accepted evidence');
+  // Untrusted source markup is literal text, not executable DOM.
+  await expect(evidence.locator('img')).toHaveCount(0);
+  const pickQuestion = confirmedPanel.getByRole('combobox', { name: 'Question for explicit client confirmation' });
+  const typedStatement = confirmedPanel.getByRole('textbox', { name: 'What the synthetic client actually confirmed' });
+  await typedStatement.fill('SYNTHETIC UNSAVED FIRST QUESTION DRAFT');
+  await confirmedPanel.getByRole('checkbox').check();
+  await pickQuestion.selectOption('must-have');
+  await expect(evidence).toContainText(packet.candidates[1]!.proposedValue);
+  await expect(evidence).toContainText('Claimed source: authorized-notes');
+  await expect(evidence).toContainText('confidence: source-stated');
+  await expect(evidence).not.toContainText(packet.candidates[0]!.proposedValue);
+  await expect(typedStatement).toBeEmpty();
+  await expect(confirmedPanel.getByRole('checkbox')).not.toBeChecked();
+  await pickQuestion.selectOption('primary-goal');
+  await expect(evidence).toContainText(packet.candidates[0]!.proposedValue);
+  await expect(evidence).not.toContainText(packet.candidates[1]!.proposedValue);
   // The source suggestion must remain read-only and NEVER prefill the separate
   // client-statement editor, enter the canonical answer, or become consent.
   await expect(confirmedPanel.getByRole('textbox', { name: 'What the synthetic client actually confirmed' }))
@@ -1432,6 +1458,8 @@ test('synthetic private selection needs separate human client statement and save
   expect(after.sessionId).toBe(savedBefore.sessionId);
   expect(JSON.stringify(after)).not.toContain(packet.candidates[0]!.sourceRecordRef);
   expect(JSON.stringify(after)).not.toContain(packet.candidates[0]!.proposedValue);
+  expect(JSON.stringify(after)).not.toContain(packet.candidates[1]!.proposedValue);
+  expect(JSON.stringify(after)).not.toContain(packet.candidates[1]!.sourceRecordRef);
   expect(after.answers['primary-goal']!.value).not.toEqual(packet.candidates[0]!.proposedValue);
 
   const history = await page.evaluate(async () => {
@@ -1466,6 +1494,7 @@ test('synthetic private selection needs separate human client statement and save
   await expect(page.getByRole('region', { name: 'Local revision continuity result' })).toHaveCount(0);
   await expect(page.locator('#synthetic-prep-file')).toHaveCount(0);
   await expect(page.getByText(packet.candidates[0]!.proposedValue)).toHaveCount(0);
+  await expect(page.getByText(packet.candidates[1]!.proposedValue)).toHaveCount(0);
   await expect(page.getByText(packet.candidates[0]!.sourceRecordRef)).toHaveCount(0);
   await expect(page.getByText('SYNTHETIC CLIENT INDEPENDENTLY CONFIRMED AN EXISTING WEBSITE')).toBeVisible();
 });
