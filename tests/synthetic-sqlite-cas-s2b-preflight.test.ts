@@ -149,14 +149,28 @@ function appendForSqliteTrial(
       return 'deny';
     }
 
-    const receipt = db.prepare(`SELECT revision_id, snapshot_digest FROM durable_receipts_trial
+    const receipt = db.prepare(`SELECT revision_id, snapshot_digest, pack_digest FROM durable_receipts_trial
       WHERE tenant_id=? AND client_id=? AND engagement_id=? AND session_id=? AND operation_id=?`)
       .get(...scopeValues(scope), offer.operationId) as {
-        revision_id: string; snapshot_digest: string;
+        revision_id: string; snapshot_digest: string; pack_digest: string;
       } | undefined;
     if (receipt) {
+      // A metadata-only receipt is not enough: prevent an operation ID being
+      // replayed with forged pack/parent/expected-revision context or with an
+      // orphaned immutable history row. This is TEST-ONLY, not provider auth.
+      const retained = db.prepare(`SELECT parent_revision_id, pack_digest FROM immutable_revisions
+        WHERE tenant_id=? AND client_id=? AND engagement_id=? AND session_id=?
+          AND operation_id=? AND revision_id=?`)
+        .get(...scopeValues(scope), offer.operationId, head.revisionId) as {
+          parent_revision_id: string | null; pack_digest: string;
+        } | undefined;
       const validReplay = receipt.revision_id === head.revisionId
-        && receipt.snapshot_digest === head.snapshotDigest;
+        && receipt.snapshot_digest === head.snapshotDigest
+        && receipt.pack_digest === head.packDigest
+        && retained !== undefined
+        && retained.pack_digest === head.packDigest
+        && retained.parent_revision_id === head.parentRevisionId
+        && retained.parent_revision_id === expectedRevision;
       db.exec('ROLLBACK');
       active = false;
       return validReplay ? 'replayed' : 'deny';
@@ -207,14 +221,14 @@ function appendForSqliteTrial(
       // Actual SQLite NOT NULL violation after earlier writes have occurred;
       // a genuine SQL error must roll back head + immutable history.
       db.prepare(`INSERT INTO durable_receipts_trial
-        (tenant_id,client_id,engagement_id,session_id,operation_id,revision_id,snapshot_digest,committed)
-        VALUES (?,?,?,?,?,?,?,?)`).run(...scopeValues(scope), offer.operationId,
-        null, head.snapshotDigest, 1);
+        (tenant_id,client_id,engagement_id,session_id,operation_id,revision_id,snapshot_digest,pack_digest,committed)
+        VALUES (?,?,?,?,?,?,?,?,?)`).run(...scopeValues(scope), offer.operationId,
+        null, head.snapshotDigest, head.packDigest, 1);
     } else {
       db.prepare(`INSERT INTO durable_receipts_trial
-        (tenant_id,client_id,engagement_id,session_id,operation_id,revision_id,snapshot_digest,committed)
-        VALUES (?,?,?,?,?,?,?,?)`).run(...scopeValues(scope), offer.operationId,
-        head.revisionId, head.snapshotDigest, 1);
+        (tenant_id,client_id,engagement_id,session_id,operation_id,revision_id,snapshot_digest,pack_digest,committed)
+        VALUES (?,?,?,?,?,?,?,?,?)`).run(...scopeValues(scope), offer.operationId,
+        head.revisionId, head.snapshotDigest, head.packDigest, 1);
     }
 
     // Only for a TEST that holds a write lock while another connection tries
@@ -372,6 +386,35 @@ describe('S2B-0 real SQLite / two-handle SYNTHETIC transaction preflight', () =>
       expect(appendForSqliteTrial(env.db, f.scope, actor, recycled, next.head.revisionId)).toBe('conflict');
       expect(current(env.db, f.scope)).toBe(next.head.revisionId);
       expect(count(env.db, 'immutable_revisions', f.scope)).toBe(3);
+    } finally { env.close(env.db); }
+  });
+
+  it('requires receipt replay to match pack, parent, expected revision and retained history', async () => {
+    const f = await sample(), env = createFixtureDatabase(), actor = 'synthetic-operator';
+    try {
+      seedGrant(env.db, f.scope, actor);
+      expect(appendForSqliteTrial(env.db, f.scope, actor, f.base, null)).toBe('committed');
+      const child = await f.makeChild('synthetic-bound-child', 'SYNTHETIC SAFE CONTENT');
+      const expectedParent = f.base.head.revisionId;
+      expect(appendForSqliteTrial(env.db, f.scope, actor, child, expectedParent)).toBe('committed');
+      expect(appendForSqliteTrial(env.db, f.scope, actor, child, expectedParent)).toBe('replayed');
+
+      // The S1 operation fingerprint intentionally does not authenticate pack
+      // or parent metadata. The test server must compare retained exact values.
+      const alteredPack = { ...child, head: { ...child.head, packDigest: '0'.repeat(64) } };
+      expect(appendForSqliteTrial(env.db, f.scope, actor, alteredPack, expectedParent)).toBe('deny');
+      const alteredParent = { ...child, head: { ...child.head, parentRevisionId: null } };
+      expect(appendForSqliteTrial(env.db, f.scope, actor, alteredParent, expectedParent)).toBe('deny');
+      expect(appendForSqliteTrial(env.db, f.scope, actor, child, null)).toBe('deny');
+
+      // Corrupt the fictional test fixture AFTER commit: a receipt without
+      // an immutable matching revision must never be accepted as replay.
+      env.db.prepare(`DELETE FROM immutable_revisions
+        WHERE tenant_id=? AND client_id=? AND engagement_id=? AND session_id=?
+          AND operation_id=?`).run(...scopeValues(f.scope), child.operationId);
+      expect(appendForSqliteTrial(env.db, f.scope, actor, child, expectedParent)).toBe('deny');
+      expect(current(env.db, f.scope)).toBe(child.head.revisionId);
+      expect(count(env.db, 'durable_receipts_trial', f.scope)).toBe(2);
     } finally { env.close(env.db); }
   });
 
