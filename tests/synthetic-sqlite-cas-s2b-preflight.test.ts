@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { DatabaseSync } from 'node:sqlite';
+// @ts-expect-error Browser-only TypeScript config intentionally excludes Node typings.
+import { DatabaseSync as NodeSqliteDatabaseSync } from 'node:sqlite';
+// @ts-expect-error Node 24 builtin in a synthetic test, no Node typings in PWA build.
 import { createHash } from 'node:crypto';
+// @ts-expect-error Node 24 builtin in a synthetic test, no Node typings in PWA build.
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+// @ts-expect-error Node 24 builtin in a synthetic test, no Node typings in PWA build.
 import { tmpdir } from 'node:os';
+// @ts-expect-error Node 24 builtin in a synthetic test, no Node typings in PWA build.
 import { join } from 'node:path';
+// @ts-expect-error Node 24 builtin in a synthetic test, no Node typings in PWA build.
 import { fileURLToPath } from 'node:url';
 import { canonicalizeJson } from '../src/pack-identity';
 import { createSemanticSession } from '../src/semantic-session';
@@ -19,6 +25,16 @@ import {
  * built-in driver. NOT D1, a provider test, authentication or client sync.
  * No runtime imports, external network, customer data or extra dependency.
  */
+type TestSqliteHandle = {
+  close(): void;
+  exec(sql: string): void;
+  prepare(sql: string): {
+    run(...params: (string | number | null)[]): { changes: number };
+    get(...params: (string | number | null)[]): unknown;
+    all(...params: (string | number | null)[]): unknown[];
+  };
+};
+
 const schema = readFileSync(
   fileURLToPath(new URL('./fixtures/synthetic-sqlite-cas-schema-s2b.sql', import.meta.url)),
   'utf8',
@@ -43,7 +59,7 @@ function createFixtureDatabase() {
   const directory = mkdtempSync(join(tmpdir(), 'ldw-if-sqlite-synthetic-'));
   const file = join(directory, 'fictional-only.db');
   const open = () => {
-    const db = new DatabaseSync(file, { timeout: 0 });
+    const db = new NodeSqliteDatabaseSync(file, { timeout: 0 });
     db.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=0;');
     return db;
   };
@@ -51,7 +67,7 @@ function createFixtureDatabase() {
   db.exec(schema);
   return {
     db, open,
-    close: (...handles: DatabaseSync[]) => {
+    close: (...handles: TestSqliteHandle[]) => {
       for (const handle of handles) handle.close();
       rmSync(directory, { recursive: true, force: true });
     },
@@ -59,7 +75,7 @@ function createFixtureDatabase() {
 }
 
 /** A privileged SYNTHETIC fixture mutation, not a customer-grant endpoint. */
-function seedGrant(db: DatabaseSync, scope: Scope, actor: string, active = 1, assigned = 1, canAppend = 1) {
+function seedGrant(db: TestSqliteHandle, scope: Scope, actor: string, active = 1, assigned = 1, canAppend = 1) {
   db.prepare(`
     INSERT INTO grants
       (tenant_id, client_id, engagement_id, session_id, actor_id, active, assigned, append_allowed)
@@ -70,14 +86,14 @@ function seedGrant(db: DatabaseSync, scope: Scope, actor: string, active = 1, as
   `).run(...scopeValues(scope), actor, active, assigned, canAppend);
 }
 
-function count(db: DatabaseSync, table: 'current_heads'|'immutable_revisions'|'durable_receipts_trial', scope: Scope) {
+function count(db: TestSqliteHandle, table: 'current_heads'|'immutable_revisions'|'durable_receipts_trial', scope: Scope) {
   const row = db.prepare(`SELECT count(*) AS n FROM ${table}
     WHERE tenant_id=? AND client_id=? AND engagement_id=? AND session_id=?`)
     .get(...scopeValues(scope)) as { n: number };
   return row.n;
 }
 
-function current(db: DatabaseSync, scope: Scope): string | null {
+function current(db: TestSqliteHandle, scope: Scope): string | null {
   const row = db.prepare(`SELECT revision_id FROM current_heads
     WHERE tenant_id=? AND client_id=? AND engagement_id=? AND session_id=?`)
     .get(...scopeValues(scope)) as { revision_id: string } | undefined;
@@ -90,7 +106,7 @@ function current(db: DatabaseSync, scope: Scope): string | null {
  * string is NOT authenticated; all records are fictional metadata only.
  */
 function appendForSqliteTrial(
-  db: DatabaseSync,
+  db: TestSqliteHandle,
   scope: Scope,
   actor: string,
   offer: SyntheticSyncOffer,
