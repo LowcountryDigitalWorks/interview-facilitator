@@ -11,6 +11,7 @@ Main CI exercises Chromium and the dormant recovery contracts. It does **not** e
 - **390 × 820:** Home defaults dark; appearance toggle to light, creation of a fictional interview, preservation of answer text and its actual persisted IndexedDB value. Starting at the answer control, a real `Tab` must focus the private question note. The focused note and sticky action dock must remain within the viewport with no overlap; then reload must preserve local answer and visual preference.
 - **320 × 720:** Independent fictional dark-mode compact-screen session. Real forward `Tab` from answer to private note, backward `Shift+Tab` to answer, and forward `Tab` again must preserve focus order; note and sticky dock must fit the viewport, avoid overlap, and avoid horizontal page overflow. This is minimum-supported-width browser-engine QA, not a physical iPhone/iPad assertion.
 - **1440 × 900:** Navigate a fictional interview to Review; PRIVATE outcome glance is **absent** from Presentation DOM, present/collapsible in Private Review, and absent again on returning to Presentation.
+- **390 × 820, two isolated WebKit browser profiles:** Through real application controls, export a synthetic 1.3 single-session JSON from Private Review (not Presentation), import the downloaded file into a clean second profile, then reload and independently read the second profile's IndexedDB answer and private question note. Proves bounded manual file transfer only; the export does **not** preserve the full retained revision lineage or provide encryption/authenticated storage.
 
 The runner uses an isolated Vite local preview and bundled Playwright WebKit on an Ubuntu-hosted GitHub Actions runner, with service workers blocked to avoid conflating PWA shell state with core application behavior. No hosted URL, backend, account, analytics, storage connector, real client details, PHI or CUI.
 
@@ -20,8 +21,9 @@ The existing default Chromium test suite and dormant 1.4/E1 read-back runner are
 
 | A green run supports | It does **not** support |
 | --- | --- |
-| The three synthetic tests passed under the Linux Playwright WebKit engine | Physical iPhone/iPad Safari, Home Screen PWA storage lifetime, iCloud/download behavior or VoiceOver |
+| The four synthetic tests passed under the Linux Playwright WebKit engine | Physical iPhone/iPad Safari, Home Screen PWA storage lifetime, iCloud/download behavior or VoiceOver |
 | Local IndexedDB could persist this sample answer across a reload | Complete backup, no eviction, cross-device portability or real-session retention |
+| A local, synthetic **single-session 1.3 JSON** export/import round-trip worked across separate Linux WebKit browser contexts, including a private note | Full revision-history archive recovery, device-to-device secure transfer, verified encryption, confidential backup policy, installed PWA restore, or physical Safari file handling |
 | Current specific private glance DOM exclusion worked | Full client-facing confidentiality, consent/compliance, hostile-file restore or security certification |
 | The 390px and 320px answer-to-private-note Tab paths work with viewport-safe note/dock geometry; the 320px case also checks reverse Tab and horizontal overflow | Exhaustive keyboard navigation, visual keyboard accessibility, VoiceOver, or focus behavior on actual Apple devices |
 
