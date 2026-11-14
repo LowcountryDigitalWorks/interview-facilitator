@@ -1400,6 +1400,16 @@ test('synthetic private selection needs separate human client statement and save
   const confirmedPanel = page.getByRole('region', { name: 'Synthetic client confirmation trial' });
   await expect(confirmedPanel.getByRole('heading', { name: /Record a separate client-confirmed statement/ }))
     .toBeVisible();
+  const evidence = confirmedPanel.getByRole('region', { name: 'Unconfirmed research context — private only' });
+  await expect(evidence).toContainText('Research proposed: ' + packet.candidates[0]!.proposedValue);
+  await expect(evidence).toContainText('Claimed source: manual');
+  await expect(evidence).toContainText('confidence: unverified');
+  await expect(evidence).toContainText('not the client statement or accepted evidence');
+  // The source suggestion must remain read-only and NEVER prefill the separate
+  // client-statement editor, enter the canonical answer, or become consent.
+  await expect(confirmedPanel.getByRole('textbox', { name: 'What the synthetic client actually confirmed' }))
+    .toBeEmpty();
+  await expect(evidence.locator('input, textarea, select')).toHaveCount(0);
   const save = confirmedPanel.getByRole('button', { name: 'Save synthetic client-confirmed answer locally' });
   await expect(save).toBeDisabled();
   await confirmedPanel.getByRole('textbox', { name: 'What the synthetic client actually confirmed' })
