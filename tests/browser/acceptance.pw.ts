@@ -1364,6 +1364,11 @@ test('synthetic prep UI rejects wrong revision and disappears entirely for norma
 test('synthetic private selection needs separate human client statement and saves one atomic revision with old history', async ({ page }) => {
   await page.goto('/');
   const seeded = await syntheticSession('synthetic-confirmation-success');
+  // Keep the second reviewed question truly unresolved. The active final
+  // must-have question is written as an empty string on Review navigation,
+  // so it must not be staged as a new source candidate. This fixture removes
+  // the preloaded existing-presence known fact instead.
+  seeded.knownFacts = [];
   seeded.currentQuestionId = 'must-have';
   await putRawSession(page, seeded);
   await page.reload();
@@ -1390,7 +1395,7 @@ test('synthetic private selection needs separate human client statement and save
       observedAt: '2026-11-09T14:00:00.000Z',
       confidence: 'unverified',
     }, {
-      candidateId: 'source-02', questionId: 'must-have',
+      candidateId: 'source-02', questionId: 'existing-presence',
       proposedValue: 'SYNTHETIC SECOND UNCONFIRMED SOURCE SUGGESTION',
       sourceSystem: 'authorized-notes',
       sourceRecordRef: 'SYNTHETIC-SECOND-PRIVATE-REF',
@@ -1411,17 +1416,19 @@ test('synthetic private selection needs separate human client statement and save
   await expect(confirmedPanel.getByRole('heading', { name: /Record a separate client-confirmed statement/ }))
     .toBeVisible();
   const evidence = confirmedPanel.getByRole('region', { name: 'Unconfirmed research context — private only' });
+  const pickQuestion = confirmedPanel.getByRole('combobox', { name: 'Question for explicit client confirmation' });
+  await expect(evidence).toContainText(packet.candidates[1]!.proposedValue);
+  await pickQuestion.selectOption('primary-goal');
   await expect(evidence).toContainText('Research proposed: ' + packet.candidates[0]!.proposedValue);
   await expect(evidence).toContainText('Claimed source: manual');
   await expect(evidence).toContainText('confidence: unverified');
   await expect(evidence).toContainText('not the client statement or accepted evidence');
   // Untrusted source markup is literal text, not executable DOM.
   await expect(evidence.locator('img')).toHaveCount(0);
-  const pickQuestion = confirmedPanel.getByRole('combobox', { name: 'Question for explicit client confirmation' });
   const typedStatement = confirmedPanel.getByRole('textbox', { name: 'What the synthetic client actually confirmed' });
   await typedStatement.fill('SYNTHETIC UNSAVED FIRST QUESTION DRAFT');
   await confirmedPanel.getByRole('checkbox').check();
-  await pickQuestion.selectOption('must-have');
+  await pickQuestion.selectOption('existing-presence');
   await expect(evidence).toContainText(packet.candidates[1]!.proposedValue);
   await expect(evidence).toContainText('Claimed source: authorized-notes');
   await expect(evidence).toContainText('confidence: source-stated');
