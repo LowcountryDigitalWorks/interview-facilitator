@@ -104,6 +104,56 @@ test('Home distinguishes a legitimate empty database and meets the initial axe f
   expect(consequential).toEqual([]);
 });
 
+test('Home read-only session JSON check verifies exact saved copy, drift and invalid files without writing', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await page.goto('/');
+  const source = await syntheticSession('synthetic-session-file-check');
+  source.runningNotes = 'SYNTHETIC PRIVATE NOTE NEVER SHOWN ON HOME';
+  source.answers['existing-presence']!.value = 'SYNTHETIC HOME FILE CHECK ANSWER';
+  source.answers['existing-presence']!.resolution = 'captured';
+  source.answers['existing-presence']!.source = 'client-statement';
+  const original = JSON.stringify(source);
+  const checkFile = async (data: string, name = 'synthetic-session.json'): Promise<void> => {
+    await page.locator('#check-session-file').setInputFiles({
+      name, mimeType: 'application/json', buffer: Buffer.from(data),
+    });
+  };
+  const status = page.locator('[data-session-file-check-result]');
+  await expect(page.getByRole('button', { name: 'Check session JSON (read-only)' })).toBeEnabled();
+  await checkFile(original);
+  await expect(status).toContainText('No session with that identity is saved');
+  expect((await readStorageSnapshot(page)).rows).toEqual([]);
+
+  await putRawSession(page, source);
+  await page.reload();
+  await checkFile(original);
+  await expect(status).toContainText('full canonical content matches');
+  expect((await readStorageSnapshot(page)).rows).toEqual([source]);
+  expect(await page.locator('main').textContent()).not.toContain('SYNTHETIC PRIVATE NOTE NEVER SHOWN ON HOME');
+
+  const divergent = structuredClone(source);
+  divergent.runningNotes = 'SYNTHETIC DIVERGENT LOCAL FILE NOTE';
+  await checkFile(JSON.stringify(divergent));
+  await expect(status).toContainText('differs from the copy currently saved');
+  expect((await readStorageSnapshot(page)).rows).toEqual([source]);
+
+  await checkFile('{"sessionSchemaVersion":"1.3.0","extra":"<img src=x onerror=alert(1)>"}');
+  await expect(status).toContainText('did not pass the 1.3 single-session JSON');
+  await expect(page.locator('main img')).toHaveCount(0);
+  expect((await readStorageSnapshot(page)).rows).toEqual([source]);
+
+  const wrongVersion = { ...source, sessionSchemaVersion: '1.4.0' };
+  await checkFile(JSON.stringify(wrongVersion));
+  await expect(status).toContainText('did not pass');
+  await expect(page.getByRole('button', { name: 'Import session JSON' })).toBeEnabled();
+  expect((await readStorageSnapshot(page)).rows).toEqual([source]);
+  const viewport = await page.evaluate(() => ({
+    width: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.width + 2);
+});
+
 test('Prepare exposes pinned pack, reference provenance and distinct readiness without auto-accepting facts', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 720 });
   await page.goto('/');
