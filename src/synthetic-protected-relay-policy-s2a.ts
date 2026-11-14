@@ -76,7 +76,13 @@ function exactRecord(value: unknown, keys: readonly string[]): value is Record<s
   if (prototype !== Object.prototype && prototype !== null) return false;
   if (Object.getOwnPropertySymbols(value).length !== 0) return false;
   const found = Object.keys(value);
-  return found.length === keys.length && found.every(key => keys.includes(key));
+  if (found.length !== keys.length || !found.every(key => keys.includes(key))) return false;
+  // Reject accessor objects rather than executing attacker-supplied getters
+  // while resolving a synthetic policy or reading a proposal.
+  return found.every(key => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor !== undefined && 'value' in descriptor && descriptor.enumerable;
+  });
 }
 
 function validId(value: unknown): value is string {
