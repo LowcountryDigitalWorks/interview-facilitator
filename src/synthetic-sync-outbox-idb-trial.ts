@@ -40,16 +40,10 @@ export function openSyntheticOutboxTrialForReview(): Promise<IDBDatabase> {
     request.onupgradeneeded = () => {
       const db = request.result;
       for (const name of STORES) {
-        if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, { keyPath: 'operationId' });
-      }
-      // Current is keyed by stable session identity, not operation identity.
-      if (db.objectStoreNames.contains('current')) {
-        // The current store must be keyed by sessionId. This branch is only
-        // reachable on fresh test database upgrades; keep the contract strict.
-        const tx = request.transaction;
-        if (tx?.objectStore('current').keyPath !== 'sessionId') {
-          db.deleteObjectStore('current');
-          db.createObjectStore('current', { keyPath: 'sessionId' });
+        if (!db.objectStoreNames.contains(name)) {
+          db.createObjectStore(name, {
+            keyPath: name === 'current' ? 'sessionId' : 'operationId',
+          });
         }
       }
     };
