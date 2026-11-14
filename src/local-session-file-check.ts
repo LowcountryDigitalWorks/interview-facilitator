@@ -38,7 +38,7 @@ function outcome(kind: LocalSessionFileCheckKind): LocalSessionFileCheck {
  * revision history, recovery-key custody, or protection against file tampering.
  */
 export async function checkLocalSessionJsonForReview(
-  file: Pick<File, 'size' | 'text'>,
+  file: Pick<File, 'size' | 'arrayBuffer'>,
   loadCurrent: (sessionId: string) => Promise<unknown>,
 ): Promise<LocalSessionFileCheck> {
   if (!file || !Number.isSafeInteger(file.size)
@@ -48,10 +48,14 @@ export async function checkLocalSessionJsonForReview(
 
   let session: Awaited<ReturnType<typeof validateSemanticSessionRecord>>;
   try {
-    const text = await file.text();
-    if (new TextEncoder().encode(text).byteLength > SESSION_FILE_CHECK_MAX_BYTES) {
+    // File.text() replaces malformed UTF-8 with U+FFFD, which can turn a
+    // corrupted JSON string into a *valid-looking* semantic session.
+    // Byte-level fatal decoding makes this preflight stricter than import.
+    const bytes = await file.arrayBuffer();
+    if (bytes.byteLength < 1 || bytes.byteLength > SESSION_FILE_CHECK_MAX_BYTES) {
       return outcome('invalid');
     }
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     const raw: unknown = JSON.parse(text);
     session = await validateSemanticSessionRecord(raw);
     // Reject input that the canonical validator would silently discard or
