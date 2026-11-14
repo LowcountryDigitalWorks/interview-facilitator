@@ -253,7 +253,7 @@ describe('S2B-0 real SQLite / two-handle SYNTHETIC transaction preflight', () =>
         expect(text).not.toContain(f.session.runningNotes);
         expect(text).not.toContain('answers');
       } finally { reopened.close(); }
-    } finally { rmSync(join((env as unknown as {directory?: string}).directory ?? '', 'absent'),{force:true}); }
+    } finally { env.close(); }
   });
 
   it('a genuine SQL constraint error rolls back head, history, and receipt before retry', async () => {
