@@ -63,7 +63,7 @@ test('native atomic snapshot/outbox survives reopen; negative ACK retains queue;
         afterHistoryCount: after.history.length,
         receiptCount: after.receipts.length,
         currentHeadUnchanged: after.current.offer.operationId === offer.operationId,
-        avoidedLiveSessionDb: !names.some((item: { name: string }) => item.name === 'ldw-interview-facilitator'),
+        avoidedLiveSessionDb: !names.some((item) => item.name === 'ldw-interview-facilitator'),
       };
     } finally {
       db.close();
@@ -135,7 +135,7 @@ test('two real Chromium tabs racing on same revision preserve loser and never si
           pending: snap.pending.length,
           history: snap.history.length,
           currentRevision: snap.current?.offer.head.revisionId,
-          allHistoryIds: snap.history.map((item) => item.offer.head.revisionId),
+          allHistoryIds: snap.history.map((item: { offer: { head: { revisionId: string } } }) => item.offer.head.revisionId),
         };
       } finally { db.close(); }
     }, source.sessionId);
