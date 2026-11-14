@@ -47,6 +47,7 @@ CREATE TABLE durable_receipts_trial (
   operation_id TEXT NOT NULL CHECK (length(operation_id) = 64),
   revision_id TEXT NOT NULL,
   snapshot_digest TEXT NOT NULL CHECK (length(snapshot_digest) = 64),
+  pack_digest TEXT NOT NULL CHECK (length(pack_digest) = 64),
   committed INTEGER NOT NULL CHECK (committed = 1),
   PRIMARY KEY (tenant_id, client_id, engagement_id, session_id, operation_id)
 );
