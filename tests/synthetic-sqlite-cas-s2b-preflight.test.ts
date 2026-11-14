@@ -158,17 +158,19 @@ function appendForSqliteTrial(
       // A metadata-only receipt is not enough: prevent an operation ID being
       // replayed with forged pack/parent/expected-revision context or with an
       // orphaned immutable history row. This is TEST-ONLY, not provider auth.
-      const retained = db.prepare(`SELECT parent_revision_id, pack_digest FROM immutable_revisions
+      const retained = db.prepare(`SELECT parent_revision_id, pack_digest, snapshot_digest FROM immutable_revisions
         WHERE tenant_id=? AND client_id=? AND engagement_id=? AND session_id=?
           AND operation_id=? AND revision_id=?`)
         .get(...scopeValues(scope), offer.operationId, head.revisionId) as {
-          parent_revision_id: string | null; pack_digest: string;
+          parent_revision_id: string | null; pack_digest: string; snapshot_digest: string;
         } | undefined;
       const validReplay = receipt.revision_id === head.revisionId
         && receipt.snapshot_digest === head.snapshotDigest
         && receipt.pack_digest === head.packDigest
         && retained !== undefined
         && retained.pack_digest === head.packDigest
+        && retained.snapshot_digest === receipt.snapshot_digest
+        && retained.snapshot_digest === head.snapshotDigest
         && retained.parent_revision_id === head.parentRevisionId
         && retained.parent_revision_id === expectedRevision;
       db.exec('ROLLBACK');
@@ -406,6 +408,25 @@ describe('S2B-0 real SQLite / two-handle SYNTHETIC transaction preflight', () =>
       const alteredParent = { ...child, head: { ...child.head, parentRevisionId: null } };
       expect(appendForSqliteTrial(env.db, f.scope, actor, alteredParent, expectedParent)).toBe('deny');
       expect(appendForSqliteTrial(env.db, f.scope, actor, child, null)).toBe('deny');
+
+      // An internally inconsistent retained snapshot must never authenticate
+      // a receipt, even when its incoming head, parent, pack and receipt agree.
+      // The distinct value differs in exactly one valid hexadecimal nibble.
+      const retainedMismatch = (child.head.snapshotDigest[0] === '0' ? '1' : '0')
+        + child.head.snapshotDigest.slice(1);
+      expect(retainedMismatch).not.toBe(child.head.snapshotDigest);
+      const alterRetained = env.db.prepare(`UPDATE immutable_revisions
+        SET snapshot_digest=?
+        WHERE tenant_id=? AND client_id=? AND engagement_id=? AND session_id=?
+          AND operation_id=? AND revision_id=?`);
+      expect(alterRetained.run(retainedMismatch, ...scopeValues(f.scope),
+        child.operationId, child.head.revisionId).changes).toBe(1);
+      expect(appendForSqliteTrial(env.db, f.scope, actor, child, expectedParent)).toBe('deny');
+      expect(current(env.db, f.scope)).toBe(child.head.revisionId);
+      expect(count(env.db, 'durable_receipts_trial', f.scope)).toBe(2);
+      expect(alterRetained.run(child.head.snapshotDigest, ...scopeValues(f.scope),
+        child.operationId, child.head.revisionId).changes).toBe(1);
+      expect(appendForSqliteTrial(env.db, f.scope, actor, child, expectedParent)).toBe('replayed');
 
       // Corrupt the fictional test fixture AFTER commit: a receipt without
       // an immutable matching revision must never be accepted as replay.
