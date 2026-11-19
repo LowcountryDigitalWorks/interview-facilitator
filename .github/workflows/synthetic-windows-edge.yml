@@ -1,0 +1,32 @@
+name: Synthetic hosted Windows Microsoft Edge smoke
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/synthetic-windows-edge.yml'
+      - 'playwright.windows-edge.config.ts'
+      - 'tests/browser/windows-edge-smoke.pw.ts'
+      - 'docs/WINDOWS_EDGE_SYNTHETIC_ACCEPTANCE.md'
+
+permissions:
+  contents: read
+
+jobs:
+  edge-synthetic:
+    if: startsWith(github.head_ref, 'feat/if-edge-windows-synthetic-qa-')
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: Exercise preinstalled Microsoft Edge, not downloaded Chromium
+        run: npx playwright test -c playwright.windows-edge.config.ts
