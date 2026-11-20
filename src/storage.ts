@@ -508,6 +508,55 @@ export async function saveSession(session: SemanticInterviewSession, expectedRev
   }
 }
 
+/** Create an explicitly named import copy without allowing cross-tab name races. */
+export async function saveImportedCopySession(session: SemanticInterviewSession): Promise<SemanticInterviewSession> {
+  await validateSemanticSessionRecord(session);
+  const nameKey = (value: string): string => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  const requestedName = nameKey(session.clientLabel);
+  if (!requestedName) throw new Error('Enter a name for this interview copy.');
+  const db = await openDb();
+  try {
+    const next: SemanticInterviewSession = {
+      ...structuredClone(session),
+      revisionId: crypto.randomUUID(),
+      parentRevisionId: null,
+    };
+    await new Promise<void>((resolve, reject) => {
+      const tx = writeTransaction(db);
+      const store = tx.objectStore(STORE);
+      let failure: Error | null = null;
+      const fail = (error: Error): void => {
+        if (failure) return;
+        failure = error;
+        try { tx.abort(); } catch { /* transaction already finished */ }
+      };
+      const rowsRequest = store.getAll();
+      rowsRequest.onerror = () => fail(rowsRequest.error ?? new Error('Unable to check local interview names.'));
+      rowsRequest.onsuccess = () => {
+        const rows = rowsRequest.result as unknown[];
+        for (const row of rows) {
+          if (!row || typeof row !== 'object' || typeof (row as { clientLabel?: unknown }).clientLabel !== 'string') {
+            fail(new Error('An existing local interview name could not be checked. No copy was saved.'));
+            return;
+          }
+          if (nameKey((row as { clientLabel: string }).clientLabel) === requestedName) {
+            fail(new Error('That interview name already exists on this device. Choose a different name.'));
+            return;
+          }
+        }
+        const put = store.add(next);
+        put.onerror = () => fail(put.error ?? new Error('Unable to create the named interview copy.'));
+      };
+      tx.oncomplete = () => failure ? reject(failure) : resolve();
+      tx.onerror = () => reject(failure ?? tx.error ?? new Error('Unable to create the named interview copy.'));
+      tx.onabort = () => reject(failure ?? tx.error ?? new Error('The named interview copy was not saved.'));
+    });
+    return next;
+  } finally {
+    db.close();
+  }
+}
+
 
 /**
  * #34A2B2A — internal typed 1.4 read/save adapter.
