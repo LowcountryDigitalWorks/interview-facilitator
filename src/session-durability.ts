@@ -107,6 +107,7 @@ export async function importSessionWithCollisionHandling<T extends RevisionedSes
   save: (session: T, expectedRevisionId: string | null) => Promise<T>;
   replace: (session: T, expectedRevisionId: string) => Promise<T>;
   fork?: (session: T) => T;
+  saveCopy?: (session: T) => Promise<T>;
 }): Promise<ImportSessionResult<T>> {
   try {
     await input.flush(input.imported.sessionId);
@@ -139,7 +140,9 @@ export async function importSessionWithCollisionHandling<T extends RevisionedSes
   try {
     if (choice === 'copy') {
       const fork = (input.fork ?? forkImportedSession<T>)(input.imported);
-      return { kind: 'forked', session: await input.save(fork, null) };
+      return { kind: 'forked', session: input.saveCopy
+        ? await input.saveCopy(fork)
+        : await input.save(fork, null) };
     }
     return { kind: 'replaced', session: await input.replace(input.imported, existing.revisionId) };
   } catch (error) {
