@@ -10,7 +10,6 @@ import {
   listLegacyArchiveKeys,
   listRevisionHistoryKeys,
   listStoredSessionIds,
-  navigateHomeKeepingActiveSession,
   openPrivateReview,
   openSeededInterviewOnLastQuestion,
   overwriteLegacyArchive,
@@ -23,7 +22,6 @@ import {
   readStoredSession,
   setIdbFault,
   startFreshInterview,
-  startNewInterviewWhileActive,
 } from './fault-injection.mjs';
 
 function syntheticSession(sessionId = 'synthetic-valid-session', clientLabel = 'Synthetic Browser Test'): Promise<SemanticInterviewSession> {
@@ -64,40 +62,41 @@ test('forced IndexedDB open failure shows storage recovery and retry succeeds', 
   await expect(page.getByRole('button', { name: 'New interview' })).toBeEnabled();
 });
 
-test('outgoing flush failure blocks session switch and keeps active session recoverable', async ({ page }) => {
+test('outgoing flush failure blocks leaving the interview and keeps active session recoverable', async ({ page }) => {
   await openSeededInterviewOnLastQuestion(page, 'Active Session', await syntheticSession('seed-active-session', 'Active Session'));
   await setIdbFault(page, { blockWrite: true });
   await page.locator('#answer').fill('Dirty active edit');
-  await navigateHomeKeepingActiveSession(page);
+  const home = page.getByRole('button', { name: 'Home', exact: true });
 
-  await startNewInterviewWhileActive(page, 'Replacement Session');
-
-  await expect(page.getByText('Local save failed.')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Return to active interview' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Export active backup' })).toBeVisible();
-  await page.getByRole('button', { name: 'Return to active interview' }).click();
+  await home.click();
   await expect(page.locator('#answer')).toHaveValue('Dirty active edit');
+  await expect(page.locator('[data-save-alert]')).toContainText('Local save failed');
+  await expect(home).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'New interview' })).toHaveCount(0);
+
+  await setIdbFault(page, { blockWrite: false });
+  await home.click();
+  await expect(page.getByRole('button', { name: /Active Session/ })).toBeVisible();
 });
 
-test('overlapping session switch attempts do not silently drop the active interview', async ({ page }) => {
+test('repeated failed Home attempts do not silently drop the active interview', async ({ page }) => {
   await putRawSession(page, await syntheticSession('session-a', 'Active Session'));
   await putRawSession(page, await syntheticSession('session-b', 'Other Session'));
   await page.reload();
   await page.getByRole('button', { name: /Active Session/ }).click();
   await setIdbFault(page, { blockWrite: true });
   await page.locator('#answer').fill('Still mine');
-  await navigateHomeKeepingActiveSession(page);
+  const home = page.getByRole('button', { name: 'Home', exact: true });
 
-  await setIdbFault(page, { blockWrite: true });
-  const otherCard = page.getByRole('button', { name: /Other Session/ });
-  await Promise.all([
-    otherCard.click(),
-    otherCard.click(),
-  ]);
-
-  await expect(page.getByText('Local save failed.')).toBeVisible();
-  await page.getByRole('button', { name: 'Return to active interview' }).click();
+  await home.click();
   await expect(page.locator('#answer')).toHaveValue('Still mine');
+  await home.click();
+  await expect(page.locator('#answer')).toHaveValue('Still mine');
+  await expect(page.locator('[data-save-alert]')).toContainText('Local save failed');
+
+  await setIdbFault(page, { blockWrite: false });
+  await home.click();
+  await expect(page.getByRole('button', { name: /Other Session/ })).toBeVisible();
 });
 
 test('failed Home save keeps the dirty interview open and recoverable', async ({ page }) => {
@@ -331,6 +330,7 @@ test('different same-ID import defaults to copy and preserves both independent l
   const copyName = page.getByRole('textbox', { name: 'Name this copy' });
   const copyButton = page.getByRole('button', { name: 'Import as copy' });
   await expect(copyName).toBeFocused();
+  await copyName.fill('temporary distinct name');
   await copyName.fill('');
   await expect(copyButton).toBeDisabled();
   await expect(page.getByText('Enter a distinct interview name.')).toBeVisible();
@@ -409,7 +409,7 @@ test('named import copy fails closed when any stored row is malformed', async ({
     const db = await new Promise<IDBDatabase>((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
     await new Promise<void>((resolve, reject) => {
       const transaction = db.transaction(store, 'readwrite');
-      transaction.objectStore(store).add({ sessionId: 'malformed-row', marker: 'not a valid session' }, 'malformed-row');
+      transaction.objectStore(store).add({ sessionId: 'malformed-row', marker: 'not a valid session' });
       transaction.oncomplete = () => resolve();
       transaction.onabort = () => reject(transaction.error);
       transaction.onerror = () => reject(transaction.error);
