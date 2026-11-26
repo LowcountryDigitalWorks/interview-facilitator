@@ -69,14 +69,16 @@ test('outgoing flush failure blocks leaving the interview and keeps active sessi
   const home = page.getByRole('button', { name: 'Home', exact: true });
 
   await home.click();
+  await expect(home).toBeEnabled();
+  await expect(home).not.toHaveAttribute('aria-busy', 'true');
   await expect(page.locator('#answer')).toHaveValue('Dirty active edit');
   await expect(page.locator('[data-save-alert]')).toContainText('Local save failed');
-  await expect(home).toBeEnabled();
   await expect(page.getByRole('button', { name: 'New interview' })).toHaveCount(0);
 
   await setIdbFault(page, { blockWrite: false });
   await home.click();
   await expect(page.getByRole('button', { name: /Active Session/ })).toBeVisible();
+  expect(await readStoredAnswer(page, 'seed-active-session')).toBe('Dirty active edit');
 });
 
 test('repeated failed Home attempts do not silently drop the active interview', async ({ page }) => {
@@ -87,12 +89,26 @@ test('repeated failed Home attempts do not silently drop the active interview', 
   await setIdbFault(page, { blockWrite: true });
   await page.locator('#answer').fill('Still mine');
   const home = page.getByRole('button', { name: 'Home', exact: true });
+  const idsBefore = (await listStoredSessionIds(page)).sort();
+  const activeBefore = await readStoredSession(page, 'session-a');
+  const otherBefore = await readStoredSession(page, 'session-b');
 
   await home.click();
+  await expect(home).toBeEnabled();
+  await expect(home).not.toHaveAttribute('aria-busy', 'true');
   await expect(page.locator('#answer')).toHaveValue('Still mine');
+  await expect(page.getByRole('button', { name: 'New interview' })).toHaveCount(0);
+
   await home.click();
+  await expect(home).toBeEnabled();
+  await expect(home).not.toHaveAttribute('aria-busy', 'true');
   await expect(page.locator('#answer')).toHaveValue('Still mine');
+  await expect(page.getByRole('button', { name: 'New interview' })).toHaveCount(0);
   await expect(page.locator('[data-save-alert]')).toContainText('Local save failed');
+
+  expect((await listStoredSessionIds(page)).sort()).toEqual(idsBefore);
+  expect(await readStoredSession(page, 'session-a')).toEqual(activeBefore);
+  expect(await readStoredSession(page, 'session-b')).toEqual(otherBefore);
 });
 
 test('failed Home save keeps the dirty interview open and recoverable', async ({ page }) => {
