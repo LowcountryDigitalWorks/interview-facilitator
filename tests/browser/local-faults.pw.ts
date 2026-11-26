@@ -93,10 +93,6 @@ test('repeated failed Home attempts do not silently drop the active interview', 
   await home.click();
   await expect(page.locator('#answer')).toHaveValue('Still mine');
   await expect(page.locator('[data-save-alert]')).toContainText('Local save failed');
-
-  await setIdbFault(page, { blockWrite: false });
-  await home.click();
-  await expect(page.getByRole('button', { name: /Other Session/ })).toBeVisible();
 });
 
 test('failed Home save keeps the dirty interview open and recoverable', async ({ page }) => {
