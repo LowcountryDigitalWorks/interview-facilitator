@@ -10,7 +10,6 @@ import {
   listLegacyArchiveKeys,
   listRevisionHistoryKeys,
   listStoredSessionIds,
-  navigateHomeKeepingActiveSession,
   openPrivateReview,
   openSeededInterviewOnLastQuestion,
   overwriteLegacyArchive,
@@ -23,7 +22,6 @@ import {
   readStoredSession,
   setIdbFault,
   startFreshInterview,
-  startNewInterviewWhileActive,
 } from './fault-injection.mjs';
 
 function syntheticSession(sessionId = 'synthetic-valid-session', clientLabel = 'Synthetic Browser Test'): Promise<SemanticInterviewSession> {
@@ -64,40 +62,141 @@ test('forced IndexedDB open failure shows storage recovery and retry succeeds', 
   await expect(page.getByRole('button', { name: 'New interview' })).toBeEnabled();
 });
 
-test('outgoing flush failure blocks session switch and keeps active session recoverable', async ({ page }) => {
+test('outgoing flush failure blocks leaving the interview and keeps active session recoverable', async ({ page }) => {
   await openSeededInterviewOnLastQuestion(page, 'Active Session', await syntheticSession('seed-active-session', 'Active Session'));
   await setIdbFault(page, { blockWrite: true });
   await page.locator('#answer').fill('Dirty active edit');
-  await navigateHomeKeepingActiveSession(page);
+  const home = page.getByRole('button', { name: 'Home', exact: true });
 
-  await startNewInterviewWhileActive(page, 'Replacement Session');
-
-  await expect(page.getByText('Local save failed.')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Return to active interview' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Export active backup' })).toBeVisible();
-  await page.getByRole('button', { name: 'Return to active interview' }).click();
+  await home.click();
+  await expect(home).toBeEnabled();
+  await expect(home).not.toHaveAttribute('aria-busy', 'true');
   await expect(page.locator('#answer')).toHaveValue('Dirty active edit');
+  await expect(page.locator('[data-save-alert]')).toContainText('Local save failed');
+  await expect(page.getByRole('button', { name: 'New interview' })).toHaveCount(0);
+
+  await setIdbFault(page, { blockWrite: false });
+  await home.click();
+  await expect(page.getByRole('button', { name: /Active Session/ })).toBeVisible();
+  const recovered = await readStoredSession(page, 'seed-active-session');
+  expect(recovered?.answers['must-have']?.value).toBe('Dirty active edit');
 });
 
-test('overlapping session switch attempts do not silently drop the active interview', async ({ page }) => {
+test('repeated failed Home attempts do not silently drop the active interview', async ({ page }) => {
   await putRawSession(page, await syntheticSession('session-a', 'Active Session'));
   await putRawSession(page, await syntheticSession('session-b', 'Other Session'));
   await page.reload();
   await page.getByRole('button', { name: /Active Session/ }).click();
   await setIdbFault(page, { blockWrite: true });
   await page.locator('#answer').fill('Still mine');
-  await navigateHomeKeepingActiveSession(page);
+  const home = page.getByRole('button', { name: 'Home', exact: true });
+  const idsBefore = (await listStoredSessionIds(page)).sort();
+  const activeBefore = await readStoredSession(page, 'session-a');
+  const otherBefore = await readStoredSession(page, 'session-b');
 
-  await setIdbFault(page, { blockWrite: true });
-  const otherCard = page.getByRole('button', { name: /Other Session/ });
-  await Promise.all([
-    otherCard.click(),
-    otherCard.click(),
-  ]);
-
-  await expect(page.getByText('Local save failed.')).toBeVisible();
-  await page.getByRole('button', { name: 'Return to active interview' }).click();
+  await home.click();
+  await expect(home).toBeEnabled();
+  await expect(home).not.toHaveAttribute('aria-busy', 'true');
   await expect(page.locator('#answer')).toHaveValue('Still mine');
+  await expect(page.getByRole('button', { name: 'New interview' })).toHaveCount(0);
+
+  await home.click();
+  await expect(home).toBeEnabled();
+  await expect(home).not.toHaveAttribute('aria-busy', 'true');
+  await expect(page.locator('#answer')).toHaveValue('Still mine');
+  await expect(page.getByRole('button', { name: 'New interview' })).toHaveCount(0);
+  await expect(page.locator('[data-save-alert]')).toContainText('Local save failed');
+
+  expect((await listStoredSessionIds(page)).sort()).toEqual(idsBefore);
+  expect(await readStoredSession(page, 'session-a')).toEqual(activeBefore);
+  expect(await readStoredSession(page, 'session-b')).toEqual(otherBefore);
+});
+
+test('failed Home save keeps the dirty interview open and recoverable', async ({ page }) => {
+  await openSeededInterviewOnLastQuestion(page, 'Active Session', await syntheticSession('seed-active-session', 'Active Session'));
+  await setIdbFault(page, { blockWrite: true });
+  await page.locator('#answer').fill('Dirty active edit');
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  await expect(page.locator('#answer')).toHaveValue('Dirty active edit');
+  await expect(page.locator('[data-save-alert]')).toContainText('Local save failed');
+  expect(await readStoredAnswer(page, 'seed-active-session')).not.toBe('Dirty active edit');
+});
+
+test('Presentation interview Home requires consent and keeps private Home closed on cancel or failed save', async ({ page }) => {
+  await putRawSession(page, await syntheticSession('presentation-home-other', 'OTHER PRIVATE HOME LABEL'));
+  await startFreshInterview(page, 'Presentation Home Origin');
+  await page.locator('#answer').fill('PRIVATE PRESENTATION HOME EDIT');
+  await setIdbFault(page, { blockWrite: true });
+  await page.getByRole('button', { name: 'Presentation view', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Exit presentation' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  const stay = page.getByRole('button', { name: 'Stay in presentation view' });
+  await expect(stay).toBeEnabled();
+  await expect(stay).toBeFocused();
+  await expect(page.getByRole('heading', { name: 'Return to private Home?' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'New interview' })).toHaveCount(0);
+  await expect(page.getByText('OTHER PRIVATE HOME LABEL')).toHaveCount(0);
+  await stay.click();
+  await expect(page.getByRole('heading', { name: 'Return to private Home?' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Exit presentation' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'New interview' })).toHaveCount(0);
+  const interviewHome = page.getByRole('button', { name: 'Home', exact: true });
+  await expect(interviewHome).toBeEnabled();
+  await expect(interviewHome).toBeFocused();
+
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  await page.getByRole('button', { name: 'Exit to private Home' }).click();
+  await expect(page.getByRole('button', { name: 'New interview' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Exit presentation' })).toBeVisible();
+  await expect(page.locator('[data-save-alert]')).toContainText('Local save failed');
+  await expect(interviewHome).toBeEnabled();
+  await expect(interviewHome).toBeFocused();
+
+  await setIdbFault(page, { blockWrite: false });
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  await page.getByRole('button', { name: 'Exit to private Home' }).click();
+  await expect(page.getByRole('button', { name: 'New interview' })).toBeVisible();
+});
+
+test('Presentation review Home requires consent and keeps private review closed on cancel or failed save', async ({ page }) => {
+  const origin = await syntheticSession('presentation-review-origin', 'Presentation Review Origin');
+  await putRawSession(page, await syntheticSession('presentation-review-other', 'OTHER PRIVATE REVIEW LABEL'));
+  await openSeededInterviewOnLastQuestion(page, 'Presentation Review Origin', origin);
+  await setIdbFault(page, { blockWrite: true });
+  await page.locator('#answer').fill('PRIVATE REVIEW HOME EDIT');
+  await page.getByRole('button', { name: 'Review interview' }).click();
+  await expect(page.getByText('Presentation read-back')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Delete local session' })).toHaveCount(0);
+  await expect(page.getByText('OTHER PRIVATE REVIEW LABEL')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  const stay = page.getByRole('button', { name: 'Stay in presentation view' });
+  await expect(stay).toBeEnabled();
+  await expect(stay).toBeFocused();
+  await expect(page.getByRole('heading', { name: 'Return to private Home?' })).toBeVisible();
+  await stay.click();
+  await expect(page.getByRole('heading', { name: 'Return to private Home?' })).toHaveCount(0);
+  await expect(page.getByText('Presentation read-back')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Delete local session' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'New interview' })).toHaveCount(0);
+  const reviewHome = page.getByRole('button', { name: 'Home', exact: true });
+  await expect(reviewHome).toBeEnabled();
+  await expect(reviewHome).toBeFocused();
+
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  await page.getByRole('button', { name: 'Exit to private Home' }).click();
+  await expect(page.getByText('Presentation read-back')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Delete local session' })).toHaveCount(0);
+  await expect(page.locator('[data-save-alert]')).toContainText('Local save failed');
+  await expect(page.getByText('OTHER PRIVATE REVIEW LABEL')).toHaveCount(0);
+  await expect(reviewHome).toBeEnabled();
+  await expect(reviewHome).toBeFocused();
+
+  await setIdbFault(page, { blockWrite: false });
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  await page.getByRole('button', { name: 'Exit to private Home' }).click();
+  await expect(page.getByRole('button', { name: 'New interview' })).toBeVisible();
 });
 
 test('same-ID identical import is a no-op with no revision or history churn', async ({ page }) => {
@@ -238,7 +337,33 @@ test('different same-ID import defaults to copy and preserves both independent l
   imported.updatedAt = '2026-11-02T01:46:00.000Z';
   await importSessionFile(page, imported);
   await expect(page.getByRole('button', { name: 'Import as copy' })).toBeVisible();
-  await page.getByRole('button', { name: 'Import as copy' }).click();
+  await expect(page.locator('#import-copy-name-help')).toContainText('displayed interview/client label');
+  await expect(page.locator('#import-copy-name-help')).toContainText('#34/#35');
+  await expect(page.locator('#import-copy-name-help')).not.toContainText('client/project association');
+  const copyName = page.getByRole('textbox', { name: 'Name this copy' });
+  const copyButton = page.getByRole('button', { name: 'Import as copy' });
+  await expect(copyName).toBeFocused();
+  await copyName.fill('temporary distinct name');
+  await copyName.fill('');
+  await expect(copyButton).toBeDisabled();
+  await expect(page.getByText('Enter a distinct interview name.')).toBeVisible();
+  await copyName.fill('../unsafe-copy-name');
+  await expect(copyButton).toBeDisabled();
+  await expect(page.getByText(/cannot contain control characters, path separators/)).toBeVisible();
+  // Deterministic shared key: NFKC + collapsed whitespace + locale-independent case.
+  await copyName.fill('  IMPORT   copy test  ');
+  await expect(copyButton).toBeDisabled();
+  await expect(page.getByText('That name is already in use. Choose a different interview name.')).toBeVisible();
+  await copyName.fill('Imported copy distinct');
+  await expect(copyButton).toBeEnabled();
+  // A late validation result from the previous value must not re-enable copy.
+  await copyName.fill('');
+  await expect(copyButton).toBeDisabled();
+  await copyName.fill('Imported copy distinct');
+  await expect(copyButton).toBeEnabled();
+  await page.keyboard.press('Tab');
+  await expect(copyButton).toBeFocused();
+  await page.keyboard.press('Enter');
   await expect(page.locator('#answer')).toBeVisible();
 
   const ids = await listStoredSessionIds(page);
@@ -253,7 +378,70 @@ test('different same-ID import defaults to copy and preserves both independent l
   expect(copied.sessionId).not.toBe(imported.sessionId);
   expect(copied.revisionId).not.toBe(imported.revisionId);
   expect(copied.parentRevisionId).toBeNull();
+  expect(copied.clientLabel).toBe('Imported copy distinct');
   expect(copied.runningNotes).toBe('Imported copy content');
+  expect(await listRevisionHistoryKeys(page)).toEqual([]);
+});
+
+test('named import copy rejects a name claimed by another tab after preflight', async ({ page }) => {
+  const source = await syntheticSession('import-copy-race-session', 'Race Source');
+  await putRawSession(page, source);
+  await page.reload();
+  const imported = structuredClone(source);
+  imported.runningNotes = 'Distinct copied content';
+  await importSessionFile(page, imported);
+  const name = page.getByRole('textbox', { name: 'Name this copy' });
+  await name.fill('Race Winner Name');
+  const copy = page.getByRole('button', { name: 'Import as copy' });
+  await expect(copy).toBeEnabled();
+
+  const concurrent = await syntheticSession('other-tab-session', 'Race Winner Name');
+  await page.evaluate(async (row) => {
+    const request = indexedDB.open('ldw-interview-facilitator');
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction('sessions', 'readwrite');
+      transaction.objectStore('sessions').add(row);
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () => reject(transaction.error);
+      transaction.onerror = () => reject(transaction.error);
+    });
+    db.close();
+  }, concurrent);
+  await copy.click();
+  await expect(page.getByText('That interview name was taken in another tab while the copy was being saved. Choose a different name; no interviews were changed.')).toBeVisible();
+  expect(await listStoredSessionIds(page)).toHaveLength(2);
+  expect(await readStoredSession(page, source.sessionId)).toEqual(source);
+});
+
+test('named import copy fails closed when any stored row is malformed', async ({ page }) => {
+  const source = await syntheticSession('import-malformed-row-source', 'Malformed Row Source');
+  await putRawSession(page, source);
+  await page.evaluate(async ({ dbName, store }) => {
+    const request = indexedDB.open(dbName);
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(store, 'readwrite');
+      transaction.objectStore(store).add({ sessionId: 'malformed-row', marker: 'not a valid session' });
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () => reject(transaction.error);
+      transaction.onerror = () => reject(transaction.error);
+    });
+    db.close();
+  }, { dbName: 'ldw-interview-facilitator', store: 'sessions' });
+  await page.reload();
+
+  const imported = structuredClone(source);
+  imported.runningNotes = 'Copy that must not be saved';
+  await importSessionFile(page, imported);
+  const name = page.getByRole('textbox', { name: 'Name this copy' });
+  await name.fill('Distinct Malformed Safe Name');
+  const copy = page.getByRole('button', { name: 'Import as copy' });
+  await expect(copy).toBeEnabled();
+  await copy.click();
+
+  await expect(page.getByText('The imported file could not be saved. Existing local interviews and retained revision history were left unchanged.')).toBeVisible();
+  expect(await readStoredSession(page, source.sessionId)).toEqual(source);
   expect(await listRevisionHistoryKeys(page)).toEqual([]);
 });
 
@@ -341,6 +529,30 @@ test('cancelled same-ID collision keeps the current row and history unchanged', 
   expect(await listRevisionHistoryKeys(page)).toEqual([]);
 });
 
+test('Home flushes dirty interview edits before leaving the interview', async ({ page }) => {
+  await startFreshInterview(page, 'Synthetic Home Flush');
+  await page.locator('#answer').fill('Synthetic edit saved before Home');
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  await expect(page.getByRole('button', { name: /Synthetic Home Flush/ })).toBeVisible();
+  const stored = await page.evaluate(async () => {
+    const request = indexedDB.open('ldw-interview-facilitator');
+    const db = await new Promise<IDBDatabase>((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error); });
+    const rows = await new Promise<unknown[]>((resolve, reject) => { const read = db.transaction('sessions', 'readonly').objectStore('sessions').getAll(); read.onsuccess = () => resolve(read.result); read.onerror = () => reject(read.error); });
+    db.close();
+    return rows.find((row) => typeof row === 'object' && row !== null && (row as { clientLabel?: string }).clientLabel === 'Synthetic Home Flush');
+  });
+  expect(stored).toMatchObject({ answers: { 'existing-presence': { value: 'Synthetic edit saved before Home' } } });
+});
+
+test('Home stays on the active interview when the flush fails', async ({ page }) => {
+  await startFreshInterview(page, 'Synthetic Home Save Failure');
+  await page.locator('#answer').fill('Unsaved synthetic edit');
+  await setIdbFault(page, { blockWrite: true });
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  await expect(page.locator('#answer')).toHaveValue('Unsaved synthetic edit');
+  await expect(page.locator('[data-save-alert]')).toContainText('Local save failed');
+});
+
 test('stale explicit replace decision is rejected with zero history mutation', async ({ page }) => {
   const sessionId = 'import-stale-replace-session';
   const current = await syntheticSession(sessionId, 'Import Stale Replace Test');
@@ -390,25 +602,11 @@ test('failed same-ID import flush keeps dirty active session authoritative', asy
   await page.getByRole('button', { name: /Active Import Test/ }).click();
   await setIdbFault(page, { blockWrite: true });
   await page.locator('#answer').fill('Keep this authoritative answer');
-  await navigateHomeKeepingActiveSession(page);
-
-  const replacement = await syntheticSession(sessionId, 'Imported Replacement Label');
-  replacement.answers['existing-presence'] = {
-    value: 'Imported overwrite attempt',
-    resolution: 'captured',
-    source: 'client-statement',
-    needsConfirmation: false,
-    confirmation: null,
-    followUp: null,
-    note: '',
-  };
-  await importSessionFile(page, replacement);
-
-  await expect(page.getByText('Pending local edits could not be saved')).toBeVisible();
-  await page.getByRole('button', { name: 'Return to active interview' }).click();
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
   await expect(page.locator('#answer')).toHaveValue('Keep this authoritative answer');
   await expect(await readStoredAnswer(page, sessionId)).not.toBe('Imported overwrite attempt');
   expect(await listRevisionHistoryKeys(page)).toEqual([]);
+  await expect(page.locator('[data-save-alert]')).toContainText('Local save failed');
 });
 
 test('delete clears current and all app-owned retained copies even when autosave was recently scheduled', async ({ page }) => {

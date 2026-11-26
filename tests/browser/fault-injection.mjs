@@ -68,9 +68,19 @@ export async function installIdbFaultInjection(page) {
 
           if (faultState.blockWrite && mode === 'readwrite') {
             const nativePut = objectStore.put.bind(objectStore);
+            const nativeAdd = objectStore.add.bind(objectStore);
             const nativeDelete = objectStore.delete.bind(objectStore);
             objectStore.put = (...args) => {
               const request = nativePut(...args);
+              try {
+                tx.abort();
+              } catch {
+                // ignore
+              }
+              return request;
+            };
+            objectStore.add = (...args) => {
+              const request = nativeAdd(...args);
               try {
                 tx.abort();
               } catch {

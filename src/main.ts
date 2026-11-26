@@ -4,7 +4,7 @@ import './evidence-lens.css';
 import './private-outcome-glance.css';
 import type { AnswerStatus, Question } from './domain';
 import { DEFAULT_INTERVIEW_PACK_ID, LIVE_INTERVIEW_PACK_OPTIONS, defaultLiveInterviewPack, findLiveInterviewPack } from './interview-packs';
-import { deleteSession, exportRecoveryBackup, listSessions, loadKnownFactSession14ForReview, loadSession, migrateLegacySession, replaceSessionWithHistory, requestPersistentStorage, RevisionConflictError, saveSession } from './storage';
+import { copyNameValidationError, deleteSession, exportRecoveryBackup, listSessions, loadKnownFactSession14ForReview, loadSession, migrateLegacySession, normalizeCopyNameKey, replaceSessionWithHistory, requestPersistentStorage, RevisionConflictError, saveImportedCopySession, saveSession } from './storage';
 import { exportCanonicalSessionJsonForReview } from './versioned-session-io';
 import { semanticSessionToMarkdown, serializeSession } from './markdown';
 import { proposeInterviewNextStepsForReview } from './interview-workflow-bridge';
@@ -19,6 +19,7 @@ import { formatConnectivityLabel, formatSaveLabel, type PersistenceState, type S
 import { SessionAutosaveCoordinator } from './autosave';
 import { readSessionList } from './session-list';
 import { beginSessionSwitch, importSessionWithCollisionHandling, openStoredSession, SessionSwitchGate, shouldFlushActiveSession, type ImportCollisionChoice, type OpenStoredSessionResult } from './session-durability';
+import { forkImportedSession } from './session-semantic';
 import { enterPresentation, exitPresentation, isPresentationMode, projectSemanticReadBack, type PresentationMode } from './presentation';
 import { projectPrivateEvidenceLens, renderPrivateEvidenceLensHtml } from './private-evidence-lens';
 import { projectPrivateOutcomeGlanceFromSession, renderPrivateOutcomeGlanceHtml } from './private-outcome-glance';
@@ -276,6 +277,87 @@ function updateStateIndicators(): void {
   });
 }
 
+/** Explicit, safe-default consent before a presentation view can become private Home. */
+function confirmExitPresentationForHome(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'import-collision-dialog presentation-home-consent-dialog';
+    dialog.setAttribute('aria-labelledby', 'presentation-home-consent-title');
+    dialog.innerHTML = `
+      <div class="import-collision-content">
+        <p class="eyebrow">Leave presentation view</p>
+        <h2 id="presentation-home-consent-title">Return to private Home?</h2>
+        <p>Home shows other interviews, their labels and dates, and private backup/recovery tools. Stay in presentation view while sharing your screen.</p>
+        <p class="helper-text">Nothing private is opened or rendered until you explicitly choose to leave and the current interview saves successfully.</p>
+        <div class="button-row">
+          <button type="button" class="primary" data-presentation-home="stay">Stay in presentation view</button>
+          <button type="button" class="secondary" data-presentation-home="exit">Exit to private Home</button>
+        </div>
+      </div>`;
+    let settled = false;
+    const settle = (confirmed: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (dialog.open) dialog.close();
+      dialog.remove();
+      resolve(confirmed);
+    };
+    dialog.querySelectorAll<HTMLButtonElement>('[data-presentation-home]').forEach((button) => {
+      button.addEventListener('click', () => settle(button.dataset.presentationHome === 'exit'));
+    });
+    dialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      settle(false);
+    }, { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
+    dialog.querySelector<HTMLButtonElement>('[data-presentation-home="stay"]')?.focus();
+  });
+}
+
+/** Restore a still-connected Home control before focusing it; never focus a detached or disabled control. */
+function restoreConnectedHomeControl(button: HTMLButtonElement): void {
+  if (!button.isConnected) return;
+  button.disabled = false;
+  button.removeAttribute('aria-busy');
+  button.focus();
+}
+
+/** One Home path for both presentation views; failure keeps the current private boundary. */
+async function leaveForHome(button: HTMLButtonElement, applyPrivateEdits?: () => void): Promise<void> {
+  if (button.disabled || !session) return;
+  button.disabled = true;
+  button.setAttribute('aria-busy', 'true');
+  const presenting = isPresentationMode(presentationMode);
+  try {
+    if (presenting) {
+      const confirmed = await confirmExitPresentationForHome();
+      if (!confirmed) {
+        restoreConnectedHomeControl(button);
+        return;
+      }
+    } else {
+      applyPrivateEdits?.();
+    }
+    await autosave.flushAndWait(session.sessionId);
+    saveError = null;
+    saveState = 'saved';
+    presentationMode = exitPresentation();
+    view = 'home';
+    await renderHome();
+  } catch (error) {
+    saveError = error;
+    saveState = 'error';
+    updateStateIndicators();
+    if (presenting) restoreConnectedHomeControl(button);
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+      button.removeAttribute('aria-busy');
+    }
+  }
+}
+
 function refreshConnectivityIndicators(announce = false): void {
   if (view === 'new') return;
   updateStateIndicators();
@@ -374,7 +456,7 @@ async function openStoredSessionForPack(sessionId: string): Promise<OpenStoredSe
   return result;
 }
 
-function chooseImportCollision(existing: SemanticInterviewSession): Promise<ImportCollisionChoice> {
+function chooseImportCollision(existing: SemanticInterviewSession, imported: SemanticInterviewSession, onCopyName: (name: string) => void): Promise<ImportCollisionChoice> {
   return new Promise((resolve) => {
     const dialog = document.createElement('dialog');
     dialog.className = 'import-collision-dialog';
@@ -384,24 +466,69 @@ function chooseImportCollision(existing: SemanticInterviewSession): Promise<Impo
         <p class="eyebrow">Import collision</p>
         <h2 id="import-collision-title">This interview already exists on this device.</h2>
         <p>The imported file has the same session ID as <strong>${escapeHtml(existing.clientLabel)}</strong>, but its interview content is different.</p>
-        <div class="known-preview">
-          <strong>Safest choice: Import as copy</strong>
-          <p>This keeps the current interview unchanged and gives the imported file a new session and revision lineage.</p>
-        </div>
+        <label class="import-copy-name-label">Name this copy<input type="text" data-import-copy-name maxlength="160" autocomplete="off" value="" placeholder="Enter a distinct interview name" aria-describedby="import-copy-name-help" /></label>
+        <p class="helper-text" id="import-copy-name-help">The name must be different from every interview already saved on this device. In version 1.3 this copy name is only the displayed interview/client label for the copy, not a separate portable title. The original record, immutable session ID and revision history are unchanged, and the existing interview stays unchanged. A distinct portable title is deferred to issues #34/#35.</p>
+        <p class="import-copy-name-status" data-import-copy-name-status role="status" aria-live="polite">Enter a distinct name to enable Import as copy.</p>
         <div class="button-row">
-          <button type="button" class="primary" data-import-choice="copy">Import as copy</button>
+          <button type="button" class="primary" data-import-choice="copy" disabled>Import as copy</button>
           <button type="button" class="secondary" data-import-choice="replace">Replace existing</button>
           <button type="button" class="secondary" data-import-choice="cancel">Cancel — keep current</button>
         </div>
         <p class="helper-text">Replace existing is explicit: the current validated revision is retained in local revision history before the imported content becomes current.</p>
       </div>`;
+    const copyNameInput = dialog.querySelector<HTMLInputElement>('[data-import-copy-name]')!;
+    const copyButton = dialog.querySelector<HTMLButtonElement>('[data-import-choice="copy"]')!;
+    const copyStatus = dialog.querySelector<HTMLElement>('[data-import-copy-name-status]')!;
+    let settled = false;
+    let validation = 0;
+    let validatedName = '';
+    copyNameInput.value = '';
     const settle = (choice: ImportCollisionChoice) => {
+      if (settled) return;
+      settled = true;
+      validation++;
       if (dialog.open) dialog.close();
       dialog.remove();
+      if (choice === 'copy') onCopyName(validatedName);
       resolve(choice);
     };
+    const validateName = async (): Promise<void> => {
+      const token = ++validation;
+      const candidate = copyNameInput.value.trim();
+      copyButton.disabled = true;
+      validatedName = '';
+      const problem = copyNameValidationError(candidate);
+      if (problem) {
+        copyStatus.textContent = problem;
+        return;
+      }
+      copyStatus.textContent = 'Checking saved interview names…';
+      try {
+        const saved = await listSessions();
+        if (settled || token !== validation) return;
+        if (saved.sessions.some((item) => normalizeCopyNameKey(item.clientLabel) === normalizeCopyNameKey(candidate))) {
+          copyStatus.textContent = 'That name is already in use. Choose a different interview name.';
+          return;
+        }
+        if (normalizeCopyNameKey(candidate) === normalizeCopyNameKey(imported.clientLabel)) {
+          copyStatus.textContent = 'Choose a name different from the imported interview name.';
+          return;
+        }
+        validatedName = candidate;
+        copyStatus.textContent = 'Name available. Import as copy will keep the existing interview unchanged.';
+        copyButton.disabled = false;
+      } catch {
+        if (!settled && token === validation) copyStatus.textContent = 'Saved names could not be checked. No copy can be created until local storage is available.';
+      }
+    };
+    copyNameInput.addEventListener('input', () => { void validateName(); });
     dialog.querySelectorAll<HTMLButtonElement>('[data-import-choice]').forEach((button) => {
-      button.addEventListener('click', () => settle(button.dataset.importChoice as ImportCollisionChoice));
+      button.addEventListener('click', () => {
+        if (button.dataset.importChoice === 'copy') {
+          if (button.disabled || !validatedName) return;
+        }
+        settle(button.dataset.importChoice as ImportCollisionChoice);
+      });
     });
     dialog.addEventListener('cancel', (event) => {
       event.preventDefault();
@@ -409,7 +536,7 @@ function chooseImportCollision(existing: SemanticInterviewSession): Promise<Impo
     }, { once: true });
     document.body.append(dialog);
     dialog.showModal();
-    dialog.querySelector<HTMLButtonElement>('[data-import-choice="copy"]')?.focus();
+    copyNameInput.focus();
   });
 }
 
@@ -578,6 +705,7 @@ async function renderHome(): Promise<void> {
       return;
     }
 
+    let importCopyName = '';
     const gated = await sessionSwitchGate.run(async () => {
       const outcome = await beginSessionSwitch({
         active: session,
@@ -587,7 +715,7 @@ async function renderHome(): Promise<void> {
           imported,
           flush: (sessionId) => autosave.flushAndWait(sessionId),
           load: loadSession,
-          chooseCollision: chooseImportCollision,
+          chooseCollision: (existingValue) => chooseImportCollision(existingValue, imported, (name) => { importCopyName = name; }),
           save: async (value, expectedRevisionId) => {
             await refreshPersistenceState();
             return saveSession(value, expectedRevisionId);
@@ -595,6 +723,16 @@ async function renderHome(): Promise<void> {
           replace: async (value, expectedRevisionId) => {
             await refreshPersistenceState();
             return replaceSessionWithHistory(value, expectedRevisionId);
+          },
+          fork: (value) => {
+            const nameProblem = copyNameValidationError(importCopyName);
+            if (nameProblem) throw new Error(nameProblem);
+            // H2 evidence preserved: this existing call generates the new sessionId.
+            return { ...forkImportedSession(value), clientLabel: importCopyName };
+          },
+          saveCopy: async (value) => {
+            await refreshPersistenceState();
+            return saveImportedCopySession(value);
           },
         }),
       });
@@ -634,6 +772,8 @@ async function renderHome(): Promise<void> {
           ? 'Pending local edits could not be saved, so the imported file was not written. The in-memory interview is unchanged.'
           : result.error instanceof RevisionConflictError
             ? 'Another tab changed this interview after the import decision. Import was stopped and the newer local revision was left unchanged.'
+            : result.error instanceof Error && result.error.message === 'That interview name already exists on this device. Choose a different name.'
+              ? 'That interview name was taken in another tab while the copy was being saved. Choose a different name; no interviews were changed.'
             : 'The imported file could not be saved. Existing local interviews and retained revision history were left unchanged.',
       };
       await renderHome();
@@ -854,7 +994,7 @@ function renderInterview(): void {
   app.innerHTML = `
     <header class="app-header cockpit-header">
       <div><strong>${escapeHtml(session.clientLabel)}</strong><span>${escapeHtml(sessionPack(session).title)}</span>${productAttributionMarkup()}</div>
-      <div class="header-states">${appearanceControlMarkup()}<span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator aria-live="off">${escapeHtml(saveLabel())}</span>${presenting ? '<span class="state-pill">Presentation view</span><button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : `<span class="state-pill header-connectivity" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span><button class="secondary small header-question-focus" type="button" data-action="toggle-question-focus" aria-pressed="false">Focus on question</button><button class="secondary small header-presentation" data-action="enter-presentation">Presentation view</button><button class="icon-button header-export" data-action="export" aria-label="Export JSON backup">⇩</button>`}${updateSlotMarkup()}</div>
+      <div class="header-states"><button class="secondary small" type="button" data-action="home">Home</button>${appearanceControlMarkup()}<span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator aria-live="off">${escapeHtml(saveLabel())}</span>${presenting ? '<span class="state-pill">Presentation view</span><button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : `<span class="state-pill header-connectivity" data-connectivity-indicator>${escapeHtml(connectivityLabel())}</span><button class="secondary small header-question-focus" type="button" data-action="toggle-question-focus" aria-pressed="false">Focus on question</button><button class="secondary small header-presentation" data-action="enter-presentation">Presentation view</button><button class="icon-button header-export" data-action="export" aria-label="Export JSON backup">⇩</button>`}${updateSlotMarkup()}</div>
       <span class="sr-only" role="alert" data-save-alert>${escapeHtml(saveAlertMessage())}</span>
       <span class="sr-only" role="status" aria-live="polite" data-connectivity-status></span>
     </header>
@@ -980,6 +1120,11 @@ function renderInterview(): void {
     const nextValue = textarea?.value ?? input?.value ?? radio?.value ?? current.value;
     commitValue(nextValue);
   };
+
+  app.querySelector('[data-action="home"]')?.addEventListener('click', (event) => {
+    const button = event.currentTarget;
+    if (button instanceof HTMLButtonElement) void leaveForHome(button, () => { applyAnswer(); syncPrivateNotes(); });
+  });
 
   const rerenderIfVisibilityChanged = (beforeKey: string, preferredRadioValue?: string): boolean => {
     if (!session) return false;
@@ -1194,7 +1339,7 @@ function renderReview(): void {
     ? ''
     : renderPrivateOutcomeGlanceHtml(projectPrivateOutcomeGlanceFromSession(session));
   app.innerHTML = `
-    <header class="app-header"><div><strong>${escapeHtml(session.clientLabel)}</strong><span>${presenting ? 'Presentation read-back' : 'Private review'}</span>${productAttributionMarkup()}</div><div class="header-states">${appearanceControlMarkup()}<span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator>${escapeHtml(saveLabel())}</span>${presenting ? '<button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : '<button class="secondary small" data-action="enter-presentation">Presentation view</button>'}${updateSlotMarkup()}</div><span class="sr-only" role="alert" data-save-alert>${escapeHtml(saveAlertMessage())}</span></header>
+    <header class="app-header"><div><strong>${escapeHtml(session.clientLabel)}</strong><span>${presenting ? 'Presentation read-back' : 'Private review'}</span>${productAttributionMarkup()}</div><div class="header-states"><button class="secondary small" data-action="home">Home</button>${appearanceControlMarkup()}<span class="state-pill ${saveState === 'error' ? 'danger' : ''}" data-save-indicator>${escapeHtml(saveLabel())}</span>${presenting ? '<button class="secondary small" data-action="exit-presentation">Exit presentation</button>' : '<button class="secondary small" data-action="enter-presentation">Presentation view</button>'}${updateSlotMarkup()}</div><span class="sr-only" role="alert" data-save-alert>${escapeHtml(saveAlertMessage())}</span></header>
     <main id="main" class="review-shell">
       <button class="text-button" data-action="return">← Return to interview</button>
       <p class="eyebrow">Read-back</p><h1 id="review-title" tabindex="-1">Read back what matters before ending the conversation.</h1>
@@ -1254,7 +1399,7 @@ function renderReview(): void {
         : '<div class="known-preview"><strong>Private review</strong><p>Internal tools are available here. Use Presentation view before screen sharing or client read-back.</p></div>'}
       ${presenting
         ? ''
-        : `<div class="button-row"><button class="primary" data-action="enter-presentation">Open presentation view</button><button class="secondary" data-action="json">Export full JSON backup</button><button class="secondary" data-action="markdown">Export internal Markdown</button><button class="secondary" data-action="handoff" ${privateHandoffExportInFlight ? 'disabled aria-busy="true"' : ''}>Export private handoff bundle JSON</button><button class="secondary" data-action="home">Home</button><button class="secondary" data-action="delete">Delete local session</button></div>`}
+        : `<div class="button-row"><button class="primary" data-action="enter-presentation">Open presentation view</button><button class="secondary" data-action="json">Export full JSON backup</button><button class="secondary" data-action="markdown">Export internal Markdown</button><button class="secondary" data-action="handoff" ${privateHandoffExportInFlight ? 'disabled aria-busy="true"' : ''}>Export private handoff bundle JSON</button><button class="secondary" data-action="delete">Delete local session</button></div>`}
     </main>`;
   const prepFileInput = app.querySelector<HTMLInputElement>('#synthetic-prep-file');
   prepFileInput?.addEventListener('change', async () => {
@@ -1456,7 +1601,10 @@ function renderReview(): void {
       alert('Could not verify or save the current local interview. No proposed next-step file was exported.');
     }
   });
-  app.querySelector('[data-action="home"]')?.addEventListener('click', () => { presentationMode = exitPresentation(); view = 'home'; render(); });
+  app.querySelector('[data-action="home"]')?.addEventListener('click', (event) => {
+    const button = event.currentTarget;
+    if (button instanceof HTMLButtonElement) void leaveForHome(button);
+  });
   app.querySelector('[data-action="delete"]')?.addEventListener('click', async () => {
     if (!session) return;
     if (!confirm('Delete this local interview? Export a backup first if you need one. This cannot be undone.')) return;

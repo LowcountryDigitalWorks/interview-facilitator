@@ -508,6 +508,74 @@ export async function saveSession(session: SemanticInterviewSession, expectedRev
   }
 }
 
+/** Deterministic, locale-independent key for import-copy name collision checks. */
+export function normalizeCopyNameKey(value: string): string {
+  return value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
+}
+
+const UNSAFE_COPY_NAME_CHARS = /[\u0000-\u001f\u007f<>:"/\\|?*]/u;
+const RESERVED_COPY_NAMES = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/u;
+const MAX_COPY_NAME_LENGTH = 160;
+
+/** Fail closed on names that cannot be shown or used as a safe export label. */
+export function copyNameValidationError(value: string): string | null {
+  const candidate = value.trim();
+  if (!candidate || !normalizeCopyNameKey(candidate)) return 'Enter a distinct interview name.';
+  if (candidate.length > MAX_COPY_NAME_LENGTH) return `Use ${MAX_COPY_NAME_LENGTH} characters or fewer.`;
+  if (UNSAFE_COPY_NAME_CHARS.test(candidate)) return 'The name cannot contain control characters, path separators, or \\/:*?"<>|.';
+  if (/[.]$/u.test(candidate) || RESERVED_COPY_NAMES.test(candidate.split('.')[0]!.toUpperCase())) return 'That name is reserved by the file system. Choose a different name.';
+  return null;
+}
+
+/** Create an explicitly named import copy without allowing cross-tab name races. */
+export async function saveImportedCopySession(session: SemanticInterviewSession): Promise<SemanticInterviewSession> {
+  await validateSemanticSessionRecord(session);
+  const nameProblem = copyNameValidationError(session.clientLabel);
+  if (nameProblem) throw new Error(nameProblem);
+  const requestedName = normalizeCopyNameKey(session.clientLabel);
+  const db = await openDb();
+  try {
+    const next: SemanticInterviewSession = {
+      ...structuredClone(session),
+      revisionId: crypto.randomUUID(),
+      parentRevisionId: null,
+    };
+    await new Promise<void>((resolve, reject) => {
+      const tx = writeTransaction(db);
+      const store = tx.objectStore(STORE);
+      let failure: Error | null = null;
+      const fail = (error: Error): void => {
+        if (failure) return;
+        failure = error;
+        try { tx.abort(); } catch { /* transaction already finished */ }
+      };
+      const rowsRequest = store.getAll();
+      rowsRequest.onerror = () => fail(rowsRequest.error ?? new Error('Unable to check local interview names.'));
+      rowsRequest.onsuccess = () => {
+        const rows = rowsRequest.result as unknown[];
+        for (const row of rows) {
+          if (!row || typeof row !== 'object' || typeof (row as { clientLabel?: unknown }).clientLabel !== 'string') {
+            fail(new Error('An existing local interview name could not be checked. No copy was saved.'));
+            return;
+          }
+          if (normalizeCopyNameKey((row as { clientLabel: string }).clientLabel) === requestedName) {
+            fail(new Error('That interview name already exists on this device. Choose a different name.'));
+            return;
+          }
+        }
+        const put = store.add(next);
+        put.onerror = () => fail(put.error ?? new Error('Unable to create the named interview copy.'));
+      };
+      tx.oncomplete = () => failure ? reject(failure) : resolve();
+      tx.onerror = () => reject(failure ?? tx.error ?? new Error('Unable to create the named interview copy.'));
+      tx.onabort = () => reject(failure ?? tx.error ?? new Error('The named interview copy was not saved.'));
+    });
+    return next;
+  } finally {
+    db.close();
+  }
+}
+
 
 /**
  * #34A2B2A — internal typed 1.4 read/save adapter.

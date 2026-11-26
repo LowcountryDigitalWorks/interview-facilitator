@@ -104,6 +104,46 @@ test('Home distinguishes a legitimate empty database and meets the initial axe f
   expect(consequential).toEqual([]);
 });
 
+test('Home keeps actions, safety notes and recent interviews within a laptop viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await putRawSession(page, await syntheticSession('synthetic-home-viewport'));
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'New interview' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Import session JSON' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Check session JSON (read-only)' })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Synthetic Browser Test/ })).toBeVisible();
+  await expect(page.locator('.hero-card .known-preview')).toContainText('JSON files are not encrypted');
+  const dimensions = await page.evaluate(() => ({
+    clientHeight: document.documentElement.clientHeight,
+    scrollHeight: document.documentElement.scrollHeight,
+    clientWidth: document.documentElement.clientWidth,
+    scrollWidth: document.documentElement.scrollWidth,
+  }));
+  expect(dimensions.scrollHeight).toBeLessThanOrEqual(dimensions.clientHeight + 2);
+  expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth + 2);
+});
+
+test('Interview Home control stays touch sized and fits narrow phone screens', async ({ page }) => {
+  const row = await syntheticSession('synthetic-mobile-home');
+  row.runningNotes = 'SYNTHETIC PRIVATE HOME NAVIGATION NOTE';
+  await putRawSession(page, row);
+  await page.goto('/');
+  await page.getByRole('button', { name: /Synthetic Browser Test/ }).click();
+
+  for (const width of [320, 390]) {
+    await page.setViewportSize({ width, height: 780 });
+    const home = page.getByRole('button', { name: 'Home', exact: true });
+    await expect(home).toBeVisible();
+    const rect = await home.boundingBox();
+    expect(rect?.height).toBeGreaterThanOrEqual(44);
+    const dimensions = await page.evaluate(() => ({ width: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth }));
+    expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.width + 2);
+  }
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  await expect(page.getByRole('button', { name: /Synthetic Browser Test/ })).toBeVisible();
+  await expect(page.getByText('SYNTHETIC PRIVATE HOME NAVIGATION NOTE')).toHaveCount(0);
+});
+
 test('Home makes iPhone Safari-to-Home-Screen transfer an explicit private file workflow', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 720 });
   await page.goto('/');
@@ -706,6 +746,17 @@ test('mobile Quick capture autosaves out-of-order notes without changing coverag
   await expect(page.locator('#running-notes')).toHaveCount(0);
   await expect(page.getByText(note)).toHaveCount(0);
   await advanceToQuestion(page, 'What absolutely has to be true for the first version to feel successful?');
+  const presentationInterviewHome = page.getByRole('button', { name: 'Home', exact: true });
+  await presentationInterviewHome.click();
+  await expect(page.getByRole('heading', { name: 'Return to private Home?' })).toBeVisible();
+  const stayInPresentation = page.getByRole('button', { name: 'Stay in presentation view' });
+  await expect(stayInPresentation).toBeEnabled();
+  await expect(stayInPresentation).toBeFocused();
+  await stayInPresentation.click();
+  await expect(page.getByRole('heading', { name: 'Return to private Home?' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Exit presentation' })).toBeVisible();
+  await expect(presentationInterviewHome).toBeEnabled();
+  await expect(presentationInterviewHome).toBeFocused();
   await page.getByRole('button', { name: 'Review interview' }).click();
   await expect(page.getByText(note)).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Exit presentation' })).toBeVisible();
@@ -754,7 +805,20 @@ test('Presentation read-back stays public across Change and masks retained defer
   await expect(page.getByRole('button', { name: 'Export full JSON backup' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Export internal Markdown' })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Delete local session' })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Home' })).toHaveCount(0);
+  const presentationHome = page.getByRole('button', { name: 'Home', exact: true });
+  await expect(presentationHome).toHaveCount(1);
+  await presentationHome.click();
+  await expect(page.getByRole('heading', { name: 'Return to private Home?' })).toBeVisible();
+  const stayInPresentation = page.getByRole('button', { name: 'Stay in presentation view' });
+  await expect(stayInPresentation).toBeEnabled();
+  await expect(stayInPresentation).toBeFocused();
+  await expect(page.getByText('private running note')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Delete local session' })).toHaveCount(0);
+  await stayInPresentation.click();
+  await expect(page.getByRole('heading', { name: 'Return to private Home?' })).toHaveCount(0);
+  await expect(page.getByText('Presentation read-back')).toBeVisible();
+  await expect(presentationHome).toBeEnabled();
+  await expect(presentationHome).toBeFocused();
   await expect(page.getByText(/cannot guarantee that free-text answers themselves contain no sensitive information/)).toBeVisible();
 
   const readBackAxe = await new AxeBuilder({ page }).analyze();
