@@ -78,7 +78,8 @@ test('outgoing flush failure blocks leaving the interview and keeps active sessi
   await setIdbFault(page, { blockWrite: false });
   await home.click();
   await expect(page.getByRole('button', { name: /Active Session/ })).toBeVisible();
-  expect(await readStoredAnswer(page, 'seed-active-session')).toBe('Dirty active edit');
+  const recovered = await readStoredSession(page, 'seed-active-session');
+  expect(recovered?.answers['must-have']?.value).toBe('Dirty active edit');
 });
 
 test('repeated failed Home attempts do not silently drop the active interview', async ({ page }) => {
