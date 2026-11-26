@@ -4,7 +4,7 @@ import './evidence-lens.css';
 import './private-outcome-glance.css';
 import type { AnswerStatus, Question } from './domain';
 import { DEFAULT_INTERVIEW_PACK_ID, LIVE_INTERVIEW_PACK_OPTIONS, defaultLiveInterviewPack, findLiveInterviewPack } from './interview-packs';
-import { deleteSession, exportRecoveryBackup, listSessions, loadKnownFactSession14ForReview, loadSession, migrateLegacySession, replaceSessionWithHistory, requestPersistentStorage, RevisionConflictError, saveImportedCopySession, saveSession } from './storage';
+import { copyNameValidationError, deleteSession, exportRecoveryBackup, listSessions, loadKnownFactSession14ForReview, loadSession, migrateLegacySession, normalizeCopyNameKey, replaceSessionWithHistory, requestPersistentStorage, RevisionConflictError, saveImportedCopySession, saveSession } from './storage';
 import { exportCanonicalSessionJsonForReview } from './versioned-session-io';
 import { semanticSessionToMarkdown, serializeSession } from './markdown';
 import { proposeInterviewNextStepsForReview } from './interview-workflow-bridge';
@@ -75,7 +75,6 @@ type HomeNotice =
   | { kind: 'save'; message: string; sessionId: string };
 
 let homeNotice: HomeNotice = null;
-let selectedImportCopyName = '';
 /** Ephemeral UI-only; never written to session JSON or IndexedDB. */
 let questionFocusMode = false;
 const QUESTION_FOCUS_DESKTOP_QUERY = '(min-width: 981px)';
@@ -278,6 +277,87 @@ function updateStateIndicators(): void {
   });
 }
 
+/** Explicit, safe-default consent before a presentation view can become private Home. */
+function confirmExitPresentationForHome(): Promise<boolean> {
+  return new Promise((resolve) => {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'import-collision-dialog presentation-home-consent-dialog';
+    dialog.setAttribute('aria-labelledby', 'presentation-home-consent-title');
+    dialog.innerHTML = `
+      <div class="import-collision-content">
+        <p class="eyebrow">Leave presentation view</p>
+        <h2 id="presentation-home-consent-title">Return to private Home?</h2>
+        <p>Home shows other interviews, their labels and dates, and private backup/recovery tools. Stay in presentation view while sharing your screen.</p>
+        <p class="helper-text">Nothing private is opened or rendered until you explicitly choose to leave and the current interview saves successfully.</p>
+        <div class="button-row">
+          <button type="button" class="primary" data-presentation-home="stay">Stay in presentation view</button>
+          <button type="button" class="secondary" data-presentation-home="exit">Exit to private Home</button>
+        </div>
+      </div>`;
+    let settled = false;
+    const settle = (confirmed: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (dialog.open) dialog.close();
+      dialog.remove();
+      resolve(confirmed);
+    };
+    dialog.querySelectorAll<HTMLButtonElement>('[data-presentation-home]').forEach((button) => {
+      button.addEventListener('click', () => settle(button.dataset.presentationHome === 'exit'));
+    });
+    dialog.addEventListener('cancel', (event) => {
+      event.preventDefault();
+      settle(false);
+    }, { once: true });
+    document.body.append(dialog);
+    dialog.showModal();
+    dialog.querySelector<HTMLButtonElement>('[data-presentation-home="stay"]')?.focus();
+  });
+}
+
+/** Restore a still-connected Home control before focusing it; never focus a detached or disabled control. */
+function restoreConnectedHomeControl(button: HTMLButtonElement): void {
+  if (!button.isConnected) return;
+  button.disabled = false;
+  button.removeAttribute('aria-busy');
+  button.focus();
+}
+
+/** One Home path for both presentation views; failure keeps the current private boundary. */
+async function leaveForHome(button: HTMLButtonElement, applyPrivateEdits?: () => void): Promise<void> {
+  if (button.disabled || !session) return;
+  button.disabled = true;
+  button.setAttribute('aria-busy', 'true');
+  const presenting = isPresentationMode(presentationMode);
+  try {
+    if (presenting) {
+      const confirmed = await confirmExitPresentationForHome();
+      if (!confirmed) {
+        restoreConnectedHomeControl(button);
+        return;
+      }
+    } else {
+      applyPrivateEdits?.();
+    }
+    await autosave.flushAndWait(session.sessionId);
+    saveError = null;
+    saveState = 'saved';
+    presentationMode = exitPresentation();
+    view = 'home';
+    await renderHome();
+  } catch (error) {
+    saveError = error;
+    saveState = 'error';
+    updateStateIndicators();
+    if (presenting) restoreConnectedHomeControl(button);
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+      button.removeAttribute('aria-busy');
+    }
+  }
+}
+
 function refreshConnectivityIndicators(announce = false): void {
   if (view === 'new') return;
   updateStateIndicators();
@@ -376,7 +456,7 @@ async function openStoredSessionForPack(sessionId: string): Promise<OpenStoredSe
   return result;
 }
 
-function chooseImportCollision(existing: SemanticInterviewSession, imported: SemanticInterviewSession): Promise<ImportCollisionChoice> {
+function chooseImportCollision(existing: SemanticInterviewSession, imported: SemanticInterviewSession, onCopyName: (name: string) => void): Promise<ImportCollisionChoice> {
   return new Promise((resolve) => {
     const dialog = document.createElement('dialog');
     dialog.className = 'import-collision-dialog';
@@ -387,7 +467,7 @@ function chooseImportCollision(existing: SemanticInterviewSession, imported: Sem
         <h2 id="import-collision-title">This interview already exists on this device.</h2>
         <p>The imported file has the same session ID as <strong>${escapeHtml(existing.clientLabel)}</strong>, but its interview content is different.</p>
         <label class="import-copy-name-label">Name this copy<input type="text" data-import-copy-name maxlength="160" autocomplete="off" value="" placeholder="Enter a distinct interview name" aria-describedby="import-copy-name-help" /></label>
-        <p class="helper-text" id="import-copy-name-help">The name must be different from every interview already saved on this device. The imported copy gets a new local session ID; the existing interview and its history stay unchanged.</p>
+        <p class="helper-text" id="import-copy-name-help">The name must be different from every interview already saved on this device. In version 1.3 this copy name is only the displayed interview/client label for the copy, not a separate portable title. The original record, immutable session ID and revision history are unchanged, and the existing interview stays unchanged. A distinct portable title is deferred to issues #34/#35.</p>
         <p class="import-copy-name-status" data-import-copy-name-status role="status" aria-live="polite">Enter a distinct name to enable Import as copy.</p>
         <div class="button-row">
           <button type="button" class="primary" data-import-choice="copy" disabled>Import as copy</button>
@@ -396,50 +476,56 @@ function chooseImportCollision(existing: SemanticInterviewSession, imported: Sem
         </div>
         <p class="helper-text">Replace existing is explicit: the current validated revision is retained in local revision history before the imported content becomes current.</p>
       </div>`;
-    const settle = (choice: ImportCollisionChoice) => {
-      if (dialog.open) dialog.close();
-      dialog.remove();
-      resolve(choice);
-    };
     const copyNameInput = dialog.querySelector<HTMLInputElement>('[data-import-copy-name]')!;
     const copyButton = dialog.querySelector<HTMLButtonElement>('[data-import-choice="copy"]')!;
     const copyStatus = dialog.querySelector<HTMLElement>('[data-import-copy-name-status]')!;
+    let settled = false;
     let validation = 0;
-    const normalizeName = (value: string): string => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+    let validatedName = '';
     copyNameInput.value = '';
+    const settle = (choice: ImportCollisionChoice) => {
+      if (settled) return;
+      settled = true;
+      validation++;
+      if (dialog.open) dialog.close();
+      dialog.remove();
+      if (choice === 'copy') onCopyName(validatedName);
+      resolve(choice);
+    };
     const validateName = async (): Promise<void> => {
       const token = ++validation;
       const candidate = copyNameInput.value.trim();
       copyButton.disabled = true;
-      selectedImportCopyName = '';
-      if (!candidate) {
-        copyStatus.textContent = 'Enter a distinct name to enable Import as copy.';
+      validatedName = '';
+      const problem = copyNameValidationError(candidate);
+      if (problem) {
+        copyStatus.textContent = problem;
         return;
       }
       copyStatus.textContent = 'Checking saved interview names…';
       try {
         const saved = await listSessions();
-        if (token !== validation) return;
-        if (saved.sessions.some((item) => normalizeName(item.clientLabel) === normalizeName(candidate))) {
+        if (settled || token !== validation) return;
+        if (saved.sessions.some((item) => normalizeCopyNameKey(item.clientLabel) === normalizeCopyNameKey(candidate))) {
           copyStatus.textContent = 'That name is already in use. Choose a different interview name.';
           return;
         }
-        if (normalizeName(candidate) === normalizeName(imported.clientLabel)) {
+        if (normalizeCopyNameKey(candidate) === normalizeCopyNameKey(imported.clientLabel)) {
           copyStatus.textContent = 'Choose a name different from the imported interview name.';
           return;
         }
-        selectedImportCopyName = candidate;
+        validatedName = candidate;
         copyStatus.textContent = 'Name available. Import as copy will keep the existing interview unchanged.';
         copyButton.disabled = false;
       } catch {
-        if (token === validation) copyStatus.textContent = 'Saved names could not be checked. No copy can be created until local storage is available.';
+        if (!settled && token === validation) copyStatus.textContent = 'Saved names could not be checked. No copy can be created until local storage is available.';
       }
     };
     copyNameInput.addEventListener('input', () => { void validateName(); });
     dialog.querySelectorAll<HTMLButtonElement>('[data-import-choice]').forEach((button) => {
       button.addEventListener('click', () => {
         if (button.dataset.importChoice === 'copy') {
-          if (button.disabled || !selectedImportCopyName) return;
+          if (button.disabled || !validatedName) return;
         }
         settle(button.dataset.importChoice as ImportCollisionChoice);
       });
@@ -619,8 +705,8 @@ async function renderHome(): Promise<void> {
       return;
     }
 
+    let importCopyName = '';
     const gated = await sessionSwitchGate.run(async () => {
-      selectedImportCopyName = '';
       const outcome = await beginSessionSwitch({
         active: session,
         nextSessionId: imported.sessionId,
@@ -629,7 +715,7 @@ async function renderHome(): Promise<void> {
           imported,
           flush: (sessionId) => autosave.flushAndWait(sessionId),
           load: loadSession,
-          chooseCollision: chooseImportCollision,
+          chooseCollision: (existingValue) => chooseImportCollision(existingValue, imported, (name) => { importCopyName = name; }),
           save: async (value, expectedRevisionId) => {
             await refreshPersistenceState();
             return saveSession(value, expectedRevisionId);
@@ -638,7 +724,12 @@ async function renderHome(): Promise<void> {
             await refreshPersistenceState();
             return replaceSessionWithHistory(value, expectedRevisionId);
           },
-          fork: (value) => ({ ...forkImportedSession(value), clientLabel: selectedImportCopyName }),
+          fork: (value) => {
+            const nameProblem = copyNameValidationError(importCopyName);
+            if (nameProblem) throw new Error(nameProblem);
+            // H2 evidence preserved: this existing call generates the new sessionId.
+            return { ...forkImportedSession(value), clientLabel: importCopyName };
+          },
           saveCopy: async (value) => {
             await refreshPersistenceState();
             return saveImportedCopySession(value);
@@ -1030,32 +1121,9 @@ function renderInterview(): void {
     commitValue(nextValue);
   };
 
-  app.querySelector('[data-action="home"]')?.addEventListener('click', async (event) => {
+  app.querySelector('[data-action="home"]')?.addEventListener('click', (event) => {
     const button = event.currentTarget;
-    if (!(button instanceof HTMLButtonElement) || !session) return;
-    button.disabled = true;
-    button.setAttribute('aria-busy', 'true');
-    try {
-      if (!presenting) {
-        applyAnswer();
-        syncPrivateNotes();
-      }
-      await autosave.flushAndWait(session.sessionId);
-      saveError = null;
-      saveState = 'saved';
-      presentationMode = exitPresentation();
-      view = 'home';
-      await renderHome();
-    } catch (error) {
-      saveError = error;
-      saveState = 'error';
-      updateStateIndicators();
-    } finally {
-      if (button.isConnected) {
-        button.disabled = false;
-        button.removeAttribute('aria-busy');
-      }
-    }
+    if (button instanceof HTMLButtonElement) void leaveForHome(button, () => { applyAnswer(); syncPrivateNotes(); });
   });
 
   const rerenderIfVisibilityChanged = (beforeKey: string, preferredRadioValue?: string): boolean => {
@@ -1533,28 +1601,9 @@ function renderReview(): void {
       alert('Could not verify or save the current local interview. No proposed next-step file was exported.');
     }
   });
-  app.querySelector('[data-action="home"]')?.addEventListener('click', async (event) => {
+  app.querySelector('[data-action="home"]')?.addEventListener('click', (event) => {
     const button = event.currentTarget;
-    if (!(button instanceof HTMLButtonElement) || !session) return;
-    button.disabled = true;
-    button.setAttribute('aria-busy', 'true');
-    try {
-      await autosave.flushAndWait(session.sessionId);
-      saveError = null;
-      saveState = 'saved';
-      presentationMode = exitPresentation();
-      view = 'home';
-      await renderHome();
-    } catch (error) {
-      saveError = error;
-      saveState = 'error';
-      updateStateIndicators();
-    } finally {
-      if (button.isConnected) {
-        button.disabled = false;
-        button.removeAttribute('aria-busy');
-      }
-    }
+    if (button instanceof HTMLButtonElement) void leaveForHome(button);
   });
   app.querySelector('[data-action="delete"]')?.addEventListener('click', async () => {
     if (!session) return;

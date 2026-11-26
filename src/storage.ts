@@ -508,12 +508,31 @@ export async function saveSession(session: SemanticInterviewSession, expectedRev
   }
 }
 
+/** Deterministic, locale-independent key for import-copy name collision checks. */
+export function normalizeCopyNameKey(value: string): string {
+  return value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
+}
+
+const UNSAFE_COPY_NAME_CHARS = /[\u0000-\u001f\u007f<>:"/\\|?*]/u;
+const RESERVED_COPY_NAMES = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/u;
+const MAX_COPY_NAME_LENGTH = 160;
+
+/** Fail closed on names that cannot be shown or used as a safe export label. */
+export function copyNameValidationError(value: string): string | null {
+  const candidate = value.trim();
+  if (!candidate || !normalizeCopyNameKey(candidate)) return 'Enter a distinct interview name.';
+  if (candidate.length > MAX_COPY_NAME_LENGTH) return `Use ${MAX_COPY_NAME_LENGTH} characters or fewer.`;
+  if (UNSAFE_COPY_NAME_CHARS.test(candidate)) return 'The name cannot contain control characters, path separators, or \\/:*?"<>|.';
+  if (/[.]$/u.test(candidate) || RESERVED_COPY_NAMES.test(candidate.split('.')[0]!.toUpperCase())) return 'That name is reserved by the file system. Choose a different name.';
+  return null;
+}
+
 /** Create an explicitly named import copy without allowing cross-tab name races. */
 export async function saveImportedCopySession(session: SemanticInterviewSession): Promise<SemanticInterviewSession> {
   await validateSemanticSessionRecord(session);
-  const nameKey = (value: string): string => value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
-  const requestedName = nameKey(session.clientLabel);
-  if (!requestedName) throw new Error('Enter a name for this interview copy.');
+  const nameProblem = copyNameValidationError(session.clientLabel);
+  if (nameProblem) throw new Error(nameProblem);
+  const requestedName = normalizeCopyNameKey(session.clientLabel);
   const db = await openDb();
   try {
     const next: SemanticInterviewSession = {
@@ -539,7 +558,7 @@ export async function saveImportedCopySession(session: SemanticInterviewSession)
             fail(new Error('An existing local interview name could not be checked. No copy was saved.'));
             return;
           }
-          if (nameKey((row as { clientLabel: string }).clientLabel) === requestedName) {
+          if (normalizeCopyNameKey((row as { clientLabel: string }).clientLabel) === requestedName) {
             fail(new Error('That interview name already exists on this device. Choose a different name.'));
             return;
           }
